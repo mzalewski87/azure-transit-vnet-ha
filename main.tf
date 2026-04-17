@@ -268,10 +268,11 @@ module "spoke2_dc" {
   workload_subnet_id = module.networking.spoke2_workload_subnet_id
   bastion_subnet_id  = module.networking.spoke2_bastion_subnet_id
 
-  admin_username = var.dc_admin_username
-  admin_password = var.dc_admin_password
-  domain_name    = var.dc_domain_name
-  dc_vm_size     = var.dc_vm_size
+  admin_username    = var.dc_admin_username
+  admin_password    = var.dc_admin_password
+  domain_name       = var.dc_domain_name
+  dc_vm_size        = var.dc_vm_size
+  skip_auto_promote = var.dc_skip_auto_promote
 
   tags = var.tags
 

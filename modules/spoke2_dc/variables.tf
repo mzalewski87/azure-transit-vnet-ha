@@ -58,3 +58,24 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "skip_auto_promote" {
+  description = <<-EOT
+    Pomiń automatyczną promocję DC przez Custom Script Extension.
+
+    Ustaw na TRUE jeśli:
+      - DC był już promowany w poprzednim (przerwanym) apply
+      - Terraform zwraca błąd "already exists" dla extensions/promote-to-dc
+      - Chcesz samodzielnie przeprowadzić promocję przez Azure Bastion
+
+    Gdy true: Terraform nie tworzy ani nie niszczy extension –
+    jeśli extension istnieje w Azure, pozostanie bez zmian.
+    Jeśli extension nie istnieje, DC NIE będzie automatycznie promowany
+    (musisz promować ręcznie przez Bastion).
+
+    UWAGA: Po ustawieniu true i wykonaniu apply możesz przywrócić false
+    dopiero po usunięciu extension z Azure lub zaimportowaniu go do state.
+  EOT
+  type        = bool
+  default     = false
+}

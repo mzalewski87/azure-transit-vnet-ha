@@ -22,9 +22,16 @@ variable "vm_size" {
 }
 
 variable "pan_os_version" {
-  description = "PAN-OS image version (BYOL SKU)"
+  description = <<-EOT
+    PAN-OS image version for VM-Series BYOL SKU.
+    Use "latest" to always deploy the most recent non-deprecated version.
+    In production, pin to a specific version (e.g. "11.2.3") after testing.
+    Check available versions:
+      az vm image list --publisher paloaltonetworks --offer vmseries-flex \
+        --sku byol --all --query "[].version" -o tsv
+  EOT
   type        = string
-  default     = "11.1.4"
+  default     = "latest"
 }
 
 variable "admin_username" {

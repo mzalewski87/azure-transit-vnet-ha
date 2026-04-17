@@ -78,6 +78,11 @@ resource "azurerm_windows_virtual_machine" "dc" {
 # Domain: panw.labs (configurable via var.domain_name)
 ###############################################################################
 resource "azurerm_virtual_machine_extension" "dc_promote" {
+  # count = 0 → Terraform pomija CREATE i DESTROY extension
+  # Użyj gdy extension już istnieje w Azure (błąd "already exists")
+  # Ustaw dc_skip_auto_promote = true w terraform.tfvars
+  count = var.skip_auto_promote ? 0 : 1
+
   provider             = azurerm.spoke2
   name                 = "promote-to-dc"
   virtual_machine_id   = azurerm_windows_virtual_machine.dc.id

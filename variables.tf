@@ -93,9 +93,16 @@ variable "fw_vm_size" {
 }
 
 variable "pan_os_version" {
-  description = "PAN-OS image version for VM-Series (BYOL)"
+  description = <<-EOT
+    PAN-OS image version for VM-Series BYOL SKU.
+    Domyślnie "latest" – zawsze najnowsza niewyofana wersja z Marketplace.
+    W produkcji przypnij do konkretnej wersji po testach (np. "11.2.3").
+    Dostępne wersje:
+      az vm image list --publisher paloaltonetworks --offer vmseries-flex \
+        --sku byol --all --query "[].version" -o tsv
+  EOT
   type        = string
-  default     = "11.1.4"
+  default     = "latest"
 }
 
 variable "admin_username" {
@@ -224,6 +231,28 @@ variable "dc_vm_size" {
   description = "Azure VM size for Windows Domain Controller"
   type        = string
   default     = "Standard_D2s_v3"
+}
+
+#------------------------------------------------------------------------------
+# DC Auto-Promote Control
+#------------------------------------------------------------------------------
+variable "dc_skip_auto_promote" {
+  description = <<-EOT
+    Pomiń automatyczną promocję DC przez Custom Script Extension.
+
+    Ustaw na TRUE gdy terraform apply zwraca:
+      "A resource with the ID .../extensions/promote-to-dc already exists"
+
+    DC jest już promowany w Azure (extension się uruchomiło mimo timeoutu TF).
+    Ustawienie true pomija tworzenie extension – DC pozostaje promowany.
+
+    Workflow naprawczy:
+      1. Ustaw dc_skip_auto_promote = true w terraform.tfvars
+      2. terraform apply  (extension pominięty, reszta wdrożona)
+      3. Zweryfikuj DC przez Azure Bastion: nltest /sc_verify:panw.labs
+  EOT
+  type    = bool
+  default = false
 }
 
 #------------------------------------------------------------------------------

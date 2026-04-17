@@ -55,7 +55,13 @@ internal_lb_private_ip     = "10.0.2.100"
 # VM-Series Firewall
 #------------------------------------------------------------------------------
 fw_vm_size     = "Standard_D8s_v3"
-pan_os_version = "11.1.4"
+
+# Wersja PAN-OS: "latest" = zawsze najnowsza niewyofana z Azure Marketplace
+# W produkcji przypnij konkretną wersję po testach, np. "11.2.3"
+# Sprawdź dostępne wersje:
+#   az vm image list --publisher paloaltonetworks --offer vmseries-flex \
+#     --sku byol --all --query "[].version" -o tsv
+pan_os_version = "latest"
 
 # Konto admin dla VM-Series i Panoramy
 admin_username = "panadmin"
@@ -117,3 +123,19 @@ frontdoor_sku = "Premium_AzureFrontDoor"
 #   terraform_operator_ips = []   # dostęp przez service endpoint
 #------------------------------------------------------------------------------
 terraform_operator_ips = ["REPLACE_ME"]  # np. ["1.2.3.4"]
+
+#------------------------------------------------------------------------------
+# DC Auto-Promote Control
+#
+# Ustaw na true gdy terraform apply zwraca błąd:
+#   "A resource with the ID .../extensions/promote-to-dc already exists"
+#
+# Oznacza to że DC jest już promowany w Azure (extension działało mimo
+# że Terraform przekroczył timeout). Ustaw true, ponów apply, reszta
+# infrastruktury wdroży się normalnie.
+#
+# Weryfikacja po wdrożeniu (przez Azure Bastion → RDP → vm-spoke2-dc):
+#   nltest /sc_verify:panw.labs
+#   Get-ADDomain | Select Name,DomainMode
+#------------------------------------------------------------------------------
+dc_skip_auto_promote = false  # zmień na true jeśli extension już istnieje
