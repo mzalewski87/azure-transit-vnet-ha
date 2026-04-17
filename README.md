@@ -17,16 +17,16 @@ Implementacja referencyjna oparta na: **[PAN Azure Transit VNet Deployment Guide
 1. [Architektura](#-architektura)
 2. [Model dostępu do zarządzania (Zero-Trust)](#-model-dostępu-do-zarządzania-zero-trust)
 3. [Wymagania wstępne](#-wymagania-wstępne)
-4. [🚨 Destroy – jak usunąć infrastrukturę](#-destroy--jak-usunąć-infrastrukturę)
-5. [Konfiguracja zmiennych](#-konfiguracja-zmiennych)
-6. [Phase 1a – Sieć + Panorama](#-phase-1a--sieć--panorama)
-7. [Phase 1b – Bootstrap + Firewalle + Spokes](#-phase-1b--bootstrap--firewalle--spokes)
-8. [Phase 2 – Konfiguracja Panoramy](#-phase-2--konfiguracja-panoramy)
-9. [Dostęp przez Azure Bastion (SSH + Port Forward)](#-dostęp-przez-azure-bastion-ssh--port-forward)
-10. [Weryfikacja po wdrożeniu](#-weryfikacja-po-wdrożeniu)
-11. [Rozwiązywanie problemów](#-rozwiązywanie-problemów)
-12. [Bezpieczeństwo](#-bezpieczeństwo)
-13. [Zasoby Azure](#-zasoby-azure)
+4. [Konfiguracja zmiennych](#-konfiguracja-zmiennych)
+5. [Phase 1a – Sieć + Panorama](#-phase-1a--sieć--panorama)
+6. [Phase 1b – Bootstrap + Firewalle + Spokes](#-phase-1b--bootstrap--firewalle--spokes)
+7. [Phase 2 – Konfiguracja Panoramy](#-phase-2--konfiguracja-panoramy)
+8. [Dostęp przez Azure Bastion (SSH + Port Forward)](#-dostęp-przez-azure-bastion-ssh--port-forward)
+9. [Weryfikacja po wdrożeniu](#-weryfikacja-po-wdrożeniu)
+10. [Rozwiązywanie problemów](#-rozwiązywanie-problemów)
+11. [Bezpieczeństwo](#-bezpieczeństwo)
+12. [Zasoby Azure](#-zasoby-azure)
+13. [🚨 Destroy – jak usunąć infrastrukturę](#-destroy--jak-usunąć-infrastrukturę)
 
 ---
 
@@ -145,37 +145,6 @@ az account set --subscription "<hub_subscription_id>"
 **Licencje BYOL** (z [Palo Alto CSP Portal](https://support.paloaltonetworks.com/)):
 - 2x auth code VM-Series BYOL → `fw_auth_code`
 - 1x auth code Panorama BYOL → `panorama_auth_code`
-
----
-
-## 🚨 Destroy – jak usunąć infrastrukturę
-
-### Opcja A – przez Terraform
-
-```bash
-cd /Users/mzalewski/TF/azure_ha_project
-terraform destroy -auto-approve 2>&1 | tee destroy.log
-tail -f destroy.log | grep -E "(Destroying|Destroyed|Error)"
-```
-
-### Opcja B – przez Azure CLI (gdy state uszkodzony)
-
-```bash
-az group delete --name rg-transit-hub  --yes --no-wait
-az group delete --name rg-spoke1-app   --yes --no-wait
-az group delete --name rg-spoke2-dc    --yes --no-wait
-
-# Sprawdzaj status
-az group list --query "[?name=='rg-transit-hub'||name=='rg-spoke1-app'||name=='rg-spoke2-dc'].{Name:name,State:properties.provisioningState}" -o table
-```
-
-### Po destroy – reset state
-
-```bash
-# Gdy resource groups zniknęły ale state nie jest pusty
-terraform state list | xargs -I {} terraform state rm {}
-terraform init -reconfigure
-```
 
 ---
 
@@ -722,6 +691,37 @@ azure-transit-vnet-ha/
 - [az network bastion tunnel](https://learn.microsoft.com/cli/azure/network/bastion#az-network-bastion-tunnel)
 - [Azure Standard Load Balancer](https://docs.microsoft.com/azure/load-balancer/)
 - [Terraform panos Provider](https://registry.terraform.io/providers/PaloAltoNetworks/panos/latest/docs)
+
+---
+
+## 🚨 Destroy – jak usunąć infrastrukturę
+
+### Opcja A – przez Terraform
+
+```bash
+cd /Users/mzalewski/TF/azure_ha_project
+terraform destroy -auto-approve 2>&1 | tee destroy.log
+tail -f destroy.log | grep -E "(Destroying|Destroyed|Error)"
+```
+
+### Opcja B – przez Azure CLI (gdy state uszkodzony)
+
+```bash
+az group delete --name rg-transit-hub  --yes --no-wait
+az group delete --name rg-spoke1-app   --yes --no-wait
+az group delete --name rg-spoke2-dc    --yes --no-wait
+
+# Sprawdzaj status
+az group list --query "[?name=='rg-transit-hub'||name=='rg-spoke1-app'||name=='rg-spoke2-dc'].{Name:name,State:properties.provisioningState}" -o table
+```
+
+### Po destroy – reset state
+
+```bash
+# Gdy resource groups zniknęły ale state nie jest pusty
+terraform state list | xargs -I {} terraform state rm {}
+terraform init -reconfigure
+```
 
 ---
 

@@ -406,14 +406,17 @@ resource "azurerm_network_security_group" "hub_bastion" {
     source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = "VirtualNetwork"
   }
+  # Azure wymaga portu 3389 (RDP) w tej regule – bez niego NSG nie spełnia compliance check
+  # dla AzureBastionSubnet i Azure odrzuca association.
+  # Port 443 jest niezbędny dla az network bastion tunnel → PAN-OS HTTPS GUI.
   security_rule {
-    name                       = "Allow-SSH-HTTPS-Outbound"
+    name                       = "Allow-SSH-RDP-HTTPS-Outbound"
     priority                   = 100
     direction                  = "Outbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_ranges    = ["22", "443"]
+    destination_port_ranges    = ["22", "3389", "443"]
     source_address_prefix      = "*"
     destination_address_prefix = "VirtualNetwork"
   }
