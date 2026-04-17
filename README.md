@@ -210,15 +210,12 @@ terraform apply \
 
 > ⏱ ~8-12 minut. Tworzy ~40 zasobów (VNety, subnety, NSG, NAT GW, Hub Bastion, Panorama VM).
 
-### Krok 3 – Poczekaj na Panoramę i otwórz Bastion Tunnel (skrypt)
+### Krok 3 – Poczekaj na Panoramę i otwórz tunel HTTPS
 
-```bash
-# Skrypt czeka na VM Running, potem otwiera tunel – NIE ZAMYKAJ!
-chmod +x scripts/check-panorama.sh
-./scripts/check-panorama.sh
-```
+> ℹ️  `scripts/check-panorama.sh` służy do dostępu przez DC (Phase 1b+).
+> W Phase 1a DC jeszcze nie istnieje – używamy bezpośredniego tunelu `--target-resource-id`.
 
-**Lub ręcznie** (2 terminale):
+**Ręcznie** (2 terminale):
 
 ```bash
 # Terminal 1 – sprawdź status Panoramy
@@ -226,11 +223,13 @@ az vm get-instance-view -g rg-transit-hub -n vm-panorama \
   --query "instanceView.statuses[?starts_with(code,'PowerState/')].displayStatus" -o tsv
 # Czekaj na: "VM running"
 
-# Terminal 1 – otwórz tunel (POZOSTAW OTWARTY)
+# Terminal 1 – otwórz tunel HTTPS do Panoramy (POZOSTAW OTWARTY)
+# ⚠️  Używamy --target-resource-id (IpConnect nie pozwala na port 443 przez --target-ip-address)
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
 az network bastion tunnel \
   --name bastion-hub \
   --resource-group rg-transit-hub \
-  --target-ip-address 10.0.0.10 \
+  --target-resource-id "$PANORAMA_ID" \
   --resource-port 443 \
   --port 44300
 ```
@@ -303,10 +302,12 @@ frontdoor_endpoint_hostname = "endpoint-xxx.z01.azurefd.net"
 
 ```bash
 # Otwórz tunnel do Panoramy (Terminal 1)
+# Lub przez DC: ./scripts/check-panorama.sh → RDP → https://10.0.0.10
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
 az network bastion tunnel \
   --name bastion-hub \
   --resource-group rg-transit-hub \
-  --target-ip-address 10.0.0.10 \
+  --target-resource-id "$PANORAMA_ID" \
   --resource-port 443 \
   --port 44300
 ```
@@ -326,10 +327,12 @@ FW1 i FW2: Connected ✅
 ### Krok 1 – Terminal 1: uruchom Bastion Tunnel (pozostaw otwarty)
 
 ```bash
+# ⚠️  --target-resource-id wymagane dla portu 443 (IpConnect dozwala tylko 22 i 3389)
+PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
 az network bastion tunnel \
   --name bastion-hub \
   --resource-group rg-transit-hub \
-  --target-ip-address 10.0.0.10 \
+  --target-resource-id "$PANORAMA_ID" \
   --resource-port 443 \
   --port 44300
 ```
@@ -374,91 +377,103 @@ Czekaj na Push Success na FW1 i FW2
 
 ---
 
-## 🔐 Dostęp przez Azure Bastion (SSH + Port Forward)
+## 🔐 Dostęp przez Azure Bastion (SSH + GUI przez DC)
 
-### SSH do firewalli (PAN-OS CLI)
+### Ograniczenie Azure Bastion IpConnect
+
+Azure Bastion ma dwa tryby natywnego klienta:
+
+| Tryb | Flaga | Dozwolone porty |
+|------|-------|-----------------|
+| **IpConnect** (`ip_connect_enabled=true`) | `--target-ip-address` | **tylko 22 i 3389** |
+| **Tunneling** (`tunneling_enabled=true`) | `--target-resource-id` | **dowolny port** |
+
+**GUI Panoramy/FW (port 443)** nie może być tunelowane przez `--target-ip-address`.
+Zamiast tego używamy **DC (Windows Server) jako jump host** z przeglądarką.
+
+---
+
+### SSH do firewalli i Panoramy (PAN-OS CLI)
+
+Porty 22 przez IpConnect – działają bezpośrednio przez `--target-ip-address`.
 
 ```bash
 # SSH do FW1 (Active)
-az network bastion ssh \
-  --name bastion-hub \
-  --resource-group rg-transit-hub \
-  --target-ip-address 10.0.0.4 \
-  --auth-type password \
-  --username panadmin
+az network bastion ssh --name bastion-hub --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.4 --auth-type password --username panadmin
 
 # SSH do FW2 (Passive)
-az network bastion ssh \
-  --name bastion-hub \
-  --resource-group rg-transit-hub \
-  --target-ip-address 10.0.0.5 \
-  --auth-type password \
-  --username panadmin
+az network bastion ssh --name bastion-hub --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.5 --auth-type password --username panadmin
 
 # SSH do Panoramy
-az network bastion ssh \
-  --name bastion-hub \
-  --resource-group rg-transit-hub \
-  --target-ip-address 10.0.0.10 \
-  --auth-type password \
-  --username panadmin
+az network bastion ssh --name bastion-hub --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.10 --auth-type password --username panadmin
 ```
 
-### Port forwarding – HTTPS GUI (Panorama i firewalle)
+---
 
-Każdy `az network bastion tunnel` **blokuje terminal** – uruchom w osobnym oknie.
+### GUI Panoramy i FW – przez DC jako jump host
 
-```bash
-# ── Terminal A: Panorama GUI → https://localhost:44300 ──────────────
-az network bastion tunnel \
-  --name bastion-hub \
-  --resource-group rg-transit-hub \
-  --target-ip-address 10.0.0.10 \
-  --resource-port 443 \
-  --port 44300
+**DC (vm-spoke2-dc, 10.2.0.4)** ma dostęp do sieci Hub przez VNet peering.
+Otwieramy RDP tunnel do DC, a z przeglądarki na DC wchodzimy na GUI Panoramy/FW.
 
-# ── Terminal B: FW1 GUI → https://localhost:44301 ────────────────────
-az network bastion tunnel \
-  --name bastion-hub \
-  --resource-group rg-transit-hub \
-  --target-ip-address 10.0.0.4 \
-  --resource-port 443 \
-  --port 44301
-
-# ── Terminal C: FW2 GUI → https://localhost:44302 ────────────────────
-az network bastion tunnel \
-  --name bastion-hub \
-  --resource-group rg-transit-hub \
-  --target-ip-address 10.0.0.5 \
-  --resource-port 443 \
-  --port 44302
-```
-
-| URL | Cel | Co otwiera |
-|-----|-----|-----------|
-| `https://localhost:44300` | Panorama | Panorama Management GUI |
-| `https://localhost:44301` | FW1 | PAN-OS GUI Firewall 1 (Active) |
-| `https://localhost:44302` | FW2 | PAN-OS GUI Firewall 2 (Passive) |
-
-> **⚠️ Certyfikat self-signed**: przeglądarka pokaże ostrzeżenie.
-> Kliknij **Advanced → Proceed to localhost (unsafe)** lub dodaj wyjątek.
-
-### RDP do Domain Controller (przez Spoke2 Bastion)
+#### Krok 1 – RDP tunnel (Terminal 1, blokuje)
 
 ```bash
-# Przez Azure Portal (prościej):
-# Portal → Virtual Machines → vm-spoke2-dc → Connect → Bastion
-# Login: dcadmin | Hasło: dc_admin_password z terraform.tfvars
+# Skrypt automatyczny (zalecany):
+./scripts/check-panorama.sh
 
-# Przez CLI (port forwarding na localhost:33389):
-DC_ID=$(az vm show -g rg-spoke2-dc -n vm-spoke2-dc --query id -o tsv)
-az network bastion tunnel \
-  --name bastion-spoke2 \
-  --resource-group rg-spoke2-dc \
-  --target-resource-id "$DC_ID" \
+# Lub ręcznie:
+az network bastion tunnel --name bastion-hub --resource-group rg-transit-hub \
+  --target-ip-address 10.2.0.4 \
   --resource-port 3389 \
   --port 33389
-# Potem: mstsc /v:localhost:33389  (Windows) lub rdesktop/xfreerdp (Linux/Mac)
+```
+
+#### Krok 2 – Połącz się przez RDP (Terminal 2)
+
+```bash
+# Windows:
+mstsc /v:localhost:33389
+
+# macOS (Microsoft Remote Desktop):
+# → Add PC → localhost:33389
+```
+
+Login: `dcadmin` | Hasło: `dc_admin_password` z `terraform.tfvars`
+
+#### Krok 3 – GUI z przeglądarki na DC
+
+| URL na DC | Cel | Uwagi |
+|-----------|-----|-------|
+| `https://10.0.0.10` | Panorama GUI | self-signed cert |
+| `https://10.0.0.4` | FW1 GUI (Active) | self-signed cert |
+| `https://10.0.0.5` | FW2 GUI (Passive) | self-signed cert |
+
+> **⚠️ Certyfikat self-signed**: kliknij **Advanced → Proceed to 10.0.0.x (unsafe)**.
+
+---
+
+### Phase 2 – Tunel do Panoramy port 443 (panos provider)
+
+Phase 2 Terraform wymaga połączenia HTTP do Panoramy na porcie 443.
+Użyj `--target-resource-id` (tunneling, nie IpConnect → dowolny port):
+
+```bash
+# Terminal 1 – uruchom tunel (POZOSTAW OTWARTY):
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
+az network bastion tunnel --name bastion-hub --resource-group rg-transit-hub \
+  --target-resource-id "$PANORAMA_ID" \
+  --resource-port 443 \
+  --port 44300
+```
+
+```bash
+# Terminal 2 – uruchom Phase 2:
+cd phase2-panorama-config
+# panorama_hostname = "127.0.0.1", panorama_port = 44300
+terraform apply
 ```
 
 ---

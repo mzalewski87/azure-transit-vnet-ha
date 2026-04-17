@@ -132,6 +132,21 @@ resource "azurerm_network_security_group" "mgmt" {
     destination_address_prefix = local.mgmt_subnet_cidr
   }
 
+  # HTTPS z Spoke2 (DC jako jump-host do GUI Panoramy i FW)
+  # Workflow: az bastion tunnel → RDP localhost:33389 → DC → Chrome → https://10.0.0.10
+  # BEZ tej reguły: DC nie może otworzyć Panorama GUI przez VNet peering
+  security_rule {
+    name                       = "Allow-HTTPS-From-Spoke2"
+    priority                   = 130
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = var.spoke2_vnet_address_space # 10.2.0.0/16
+    destination_address_prefix = "*"
+  }
+
   # Odmów całego pozostałego ruchu przychodzącego z Internetu
   security_rule {
     name                       = "Deny-All-Inbound"
@@ -406,9 +421,8 @@ resource "azurerm_network_security_group" "hub_bastion" {
     source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = "VirtualNetwork"
   }
-  # Azure wymaga portu 3389 (RDP) w tej regule – bez niego NSG nie spełnia compliance check
-  # dla AzureBastionSubnet i Azure odrzuca association.
-  # Port 443 jest niezbędny dla az network bastion tunnel → PAN-OS HTTPS GUI.
+  # IpConnect (--target-ip-address) dozwala tylko porty 22 i 3389.
+  # Port 443 potrzebny do tunelowania przez --target-resource-id → Panorama HTTPS GUI.
   security_rule {
     name                       = "Allow-SSH-RDP-HTTPS-Outbound"
     priority                   = 100
@@ -477,10 +491,10 @@ resource "azurerm_bastion_host" "hub" {
   resource_group_name = var.hub_resource_group_name
   sku                 = "Standard"
 
-  # tunneling_enabled    – umożliwia az network bastion tunnel (port forwarding)
-  # ip_connect_enabled   – umożliwia --target-ip-address zamiast --target-resource-id
-  #                        Bez tego flagi az bastion tunnel zwraca:
-  #                        "flag cannot be used when IpConnect is not enabled"
+  # tunneling_enabled  – umożliwia az network bastion tunnel (port forwarding)
+  # ip_connect_enabled – umożliwia --target-ip-address (porty 22 i 3389)
+  #                      Bez tego flaga --target-ip-address nie działa:
+  #                      "IpConnect is not enabled"
   tunneling_enabled      = true
   ip_connect_enabled     = true
   copy_paste_enabled     = true

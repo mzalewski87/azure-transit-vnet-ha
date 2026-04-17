@@ -3,16 +3,21 @@
 # Osobny katalog Terraform z providerem panos
 #
 # ⚠️  WYMÓG: Panorama NIE ma publicznego IP!
-#    Provider panos łączy się przez AKTYWNY Azure Bastion Tunnel:
+#    Provider panos łączy się przez AKTYWNY Azure Bastion Tunnel.
 #
-#    KROK 1 (terminal 1) – uruchom tunel i zostaw działający:
+#    OGRANICZENIE Azure Bastion IpConnect:
+#      --target-ip-address dozwala TYLKO portów 22 i 3389.
+#      Port 443 (HTTPS Panoramy) wymaga --target-resource-id.
+#
+#    KROK 1 (terminal 1) – pobierz Panorama VM ID i uruchom tunel:
+#      PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
 #      az network bastion tunnel \
 #        --name bastion-hub \
 #        --resource-group rg-transit-hub \
-#        --target-ip-address 10.0.0.10 \
+#        --target-resource-id "$PANORAMA_ID" \
 #        --resource-port 443 \
 #        --port 44300
-#      # lub użyj skryptu: ../scripts/check-panorama.sh
+#      # Zostaw terminal z tunelem OTWARTY!
 #
 #    KROK 2 (terminal 2) – deploy phase 2 (tunel musi być aktywny!):
 #      cd phase2-panorama-config/
