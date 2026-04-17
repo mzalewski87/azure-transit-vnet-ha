@@ -17,8 +17,18 @@ output "dc_vm_name" {
   value       = azurerm_windows_virtual_machine.dc.name
 }
 
+output "bastion_name" {
+  description = "Azure Bastion host name (bastion-spoke2) – uzywany w az network bastion"
+  value       = azurerm_bastion_host.spoke2.name
+}
+
+output "bastion_rg" {
+  description = "Resource Group Azure Bastion Spoke2"
+  value       = azurerm_bastion_host.spoke2.resource_group_name
+}
+
 output "bastion_public_ip" {
-  description = "Azure Bastion public IP - use Azure Portal Bastion to RDP to DC"
+  description = "Azure Bastion public IP – jedyny punkt dostepu administracyjnego"
   value       = azurerm_public_ip.bastion.ip_address
 }
 

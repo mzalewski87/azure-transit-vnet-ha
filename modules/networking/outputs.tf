@@ -72,25 +72,7 @@ output "spoke2_bastion_subnet_cidr" {
   value       = azurerm_subnet.spoke2_bastion.address_prefixes[0]
 }
 
-#------------------------------------------------------------------------------
-# Hub Azure Bastion (zarządzanie Panoramą i firewallami)
-#------------------------------------------------------------------------------
-output "hub_bastion_name" {
-  description = "Nazwa Hub Azure Bastion (używana w komendach az network bastion)"
-  value       = azurerm_bastion_host.hub.name
-}
-
-output "hub_bastion_rg" {
-  description = "Resource Group Hub Azure Bastion"
-  value       = azurerm_bastion_host.hub.resource_group_name
-}
-
-output "hub_bastion_public_ip" {
-  description = "Publiczny IP Hub Azure Bastion (dostęp admin przez portal/CLI)"
-  value       = azurerm_public_ip.bastion_hub.ip_address
-}
-
 output "nat_gateway_public_ip" {
-  description = "NAT Gateway public IP (wychodząca komunikacja snet-mgmt – Panorama/FW updates)"
+  description = "NAT Gateway public IP (wychodzaca komunikacja snet-mgmt - Panorama/FW updates)"
   value       = azurerm_public_ip.nat_gateway_mgmt.ip_address
 }

@@ -149,10 +149,15 @@ resource "azurerm_bastion_host" "spoke2" {
   location            = var.location
   resource_group_name = var.resource_group_name
   sku                 = "Standard"
-  # Enable copy-paste, file transfer and native client (RDP app) support
+  # copy_paste_enabled  – schowek w przeglądarce Azure Portal
+  # file_copy_enabled   – przesyłanie plików przez Bastion
+  # tunneling_enabled   – az network bastion tunnel (port forwarding)
+  # ip_connect_enabled  – --target-ip-address (porty 22 i 3389 oraz przez VNet peering)
+  #                       Umożliwia SSH do Panoramy/FW w Hub VNet przez Spoke2↔Hub peering
   copy_paste_enabled     = true
   file_copy_enabled      = true
   tunneling_enabled      = true
+  ip_connect_enabled     = true
   shareable_link_enabled = false
   tags                   = var.tags
 
