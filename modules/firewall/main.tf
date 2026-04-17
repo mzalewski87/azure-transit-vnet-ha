@@ -14,12 +14,25 @@
 ###############################################################################
 
 ###############################################################################
-# Marketplace Agreement - must be accepted before VM can be deployed
+# Marketplace Terms Acceptance (idempotent via az CLI)
+#
+# Dlaczego null_resource zamiast azurerm_marketplace_agreement:
+#   azurerm_marketplace_agreement rzuca błąd "already exists" jeśli umowa
+#   była już wcześniej zaakceptowana (częściowe apply, manualna akcja).
+#   null_resource + az vm image terms accept jest IDEMPOTENTNY – zawsze
+#   kończy się sukcesem niezależnie od stanu umowy w Azure.
+#
+# Wymaga: az CLI zalogowanego do właściwej subskrypcji (az login).
 ###############################################################################
-resource "azurerm_marketplace_agreement" "panos_byol" {
-  publisher = "paloaltonetworks"
-  offer     = "vmseries-flex"
-  plan      = "byol"
+resource "null_resource" "accept_panos_terms" {
+  triggers = {
+    # Stały trigger – lokalny-exec uruchamia się tylko raz na pierwszym apply
+    agreement = "paloaltonetworks:vmseries-flex:byol"
+  }
+
+  provisioner "local-exec" {
+    command = "az vm image terms accept --publisher paloaltonetworks --offer vmseries-flex --plan byol"
+  }
 }
 
 ###############################################################################
@@ -270,7 +283,7 @@ resource "azurerm_linux_virtual_machine" "fw1" {
     identity_ids = [var.fw_managed_identity_id]
   }
 
-  depends_on = [azurerm_marketplace_agreement.panos_byol]
+  depends_on = [null_resource.accept_panos_terms]
 }
 
 ###############################################################################
@@ -321,5 +334,5 @@ resource "azurerm_linux_virtual_machine" "fw2" {
     identity_ids = [var.fw_managed_identity_id]
   }
 
-  depends_on = [azurerm_marketplace_agreement.panos_byol]
+  depends_on = [null_resource.accept_panos_terms]
 }

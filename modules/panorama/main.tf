@@ -9,12 +9,19 @@
 ###############################################################################
 
 ###############################################################################
-# Marketplace Agreement for Panorama BYOL
+# Marketplace Terms Acceptance – Panorama BYOL (idempotent via az CLI)
+#
+# null_resource zamiast azurerm_marketplace_agreement – patrz komentarz
+# w modules/firewall/main.tf dla pełnego wyjaśnienia.
 ###############################################################################
-resource "azurerm_marketplace_agreement" "panorama" {
-  publisher = "paloaltonetworks"
-  offer     = "panorama"
-  plan      = "byol"
+resource "null_resource" "accept_panorama_terms" {
+  triggers = {
+    agreement = "paloaltonetworks:panorama:byol"
+  }
+
+  provisioner "local-exec" {
+    command = "az vm image terms accept --publisher paloaltonetworks --offer panorama --plan byol"
+  }
 }
 
 ###############################################################################
@@ -93,7 +100,7 @@ resource "azurerm_linux_virtual_machine" "panorama" {
     panorama_auth_code = var.panorama_auth_code
   }))
 
-  depends_on = [azurerm_marketplace_agreement.panorama]
+  depends_on = [null_resource.accept_panorama_terms]
 }
 
 ###############################################################################

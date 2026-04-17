@@ -111,6 +111,13 @@ resource "azurerm_virtual_machine_extension" "dc_promote" {
     create = "60m" # AD DS promotion + forest creation can take 30-45 min
   }
 
+  # ignore_changes: jeśli extension już istnieje w Azure (np. z poprzedniego
+  # przerwaneego apply), Terraform nie próbuje go odtworzyć ani zaktualizować.
+  # DC promotion jest nieodwracalna – jeśli DC jest już promowany, to jest OK.
+  lifecycle {
+    ignore_changes = all
+  }
+
   depends_on = [azurerm_windows_virtual_machine.dc]
 }
 
