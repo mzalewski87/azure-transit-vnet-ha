@@ -1,29 +1,27 @@
 ###############################################################################
-# Root Module
+# Root Module – Phase 1 (Infrastructure only)
 # Azure Transit VNet - Palo Alto VM-Series Active/Passive HA
 # Reference: PAN Azure Transit VNet Deployment Guide
 #
 # DEPLOY IN TWO PHASES:
 #
-# Phase 1 – Infrastructure (run first):
+# Phase 1 – Infrastructure (ten katalog):
 #   terraform apply \
 #     -target=module.networking \
-#     -target=module.loadbalancer \
 #     -target=module.bootstrap \
 #     -target=module.panorama \
+#     -target=module.loadbalancer \
 #     -target=module.firewall \
 #     -target=module.routing \
 #     -target=module.frontdoor \
 #     -target=module.spoke1_app \
 #     -target=module.spoke2_dc
 #
-# Phase 2 – Panorama configuration (after ~10 min Panorama boot):
-#   1. Get Panorama IP: terraform output panorama_public_ip
-#   2. Generate VM Auth Key in Panorama GUI
-#   3. Add to terraform.tfvars:
-#        panorama_public_ip  = "<panorama_ip>"
-#        panorama_vm_auth_key = "<vm_auth_key>"
-#   4. terraform apply   # completes module.panorama_config
+# Phase 2 – Konfiguracja Panoramy (osobny katalog):
+#   cd phase2-panorama-config/
+#   terraform init
+#   terraform apply
+#   Szczegóły: patrz README.md sekcja "Phase 2"
 ###############################################################################
 
 #------------------------------------------------------------------------------
@@ -82,7 +80,7 @@ module "networking" {
 #------------------------------------------------------------------------------
 # Bootstrap Module
 # Creates: Storage Account, bootstrap blobs (init-cfg.txt, authcodes),
-#          User Assigned Managed Identity for secure FW access
+#          User Assigned Managed Identity for secure FW storage access
 #------------------------------------------------------------------------------
 module "bootstrap" {
   source = "./modules/bootstrap"
@@ -102,7 +100,7 @@ module "bootstrap" {
 
 #------------------------------------------------------------------------------
 # Panorama Module
-# Creates: Panorama VM in snet-mgmt, public IP, 2TB data disk
+# Creates: Panorama VM in snet-mgmt (10.0.0.10), public IP, 2TB data disk
 #------------------------------------------------------------------------------
 module "panorama" {
   source = "./modules/panorama"
@@ -124,7 +122,7 @@ module "panorama" {
 
 #------------------------------------------------------------------------------
 # Load Balancer Module
-# Creates: External Standard LB (public) + Internal Standard LB (private)
+# Creates: External Standard LB (public) + Internal Standard LB (10.0.2.100)
 #------------------------------------------------------------------------------
 module "loadbalancer" {
   source = "./modules/loadbalancer"
@@ -141,8 +139,8 @@ module "loadbalancer" {
 
 #------------------------------------------------------------------------------
 # Firewall Module
-# Creates: 2x VM-Series (Active/Passive), 4x NICs per VM, Availability Set
-#          Bootstrap via Managed Identity + custom_data
+# Creates: 2x VM-Series PAN-OS 11.1 (Active/Passive), 4x NICs per VM,
+#          Availability Set, bootstrap via Managed Identity + custom_data
 #------------------------------------------------------------------------------
 module "firewall" {
   source = "./modules/firewall"
@@ -166,7 +164,6 @@ module "firewall" {
   external_lb_backend_pool_id = module.loadbalancer.external_lb_backend_pool_id
   internal_lb_backend_pool_id = module.loadbalancer.internal_lb_backend_pool_id
 
-  # Bootstrap via Azure Storage Account (Managed Identity)
   bootstrap_custom_data_fw1 = module.bootstrap.fw1_custom_data
   bootstrap_custom_data_fw2 = module.bootstrap.fw2_custom_data
   fw_managed_identity_id    = module.bootstrap.managed_identity_id
@@ -178,7 +175,8 @@ module "firewall" {
 
 #------------------------------------------------------------------------------
 # Routing Module
-# Creates: UDR Route Tables for Spoke subnets (default + east-west → Internal LB)
+# Creates: UDR Route Tables dla Spoke1 i Spoke2
+#          (domyślna trasa + east-west → Internal LB 10.0.2.100)
 #------------------------------------------------------------------------------
 module "routing" {
   source = "./modules/routing"
@@ -205,8 +203,8 @@ module "routing" {
 
 #------------------------------------------------------------------------------
 # Front Door Module
-# Creates: Azure Front Door Premium + Endpoint + Origin Group + Route
-#          Origin: External LB public IP → VM-Series (DNAT to Apache)
+# Creates: Azure Front Door Premium, Endpoint, Origin Group, Route
+#          Origin: External LB public IP → VM-Series (DNAT do Apache)
 #------------------------------------------------------------------------------
 module "frontdoor" {
   source = "./modules/frontdoor"
@@ -220,8 +218,8 @@ module "frontdoor" {
 
 #------------------------------------------------------------------------------
 # Spoke1 App Module
-# Creates: Ubuntu 22.04 VM with Apache2 Hello World (10.1.0.4, Spoke1)
-#          Reached via: AFD → External LB → VM-Series DNAT → this VM
+# Creates: Ubuntu 22.04 + Apache2 Hello World (cloud-init), IP 10.1.0.4
+#          Ruch: AFD → External LB → VM-Series DNAT → ten serwer
 #------------------------------------------------------------------------------
 module "spoke1_app" {
   source = "./modules/spoke1_app"
@@ -243,8 +241,8 @@ module "spoke1_app" {
 
 #------------------------------------------------------------------------------
 # Spoke2 DC Module
-# Creates: Windows Server 2022 Domain Controller (panw.labs, 10.2.0.4)
-#          + Azure Bastion for secure RDP access (no public IP on DC)
+# Creates: Windows Server 2022 DC (panw.labs, 10.2.0.4)
+#          + Azure Bastion Standard (bezpieczny RDP bez publicznego IP na DC)
 #------------------------------------------------------------------------------
 module "spoke2_dc" {
   source = "./modules/spoke2_dc"
@@ -267,38 +265,4 @@ module "spoke2_dc" {
   tags = var.tags
 
   depends_on = [module.routing]
-}
-
-#------------------------------------------------------------------------------
-# Panorama Config Module (Phase 2 only)
-# Configures Panorama via panos provider:
-#   Template, Template Stack, Device Group, Interfaces, Zones,
-#   Virtual Router, Static Routes, NAT rules, Security policies
-#
-# REQUIRES: panorama_public_ip variable set in terraform.tfvars
-# Skip in Phase 1 using: -target flags (exclude this module)
-#------------------------------------------------------------------------------
-module "panorama_config" {
-  source = "./modules/panorama_config"
-
-  # Phase 2 only: panorama_public_ip must be set for this module to work
-  count = var.panorama_public_ip != "" ? 1 : 0
-
-  panorama_hostname = module.panorama.panorama_public_ip
-  panorama_username = var.admin_username
-  panorama_password = var.admin_password
-
-  template_name       = "Transit-VNet-Template"
-  template_stack_name = var.panorama_template_stack
-  device_group_name   = var.panorama_device_group
-
-  trust_subnet_cidr   = "10.0.2.0/24"
-  untrust_subnet_cidr = "10.0.1.0/24"
-  spoke1_vnet_cidr    = var.spoke1_vnet_address_space
-  spoke2_vnet_cidr    = var.spoke2_vnet_address_space
-
-  apache_server_ip      = module.spoke1_app.apache_private_ip
-  external_lb_public_ip = module.networking.external_lb_public_ip_address
-
-  depends_on = [module.panorama, module.spoke1_app]
 }

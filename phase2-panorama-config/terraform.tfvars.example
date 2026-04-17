@@ -1,0 +1,34 @@
+###############################################################################
+# Phase 2 – terraform.tfvars.example
+#
+# INSTRUKCJA:
+# 1. Upewnij się że Phase 1 jest wdrożona i Panorama jest uruchomiona
+# 2. Pobierz wartości z Phase 1: cd .. && terraform output
+# 3. Skopiuj: cp terraform.tfvars.example terraform.tfvars
+# 4. Wypełnij wartości poniżej
+# 5. cd phase2-panorama-config/ && terraform init && terraform apply
+###############################################################################
+
+# ─── Panorama Connection ────────────────────────────────────────────────────
+# Pobierz z: cd .. && terraform output panorama_public_ip
+panorama_hostname = "REPLACE_ME"   # np. "52.174.10.20"
+panorama_username = "panadmin"
+panorama_password = "REPLACE_ME"   # to samo hasło co admin_password w Phase 1
+
+# ─── Panorama Objects (pozostaw domyślne jeśli nie zmieniałeś) ──────────────
+template_name       = "Transit-VNet-Template"
+template_stack_name = "Transit-VNet-Stack"
+device_group_name   = "Transit-VNet-DG"
+
+# ─── Network CIDRs (muszą zgadzać się z Phase 1 terraform.tfvars) ───────────
+trust_subnet_cidr   = "10.0.2.0/24"
+untrust_subnet_cidr = "10.0.1.0/24"
+spoke1_vnet_cidr    = "10.1.0.0/16"
+spoke2_vnet_cidr    = "10.2.0.0/16"
+
+# ─── Endpoints (pobierz z: cd .. && terraform output) ───────────────────────
+# terraform output apache_server_private_ip
+apache_server_ip = "10.1.0.4"
+
+# terraform output external_lb_public_ip
+external_lb_public_ip = "REPLACE_ME"   # np. "52.174.20.30"
