@@ -43,11 +43,13 @@ resource "azurerm_virtual_network" "transit" {
 }
 
 # Management subnet - PAN-OS management interfaces (eth0)
+# service_endpoints: Microsoft.Storage needed for bootstrap SA network_rules (Azure Policy compliance)
 resource "azurerm_subnet" "mgmt" {
   name                 = "snet-mgmt"
   resource_group_name  = var.hub_resource_group_name
   virtual_network_name = azurerm_virtual_network.transit.name
   address_prefixes     = [local.mgmt_subnet_cidr]
+  service_endpoints    = ["Microsoft.Storage"]
 }
 
 # Untrust subnet - PAN-OS external interfaces (eth1) - faces Internet

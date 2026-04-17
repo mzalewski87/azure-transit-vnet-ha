@@ -69,7 +69,7 @@ resource "azurerm_linux_virtual_machine" "panorama" {
     name                 = "osdisk-panorama"
     caching              = "ReadWrite"
     storage_account_type = "Premium_LRS"
-    disk_size_gb         = 60
+    disk_size_gb         = 256 # Panorama image requires min 224 GB; 256 for headroom
   }
 
   # Panorama BYOL image from Azure Marketplace

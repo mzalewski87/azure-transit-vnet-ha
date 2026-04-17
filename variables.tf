@@ -225,3 +225,25 @@ variable "dc_vm_size" {
   type        = string
   default     = "Standard_D2s_v3"
 }
+
+#------------------------------------------------------------------------------
+# Azure Policy Compliance
+#------------------------------------------------------------------------------
+variable "terraform_operator_ips" {
+  description = <<-EOT
+    List of public IP addresses of the machine(s) running terraform apply.
+    Required because storage account network_rules has default_action=Deny
+    (enforced by Azure Policy: Storage accounts should restrict network access).
+
+    Get your current public IP:
+      curl -s https://api.ipify.org
+
+    Example in terraform.tfvars:
+      terraform_operator_ips = ["1.2.3.4"]
+
+    Leave empty [] only when running Terraform from within the Azure VNet
+    (self-hosted runner, Azure DevOps agent, Cloud Shell).
+  EOT
+  type        = list(string)
+  default     = []
+}

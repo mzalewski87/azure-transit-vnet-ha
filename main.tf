@@ -95,7 +95,18 @@ module "bootstrap" {
 
   fw_auth_code = var.fw_auth_code
 
+  # Azure Policy compliance: network_rules default_action=Deny
+  # mgmt subnet has Microsoft.Storage service endpoint (set in networking module)
+  allowed_subnet_ids = [
+    module.networking.mgmt_subnet_id,
+  ]
+  # Public IP(s) of the Terraform operator machine (for blob upload)
+  # Get your IP: curl -s https://api.ipify.org
+  terraform_operator_ips = var.terraform_operator_ips
+
   tags = var.tags
+
+  depends_on = [module.networking]
 }
 
 #------------------------------------------------------------------------------

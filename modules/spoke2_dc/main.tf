@@ -107,6 +107,10 @@ resource "azurerm_virtual_machine_extension" "dc_promote" {
     ])
   })
 
+  timeouts {
+    create = "60m" # AD DS promotion + forest creation can take 30-45 min
+  }
+
   depends_on = [azurerm_windows_virtual_machine.dc]
 }
 

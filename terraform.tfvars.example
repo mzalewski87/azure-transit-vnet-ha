@@ -99,3 +99,21 @@ dc_admin_password = "REPLACE_ME"  # np. "DomainP@ssw0rd123!" - min 12 znaków
 # Azure Front Door
 #------------------------------------------------------------------------------
 frontdoor_sku = "Premium_AzureFrontDoor"
+
+#------------------------------------------------------------------------------
+# Azure Policy Compliance – Storage Account Network Access
+#
+# Wymagane przez politykę: "Storage accounts should restrict network access"
+# Storage Account bootstrapu ma network_rules default_action=Deny.
+# Terraform musi mieć dostęp do wgrywania blobów (init-cfg.txt, authcodes).
+#
+# Jak uzyskać swój publiczny IP:
+#   curl -s https://api.ipify.org
+#
+# Wiele IP (np. kilku operatorów lub CI/CD runner):
+#   terraform_operator_ips = ["1.2.3.4", "5.6.7.8"]
+#
+# Jeśli używasz Azure Cloud Shell lub self-hosted runner w VNet:
+#   terraform_operator_ips = []   # dostęp przez service endpoint
+#------------------------------------------------------------------------------
+terraform_operator_ips = ["REPLACE_ME"]  # np. ["1.2.3.4"]

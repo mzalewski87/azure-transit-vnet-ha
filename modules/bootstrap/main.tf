@@ -13,6 +13,11 @@
 #
 # VM-Series reads bootstrap via custom_data pointing to storage account.
 # Managed Identity (User Assigned) is used for secure access (no static keys).
+#
+# Azure Policy compliance:
+#   - cross_tenant_replication_enabled = false
+#   - network_rules: default_action = Deny + service endpoint on mgmt subnet
+#   - terraform_operator_ip: add your public IP to allow blob upload from Terraform
 ###############################################################################
 
 resource "random_string" "sa_suffix" {
@@ -23,6 +28,7 @@ resource "random_string" "sa_suffix" {
 
 ###############################################################################
 # Bootstrap Storage Account
+# Policy-compliant: network restricted, no cross-tenant replication
 ###############################################################################
 resource "azurerm_storage_account" "bootstrap" {
   name                     = "sapanosbstrap${random_string.sa_suffix.result}"
@@ -30,11 +36,28 @@ resource "azurerm_storage_account" "bootstrap" {
   location                 = var.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
+
   # Disable public blob access - Managed Identity is used for authentication
   allow_nested_items_to_be_public = false
   https_traffic_only_enabled      = true
   min_tls_version                 = "TLS1_2"
-  tags                            = var.tags
+
+  # Azure Policy: "Storage accounts should prevent cross tenant object replication"
+  cross_tenant_replication_enabled = false
+
+  # Azure Policy: "Storage accounts should restrict network access"
+  # - default_action = Deny  (required by policy)
+  # - bypass: AzureServices  (allows Managed Identity from FW VMs)
+  # - virtual_network_subnet_ids: mgmt subnet with Microsoft.Storage service endpoint
+  # - ip_rules: Terraform operator's public IP (for blob upload during apply)
+  network_rules {
+    default_action             = "Deny"
+    bypass                     = ["AzureServices", "Logging", "Metrics"]
+    virtual_network_subnet_ids = var.allowed_subnet_ids
+    ip_rules                   = compact(var.terraform_operator_ips)
+  }
+
+  tags = var.tags
 }
 
 resource "azurerm_storage_container" "bootstrap" {

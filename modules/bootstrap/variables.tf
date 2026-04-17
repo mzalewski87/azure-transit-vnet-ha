@@ -54,6 +54,28 @@ variable "fw2_hostname" {
   default     = "fw2-transit-hub"
 }
 
+variable "allowed_subnet_ids" {
+  description = <<-EOT
+    Subnet IDs allowed to access the bootstrap storage account via Service Endpoint.
+    Must have Microsoft.Storage service endpoint enabled (set in networking module).
+    FW VMs access the bootstrap blobs via Managed Identity through these subnets.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "terraform_operator_ips" {
+  description = <<-EOT
+    List of public IP addresses of machines running terraform apply.
+    Required because storage account has network_rules default_action=Deny (Azure Policy).
+    Get your IP: curl -s https://api.ipify.org
+    Example: ["1.2.3.4"]
+    Leave empty [] only if running Terraform from within the Azure VNet.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)
