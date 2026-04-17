@@ -1,0 +1,14 @@
+type=dhcp-client
+hostname=${hostname}
+vm-auth-key=${panorama_vm_auth_key}
+panorama-server=${panorama_server}
+panorama-server-2=
+tplname=${panorama_template_stack}
+dgname=${panorama_device_group}
+dns-primary=
+dns-secondary=
+op-command-modes=
+dhcp-send-hostname=yes
+dhcp-send-client-id=yes
+dhcp-accept-server-hostname=yes
+dhcp-accept-server-domain=yes

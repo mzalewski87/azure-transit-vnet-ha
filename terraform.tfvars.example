@@ -1,0 +1,101 @@
+###############################################################################
+# terraform.tfvars.example
+#
+# INSTRUKCJA:
+# 1. Skopiuj ten plik do terraform.tfvars:
+#      cp terraform.tfvars.example terraform.tfvars
+# 2. Wypełnij wszystkie wartości oznaczone jako REPLACE_ME
+# 3. NIE commituj terraform.tfvars do repozytorium! (plik jest w .gitignore)
+#
+# ALTERNATYWA - zmienne środowiskowe (zalecane dla CI/CD):
+#   export TF_VAR_hub_subscription_id="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+#   export TF_VAR_fw_auth_code="XXXX-XXXX-XXXX-XXXX"
+#   export TF_VAR_admin_password="YourStrongPassword123!"
+#   itd.
+###############################################################################
+
+#------------------------------------------------------------------------------
+# Subscription IDs
+# Pobierz z: az account list --output table
+# Dla demo wszystkie trzy mogą wskazywać na tę samą subskrypcję
+#------------------------------------------------------------------------------
+hub_subscription_id    = "REPLACE_ME"  # np. "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+spoke1_subscription_id = "REPLACE_ME"  # może być ten sam co hub
+spoke2_subscription_id = "REPLACE_ME"  # może być ten sam co hub
+
+#------------------------------------------------------------------------------
+# Lokalizacja i tagi
+#------------------------------------------------------------------------------
+location = "West Europe"
+
+tags = {
+  Environment = "Demo"
+  Project     = "PAN-Transit-VNet-HA"
+  Owner       = "REPLACE_ME"  # np. "Network-Team"
+  ManagedBy   = "Terraform"
+  CostCenter  = "REPLACE_ME"  # np. "IT-Security"
+}
+
+#------------------------------------------------------------------------------
+# Resource Groups
+#------------------------------------------------------------------------------
+hub_resource_group_name    = "rg-transit-hub"
+spoke1_resource_group_name = "rg-spoke1-app"
+spoke2_resource_group_name = "rg-spoke2-dc"
+
+#------------------------------------------------------------------------------
+# Sieć
+#------------------------------------------------------------------------------
+transit_vnet_address_space = "10.0.0.0/16"
+spoke1_vnet_address_space  = "10.1.0.0/16"
+spoke2_vnet_address_space  = "10.2.0.0/16"
+internal_lb_private_ip     = "10.0.2.100"
+
+#------------------------------------------------------------------------------
+# VM-Series Firewall
+#------------------------------------------------------------------------------
+fw_vm_size     = "Standard_D8s_v3"
+pan_os_version = "11.1.4"
+
+# Konto admin dla VM-Series i Panoramy
+admin_username = "panadmin"
+admin_password = "REPLACE_ME"  # min 12 znaków, wielkie/małe litery, cyfry, znaki specjalne
+
+#------------------------------------------------------------------------------
+# Licencje PAN-OS - WRAŻLIWE DANE
+#
+# fw_auth_code: Auth code licencji VM-Series BYOL
+#   - Pobierz z: Palo Alto Customer Support Portal → Assets → Auth Codes
+#   - Format: XXXX-XXXX-XXXX-XXXX (zwykle)
+#
+# panorama_auth_code: Auth code licencji Panoramy BYOL
+#   - Pobierz z: Palo Alto Customer Support Portal → Assets → Auth Codes
+#
+# panorama_vm_auth_key: VM Auth Key generowany w Panoramie
+#   - Generuj w: Panorama → Devices → VM Auth Key → Generate
+#   - WAŻNE: Wygeneruj po uruchomieniu Panoramy (Etap 2 deploy)
+#   - Klucz wygasa po określonym czasie - sprawdź ważność
+#------------------------------------------------------------------------------
+fw_auth_code         = "REPLACE_ME"  # np. "I5678901-ABCD-EFGH-IJKL"
+panorama_auth_code   = "REPLACE_ME"  # np. "P1234567-ABCD-EFGH-IJKL"
+panorama_vm_auth_key = "REPLACE_ME"  # generuj po uruchomieniu Panoramy
+
+#------------------------------------------------------------------------------
+# Konfiguracja Panoramy
+# panorama_template_stack: nazwa Template Stack w Panoramie
+# panorama_device_group: nazwa Device Group w Panoramie
+#------------------------------------------------------------------------------
+panorama_template_stack = "Transit-VNet-Stack"
+panorama_device_group   = "Transit-VNet-DG"
+
+#------------------------------------------------------------------------------
+# Kontroler domeny Windows (Spoke2)
+# Hasło musi spełniać wymagania Windows Server (złożoność)
+#------------------------------------------------------------------------------
+dc_admin_username = "dcadmin"
+dc_admin_password = "REPLACE_ME"  # np. "DomainP@ssw0rd123!" - min 12 znaków
+
+#------------------------------------------------------------------------------
+# Azure Front Door
+#------------------------------------------------------------------------------
+frontdoor_sku = "Premium_AzureFrontDoor"
