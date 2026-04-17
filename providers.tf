@@ -55,7 +55,10 @@ provider "azurerm" {
 # Phase 1: panorama_public_ip is "" → panos provider init succeeds but no resources applied
 # Phase 2: set panorama_public_ip in terraform.tfvars after Panorama VM is running
 provider "panos" {
-  hostname = var.panorama_public_ip
+  # coalesce: jeśli panorama_public_ip = "" (Phase 1), użyj placeholdera "127.0.0.1"
+  # Provider wymaga niepustego hostname do inicjalizacji, ale nie łączy się
+  # gdy module.panorama_config ma count = 0 (brak zasobów do planowania)
+  hostname = coalesce(var.panorama_public_ip, "127.0.0.1")
   username = var.admin_username
   password = var.admin_password
 }
