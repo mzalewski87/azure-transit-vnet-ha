@@ -477,8 +477,12 @@ resource "azurerm_bastion_host" "hub" {
   resource_group_name = var.hub_resource_group_name
   sku                 = "Standard"
 
-  # tunneling_enabled wymagane do az network bastion tunnel (port forwarding)
+  # tunneling_enabled    – umożliwia az network bastion tunnel (port forwarding)
+  # ip_connect_enabled   – umożliwia --target-ip-address zamiast --target-resource-id
+  #                        Bez tego flagi az bastion tunnel zwraca:
+  #                        "flag cannot be used when IpConnect is not enabled"
   tunneling_enabled      = true
+  ip_connect_enabled     = true
   copy_paste_enabled     = true
   file_copy_enabled      = false
   shareable_link_enabled = false
