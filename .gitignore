@@ -18,6 +18,9 @@ terraform.tfvars
 crash.log
 crash.*.log
 
+# Runtime logs (terraform destroy/apply output)
+*.log
+
 # Override files
 override.tf
 override.tf.json
