@@ -6,8 +6,23 @@
 # Panorama Connection
 #------------------------------------------------------------------------------
 variable "panorama_hostname" {
-  description = "Public IP lub FQDN Panoramy. Pobierz z: cd .. && terraform output panorama_public_ip"
-  type        = string
+  description = <<-EOT
+    Hostname/IP do połączenia z Panoramą przez provider panos.
+    Gdy używasz az network bastion tunnel: ustaw "127.0.0.1"
+    Gdy używasz innego tunelu VPN/jump-host: ustaw prywatne IP Panoramy "10.0.0.10"
+  EOT
+  type    = string
+  default = "127.0.0.1"
+}
+
+variable "panorama_port" {
+  description = <<-EOT
+    Port do połączenia z Panoramą.
+    Domyślnie 44300 – odpowiada --port 44300 w az network bastion tunnel.
+    Jeśli używasz połączenia direct (VPN/jump-host): ustaw 443.
+  EOT
+  type    = number
+  default = 44300
 }
 
 variable "panorama_username" {

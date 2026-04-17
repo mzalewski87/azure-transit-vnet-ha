@@ -15,63 +15,60 @@ Implementacja referencyjna oparta na: **[PAN Azure Transit VNet Deployment Guide
 ## 📋 Spis treści
 
 1. [Architektura](#-architektura)
-2. [Komponenty projektu](#-komponenty-projektu)
+2. [Model dostępu do zarządzania (Zero-Trust)](#-model-dostępu-do-zarządzania-zero-trust)
 3. [Wymagania wstępne](#-wymagania-wstępne)
-4. [🚨 Destroy – jak usunąć całą infrastrukturę](#-destroy--jak-usunąć-całą-infrastrukturę)
+4. [🚨 Destroy – jak usunąć infrastrukturę](#-destroy--jak-usunąć-infrastrukturę)
 5. [Konfiguracja zmiennych](#-konfiguracja-zmiennych)
-6. [Wdrożenie – Phase 1a (Sieć + Panorama)](#-wdrożenie--phase-1a-sieć--panorama)
-7. [Wdrożenie – Phase 1b (Bootstrap + Firewalle + Spokes)](#-wdrożenie--phase-1b-bootstrap--firewalle--spokes)
-8. [Wdrożenie – Phase 2 (Konfiguracja Panoramy)](#-wdrożenie--phase-2-konfiguracja-panoramy)
-9. [Weryfikacja po wdrożeniu](#-weryfikacja-po-wdrożeniu)
-10. [Rozwiązywanie problemów](#-rozwiązywanie-problemów)
-11. [Bezpieczeństwo](#-bezpieczeństwo)
-12. [Zasoby Azure](#-zasoby-azure)
+6. [Phase 1a – Sieć + Panorama](#-phase-1a--sieć--panorama)
+7. [Phase 1b – Bootstrap + Firewalle + Spokes](#-phase-1b--bootstrap--firewalle--spokes)
+8. [Phase 2 – Konfiguracja Panoramy](#-phase-2--konfiguracja-panoramy)
+9. [Dostęp przez Azure Bastion (SSH + Port Forward)](#-dostęp-przez-azure-bastion-ssh--port-forward)
+10. [Weryfikacja po wdrożeniu](#-weryfikacja-po-wdrożeniu)
+11. [Rozwiązywanie problemów](#-rozwiązywanie-problemów)
+12. [Bezpieczeństwo](#-bezpieczeństwo)
+13. [Zasoby Azure](#-zasoby-azure)
 
 ---
 
 ## 🏗 Architektura
 
 ```
-                          ┌─────────────────────────────────────────────────────────────┐
-  Internet                │           Azure Transit VNet (Hub)  10.0.0.0/16             │
-      │                   │                                                               │
-      ▼                   │  ┌──────────── snet-mgmt  10.0.0.0/24 ─────────────────┐   │
- ┌─────────────┐          │  │  pip-panorama → vm-panorama (10.0.0.10)              │   │
- │ Azure Front │          │  │  pip-fw1-mgmt → vm-panos-fw1 (eth0, 10.0.0.4)       │   │
- │ Door Premium│          │  │  pip-fw2-mgmt → vm-panos-fw2 (eth0, 10.0.0.5)       │   │
- │ (global     │          │  └──────────────────────────────────────────────────────┘   │
- │  anycast)   │          │                                                               │
- └──────┬──────┘          │  ┌──────────── snet-untrust  10.0.1.0/24 ──────────────┐   │
-        │ HTTP/HTTPS       │  │  nic-fw1-untrust (10.0.1.4)                         │   │
-        ▼                  │  │  nic-fw2-untrust (10.0.1.5)                         │   │
- ┌─────────────┐          │  └──────────────────────────────────────────────────────┘   │
- │External LB  │ ◄────────┤                                                             │
- │pip-ext-lb   │          │  ┌──────────── snet-trust  10.0.2.0/24 ────────────────┐   │
- └─────────────┘          │  │  nic-fw1-trust (10.0.2.4)                           │   │
-        │                  │  │  nic-fw2-trust (10.0.2.5)                           │   │
-        │                  │  │  lb-internal-panos (10.0.2.100) ← UDR next-hop     │   │
-        │                  │  └────────────────────────────────────────────────────┘   │
-        │                  │                                                             │
-        │                  │  ┌──────────── snet-ha  10.0.3.0/24 ──────────────────┐   │
-        │                  │  │  nic-fw1-ha ──HA2── nic-fw2-ha                     │   │
-        │                  │  └────────────────────────────────────────────────────┘   │
-        │                  └──────────────────────────────┬──────────────────────────────┘
-        │                                                  │
+                          ┌──────────────────────────────────────────────────────────────┐
+  Internet                │           Azure Transit VNet (Hub)  10.0.0.0/16              │
+      │                   │                                                                │
+      ▼                   │  ┌──── snet-mgmt  10.0.0.0/24 (NO PUBLIC IPs!) ──────────┐  │
+ ┌─────────────┐          │  │  vm-panorama          10.0.0.10  ←─ PRIVATE ONLY       │  │
+ │ Azure Front │          │  │  vm-panos-fw1 (eth0)  10.0.0.4   ←─ PRIVATE ONLY       │  │
+ │ Door Premium│          │  │  vm-panos-fw2 (eth0)  10.0.0.5   ←─ PRIVATE ONLY       │  │
+ │ (global     │          │  │  NAT Gateway → pip-nat-gateway-mgmt (outbound only)     │  │
+ │  anycast)   │          │  └────────────────────────────────────────────────────────┘  │
+ └──────┬──────┘          │                  ↑ dostęp admin TYLKO przez:                 │
+        │                  │  ┌──── AzureBastionSubnet  10.0.4.0/26 ───────────────────┐ │
+        ▼                  │  │  bastion-hub (Standard SKU, tunneling_enabled=true)     │ │
+ ┌─────────────┐          │  │  pip-bastion-hub ← jedyny publiczny IP do zarządzania  │ │
+ │External LB  │ ◄────────┤  └───────────────────────────────────────────────────────┘ │
+ │pip-ext-lb   │          │                                                               │
+ └─────────────┘          │  ┌──── snet-untrust  10.0.1.0/24 ─────────────────────────┐ │
+        │                  │  │  nic-fw1-untrust (10.0.1.4) → External LB backend      │ │
+        │                  │  │  nic-fw2-untrust (10.0.1.5) → External LB backend      │ │
+        │                  │  └────────────────────────────────────────────────────────┘ │
+        │                  │  ┌──── snet-trust  10.0.2.0/24 ──────────────────────────┐  │
+        │                  │  │  nic-fw1-trust (10.0.2.4) → Internal LB backend       │  │
+        │                  │  │  nic-fw2-trust (10.0.2.5) → Internal LB backend       │  │
+        │                  │  │  lb-internal-panos (10.0.2.100) ← UDR next-hop        │  │
+        │                  │  └────────────────────────────────────────────────────────┘  │
+        │                  │  ┌──── snet-ha  10.0.3.0/24 ──────────────────────────────┐ │
+        │                  │  │  fw1-ha (10.0.3.4) ──HA2── fw2-ha (10.0.3.5)          │ │
+        │                  │  └────────────────────────────────────────────────────────┘ │
+        │                  └──────────────────────────────┬───────────────────────────────┘
         │                               VNet Peering (bidirectional)
-        │                     ┌──────────────┴──────────────────────┐
-        │                     │                                      │
-        │       ┌─────────────▼────────────┐         ┌──────────────▼──────────────┐
-        │       │  Spoke1 VNet             │         │  Spoke2 VNet                 │
-        │       │  10.1.0.0/16             │         │  10.2.0.0/16                 │
-        │       │  snet-workload /24       │         │  snet-workload /24           │
-        │       │  UDR: 0/0 → 10.0.2.100  │◄───────►│  UDR: 0/0 → 10.0.2.100     │
-        │       │                          │         │  AzureBastionSubnet /26      │
-        │       │  vm-spoke1-apache        │         │  vm-spoke2-dc (Win 2022)    │
-        │       │  (Ubuntu, Apache2)       │         │  panw.labs AD Domain         │
-        └──────►│  10.1.0.4               │         │  10.2.0.4                    │
-         DNAT   └──────────────────────────┘         │  Azure Bastion (Standard)    │
-                ↑ Hello World App                    └──────────────────────────────┘
-                  AFD → Ext LB → VM-Series (DNAT) → Apache
+        │                     ┌──────────────┴────────────────────┐
+        │       ┌─────────────▼────────────┐      ┌──────────────▼──────────────┐
+        │       │  Spoke1 VNet 10.1.0.0/16 │      │  Spoke2 VNet 10.2.0.0/16    │
+        │       │  UDR: 0/0 → 10.0.2.100   │◄────►│  UDR: 0/0 → 10.0.2.100     │
+        │       │  vm-spoke1-apache 10.1.0.4│      │  vm-spoke2-dc    10.2.0.4   │
+        └──────►│  (Ubuntu, Apache2)        │      │  Azure Bastion Spoke2       │
+         DNAT   └──────────────────────────┘      └──────────────────────────────┘
 ```
 
 ### Przepływy ruchu
@@ -81,105 +78,102 @@ Implementacja referencyjna oparta na: **[PAN Azure Transit VNet Deployment Guide
 | **Inbound HTTP/HTTPS** | Client → AFD → External LB → VM-Series (DNAT) → Apache 10.1.0.4 | ✅ |
 | **Outbound Internet** | App (Spoke) → UDR → Internal LB → VM-Series (SNAT) → Internet | ✅ |
 | **East-West Spoke→Spoke** | Spoke1 → UDR → Internal LB → VM-Series → Spoke2 | ✅ |
-| **Management** | Admin → pip-fw1/fw2-mgmt → PAN-OS GUI/SSH | – |
-| **Panorama mgmt** | Admin → pip-panorama → Panorama GUI | – |
-| **DC RDP** | Admin → Azure Portal Bastion → vm-spoke2-dc | – |
+| **FW → Panorama (mgmt)** | FW1/FW2 (10.0.0.4/5) → prywatnie → Panorama (10.0.0.10) | – |
+| **Admin → FW/Panorama** | Admin → Hub Bastion (pip) → SSH/Tunnel → VM prywatne | – |
+| **Admin → DC RDP** | Admin → Spoke2 Bastion → vm-spoke2-dc (bez publicznego IP na DC) | – |
+| **Outbound mgmt** | Panorama/FW eth0 → NAT Gateway (pip-nat-gateway-mgmt) → Internet | – |
 
 ---
 
-## 📦 Komponenty projektu
+## 🔒 Model dostępu do zarządzania (Zero-Trust)
 
-| Moduł | Opis | Kluczowe zasoby |
-|-------|------|-----------------|
-| **`networking`** | Sieć – Hub i oba Spoke VNety | 3x VNet, 7x Subnet, 6x NSG, 4x VNet Peering, 3x Public IP |
-| **`panorama`** | Serwer zarządzania Panorama | VM (Standard_D4s_v3), OS 256 GB, 2TB data disk, Public IP |
-| **`bootstrap`** | Paczka bootstrap dla VM-Series | Storage Account (network_rules=Deny), blobs (init-cfg, authcodes), User-Assigned Managed Identity |
-| **`firewall`** | Para HA VM-Series | 2x VM PAN-OS latest (8 vCPU), Availability Set, 4 NIC/VM |
-| **`loadbalancer`** | Balansery ruchu | External Standard LB (TCP 80/443) + Internal Standard LB (HA Ports, 10.0.2.100) |
-| **`routing`** | Routing Spoke VNetów | 2x UDR Route Table (domyślna trasa + east-west → Internal LB) |
-| **`frontdoor`** | Globalny wejście HTTP/HTTPS | Azure Front Door Premium, Endpoint, Origin Group, Route |
-| **`spoke1_app`** | Aplikacja demonstracyjna | Ubuntu 22.04, Apache2 Hello World (cloud-init), IP 10.1.0.4 |
-| **`spoke2_dc`** | Kontroler domeny | Windows Server 2022, AD DS (panw.labs), Azure Bastion Standard |
-| **`panorama_config`** | Konfiguracja Panorama (Phase 2) | Template, Device Group, Strefy, VR, Static Routes, NAT, Security Policy |
+**Kluczowa zasada**: Żadna VM zarządzania (Panorama, FW1, FW2) **nie ma publicznego adresu IP**.
+
+| Zasób | Publiczny IP? | Dostęp |
+|-------|:---:|--------|
+| vm-panorama (10.0.0.10) | ❌ | Hub Bastion → tunnel port 44300 → https://localhost:44300 |
+| vm-panos-fw1 (10.0.0.4) | ❌ | Hub Bastion → SSH lub tunnel port 44301 → https://localhost:44301 |
+| vm-panos-fw2 (10.0.0.5) | ❌ | Hub Bastion → SSH lub tunnel port 44302 → https://localhost:44302 |
+| vm-spoke2-dc (10.2.0.4) | ❌ | Spoke2 Bastion → RDP przez Azure Portal |
+| pip-bastion-hub | ✅ | Azure Bastion – jedyny punkt wejścia do zarządzania |
+| pip-external-lb | ✅ | Ruch aplikacyjny (HTTP/HTTPS) przez FW |
+| pip-nat-gateway-mgmt | ✅ | Wychodzący internet z snet-mgmt (licencje, updates) – tylko outbound |
+
+### Komunikacja FW ↔ Panorama (prywatna)
+
+```
+FW1 (10.0.0.4) ─────────────────────────────→ Panorama (10.0.0.10)
+FW2 (10.0.0.5) ─────────────────────────────→ Panorama (10.0.0.10)
+  ↕ snet-mgmt (10.0.0.0/24)  HA1 heartbeat ↕
+  Brak ruchu przez publiczne IP!
+```
+
+### Dostęp admina (przez Hub Azure Bastion)
+
+```
+Admin (laptop)
+  └── https://portal.azure.com / az CLI
+        └── pip-bastion-hub (publiczny IP Bastion)
+              └── AzureBastionSubnet (10.0.4.0/26)
+                    ├── SSH → vm-panos-fw1  (10.0.0.4)
+                    ├── SSH → vm-panos-fw2  (10.0.0.5)
+                    ├── SSH → vm-panorama   (10.0.0.10)
+                    └── Tunnel → localhost:44300 → vm-panorama:443 (HTTPS GUI)
+```
 
 ---
 
 ## ✅ Wymagania wstępne
 
-### Narzędzia
-
-| Narzędzie | Min. wersja | Instalacja |
-|-----------|:-----------:|-----------|
-| [Terraform](https://www.terraform.io/downloads) | 1.5.0 | `brew install terraform` |
-| [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) | 2.50.0 | `brew install azure-cli` |
-
-### Uprawnienia Azure
-
-- `Owner` **lub** `Contributor + User Access Administrator` na subskrypcjach Hub, Spoke1, Spoke2
-- Dostęp do Azure Marketplace (akceptacja warunków VM-Series BYOL – wykonywane automatycznie przez Terraform via `az vm image terms accept`)
-
-### Licencje Palo Alto Networks (BYOL)
-
-Przed deploymentem musisz posiadać (z [Palo Alto Customer Support Portal](https://support.paloaltonetworks.com/)):
-- **2x** auth code VM-Series BYOL → `fw_auth_code` w `terraform.tfvars`
-- **1x** auth code Panorama BYOL → `panorama_auth_code` w `terraform.tfvars`
-
-### Logowanie do Azure CLI
+| Narzędzie | Min. wersja |
+|-----------|:-----------:|
+| [Terraform](https://www.terraform.io/downloads) | 1.5.0 |
+| [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) | 2.60.0 |
+| [Azure Bastion extension for CLI](https://learn.microsoft.com/cli/azure/network/bastion) | – |
 
 ```bash
+# Zainstaluj rozszerzenie Azure Bastion dla CLI (jednorazowo)
+az extension add --name bastion
+
+# Zaloguj się
 az login
 az account set --subscription "<hub_subscription_id>"
-az account show --query "{Sub:id, Name:name}" -o table
 ```
+
+**Uprawnienia Azure**: `Owner` lub `Contributor + User Access Administrator` na wszystkich subskrypcjach.
+
+**Licencje BYOL** (z [Palo Alto CSP Portal](https://support.paloaltonetworks.com/)):
+- 2x auth code VM-Series BYOL → `fw_auth_code`
+- 1x auth code Panorama BYOL → `panorama_auth_code`
 
 ---
 
-## 🚨 Destroy – jak usunąć całą infrastrukturę
+## 🚨 Destroy – jak usunąć infrastrukturę
 
-> **Uruchom to w OSOBNYM terminalu i zostaw działać w tle (20-40 min)**
-
-### Opcja A – przez Terraform (zalecana)
+### Opcja A – przez Terraform
 
 ```bash
 cd /Users/mzalewski/TF/azure_ha_project
-
-# Usuń wszystkie zasoby (bez pytania o potwierdzenie)
 terraform destroy -auto-approve 2>&1 | tee destroy.log
-
-# Monitoruj w innym oknie:
 tail -f destroy.log | grep -E "(Destroying|Destroyed|Error)"
 ```
 
-### Opcja B – przez Azure CLI (gdy state jest uszkodzony)
+### Opcja B – przez Azure CLI (gdy state uszkodzony)
 
 ```bash
-# Usuń resource groups (zawiera 95% zasobów) – wykonuje się równolegle
 az group delete --name rg-transit-hub  --yes --no-wait
 az group delete --name rg-spoke1-app   --yes --no-wait
 az group delete --name rg-spoke2-dc    --yes --no-wait
 
-# Poczekaj na usunięcie (sprawdzaj status)
-watch -n 30 "az group list --query \"[?name=='rg-transit-hub'||name=='rg-spoke1-app'||name=='rg-spoke2-dc'].{Name:name,State:properties.provisioningState}\" -o table"
+# Sprawdzaj status
+az group list --query "[?name=='rg-transit-hub'||name=='rg-spoke1-app'||name=='rg-spoke2-dc'].{Name:name,State:properties.provisioningState}" -o table
 ```
 
-### Opcja C – Czyść state po destroy przez CLI
+### Po destroy – reset state
 
-Jeśli destroy przez CLI (Opcja B) się powiodło ale state Terraform nadal zawiera zasoby:
 ```bash
-# Wyczyść lokalny state
+# Gdy resource groups zniknęły ale state nie jest pusty
 terraform state list | xargs -I {} terraform state rm {}
-
-# LUB po prostu usuń pliki state (TYLKO jeśli nie używasz remote backend)
-rm terraform.tfstate terraform.tfstate.backup
-```
-
-### Po destroy – przygotuj środowisko do nowego deploy
-
-```bash
-# Sprawdź czy resource groups naprawdę zniknęły
-az group list --query "[?name=='rg-transit-hub'||name=='rg-spoke1-app'||name=='rg-spoke2-dc']" -o table
-
-# Gdy puste – reinitializuj Terraform (czyści provider cache)
 terraform init -reconfigure
 ```
 
@@ -187,89 +181,54 @@ terraform init -reconfigure
 
 ## ⚙️ Konfiguracja zmiennych
 
-### Krok 1 – Skopiuj szablon
-
 ```bash
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-### Krok 2 – Wypełnij `terraform.tfvars`
-
 ```hcl
-# ═══════════════════════════════════════════════════════════
-# SEKCJA OBOWIĄZKOWA – uzupełnij przed deploy
-# ═══════════════════════════════════════════════════════════
-
+# ═══════════════════════════ WYMAGANE ═══════════════════════════
 hub_subscription_id    = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-spoke1_subscription_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # może być ten sam co hub
-spoke2_subscription_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # może być ten sam co hub
+spoke1_subscription_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+spoke2_subscription_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
-admin_username = "panadmin"
-admin_password = "Str0ng!Password2024"   # min 12 znaków, wielkie+małe+cyfry+special
+admin_username    = "panadmin"
+admin_password    = "Str0ng!Password2024"   # min 12 znaków
 
 dc_admin_username = "dcadmin"
 dc_admin_password = "DC-Str0ng!2024"
 
-fw_auth_code       = "I1234567-XXXX-XXXX-XXXX"   # z CSP Portal → Assets → Auth Codes
-panorama_auth_code = "P7654321-XXXX-XXXX-XXXX"   # z CSP Portal → Assets → Auth Codes
+fw_auth_code       = "I1234567-XXXX-XXXX-XXXX"
+panorama_auth_code = "P7654321-XXXX-XXXX-XXXX"
 
-# Twój publiczny IP (wymagane przez Azure Policy dla Storage Account):
-#   curl -s https://api.ipify.org
-terraform_operator_ips = ["X.X.X.X"]
+# Twój publiczny IP (dla Storage Account network_rules):
+terraform_operator_ips = ["X.X.X.X"]   # curl -s https://api.ipify.org
 
-# ═══════════════════════════════════════════════════════════
-# SEKCJA UZUPEŁNIANA PO PHASE 1a (Panorama uruchomiona)
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════ PO PHASE 1a ════════════════════════════
+# Wygeneruj w Panoramie przez Bastion Tunnel, potem uzupełnij:
+panorama_vm_auth_key = ""   # → uzupełnij po Phase 1a
 
-# Wygeneruj w Panoramie: Panorama → Device Registration Auth Key → Generate
-# Zostaw "" dla Phase 1a, uzupełnij przed Phase 1b
-panorama_vm_auth_key = ""
-
-# ═══════════════════════════════════════════════════════════
-# SEKCJA OPCJONALNA – wartości domyślne działają dla demo
-# ═══════════════════════════════════════════════════════════
-
-location               = "West Europe"
-fw_vm_size             = "Standard_D8s_v3"  # 8 vCPU, 32 GB RAM
-pan_os_version         = "latest"           # zawsze najnowsza niewyofana wersja
-
-panorama_vm_size       = "Standard_D4s_v3"
-panorama_template_stack = "Transit-VNet-Stack"
-panorama_device_group   = "Transit-VNet-DG"
-
-dc_domain_name         = "panw.labs"
-dc_skip_auto_promote   = false  # ustaw true jeśli DC jest już promowany (state drift)
+# ═══════════════════════ OPCJONALNE ═════════════════════════════
+location             = "West Europe"
+fw_vm_size           = "Standard_D8s_v3"
+pan_os_version       = "latest"
+dc_skip_auto_promote = false
 ```
-
-> **⚠️ WAŻNE**: `terraform.tfvars` zawiera hasła i auth codes – **nigdy nie commituj tego pliku do git!**
-> Plik jest wykluczony przez `.gitignore`.
 
 ---
 
-## 🚀 Wdrożenie – Phase 1a (Sieć + Panorama)
+## 🚀 Phase 1a – Sieć + Panorama
 
-> **CEL**: Uruchomić Panoramę w Azure, by uzyskać z niej `vm-auth-key` potrzebny do bootstrap VM-Series.
+> **CEL**: Uruchomić Hub VNet, Bastion, Panoramę. Potem przez Bastion wygenerować `vm-auth-key`.
 
-### Krok 1 – Inicjalizacja Terraform
+### Krok 1 – Inicjalizacja i walidacja
 
 ```bash
 cd /Users/mzalewski/TF/azure_ha_project
 terraform init
+terraform validate && echo "✓ validate OK"
 ```
 
-Terraform pobierze providery:
-- `hashicorp/azurerm ~> 3.100`
-- `hashicorp/random ~> 3.5`
-- `hashicorp/null ~> 3.2`
-
-### Krok 2 – Walidacja
-
-```bash
-terraform validate && terraform fmt -recursive
-echo "Validate OK ✓"
-```
-
-### Krok 3 – Deploy Panoramy i sieci
+### Krok 2 – Deploy Panoramy, sieci i Bastion huba
 
 ```bash
 terraform apply \
@@ -280,58 +239,65 @@ terraform apply \
   -target=module.panorama
 ```
 
-> ⏱ **Czas**: ~5-8 minut. Tworzy ~25 zasobów (VNety, subnety, NSG, Panorama VM).
+> ⏱ ~8-12 minut. Tworzy ~40 zasobów (VNety, subnety, NSG, NAT GW, Hub Bastion, Panorama VM).
 
-### Krok 4 – Pobierz IP Panoramy i poczekaj na boot
+### Krok 3 – Poczekaj na Panoramę i otwórz Bastion Tunnel (skrypt)
 
 ```bash
-PANORAMA_IP=$(terraform output -raw panorama_public_ip)
-echo "Panorama IP: $PANORAMA_IP"
-
-# Sprawdzaj co 2 min aż do odpowiedzi HTTPS (~10-15 min od uruchomienia VM)
-until curl -sk --connect-timeout 5 https://$PANORAMA_IP -o /dev/null; do
-  echo "$(date): Panorama nie gotowa, czekam 120s..."
-  sleep 120
-done
-echo "✅ Panorama HTTPS dostępna!"
+# Skrypt czeka na VM Running, potem otwiera tunel – NIE ZAMYKAJ!
+chmod +x scripts/check-panorama.sh
+./scripts/check-panorama.sh
 ```
 
-### Krok 5 – Aktywuj licencję Panoramy i wygeneruj VM Auth Key
+**Lub ręcznie** (2 terminale):
 
-1. Otwórz przeglądarkę: `https://<PANORAMA_IP>`
-2. Zaloguj się: `panadmin` / hasło z `terraform.tfvars`
-3. **Aktywacja licencji** (jeśli auth code nie zadziałał z init-cfg):
-   - `Panorama → Licenses → Activate feature using auth code`
-   - Wpisz `panorama_auth_code`
-4. **Wygeneruj VM Auth Key**:
-   - `Panorama → Device Registration Auth Key → Generate`
-   - Ustaw ważność: **8760 hours** (1 rok)
-   - Skopiuj klucz (format: `XXXXXXXXXXXXXXXXXXXXXXXXXXX`)
+```bash
+# Terminal 1 – sprawdź status Panoramy
+az vm get-instance-view -g rg-transit-hub -n vm-panorama \
+  --query "instanceView.statuses[?starts_with(code,'PowerState/')].displayStatus" -o tsv
+# Czekaj na: "VM running"
 
-### Krok 6 – Zaktualizuj `terraform.tfvars`
+# Terminal 1 – otwórz tunel (POZOSTAW OTWARTY)
+az network bastion tunnel \
+  --name bastion-hub \
+  --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.10 \
+  --resource-port 443 \
+  --port 44300
+```
+
+### Krok 4 – Zaloguj się do Panoramy przez tunel
+
+```
+Przeglądarka → https://localhost:44300
+  ⚠️  Zaakceptuj certyfikat self-signed (ADVANCED → Proceed)
+  Login: panadmin | Hasło: z terraform.tfvars
+```
+
+1. **Aktywuj licencję** (jeśli init-cfg nie aktywowało automatycznie):
+   `Panorama → Licenses → Activate feature using auth code`
+
+2. **Wygeneruj VM Auth Key**:
+   `Panorama → Device Registration Auth Key → Generate`
+   Ważność: **8760 hours** → Skopiuj klucz
+
+### Krok 5 – Zaktualizuj `terraform.tfvars`
 
 ```hcl
-# Wklej skopiowany klucz:
-panorama_vm_auth_key = "SKOPIOWANY-VM-AUTH-KEY"
+panorama_vm_auth_key = "SKOPIOWANY-KLUCZ"
 ```
 
 ---
 
-## 🚀 Wdrożenie – Phase 1b (Bootstrap + Firewalle + Spokes)
+## 🚀 Phase 1b – Bootstrap + Firewalle + Spokes
 
-> **CEL**: Wdrożyć resztę infrastruktury – VM-Series startują z prawidłowym bootstrap zawierającym `vm-auth-key`.
+> **CEL**: Wdrożyć resztę infrastruktury – FW startują z `vm-auth-key` w bootstrap i auto-rejestrują się w Panoramie.
 
-### Krok 1 – Wdróż bootstrap (zaktualizuje init-cfg.txt z vm-auth-key)
+### Krok 1 – Wdróż bootstrap (init-cfg z vm-auth-key)
 
 ```bash
 terraform apply -target=module.bootstrap
 ```
-
-> ⏱ ~1-2 min. Tworzy Storage Account i uploady bootstrap blobs.
-
-**Jeśli Azure Policy blokuje Storage Account** (błąd 403/deny):
-- Upewnij się że `terraform_operator_ips` zawiera Twój publiczny IP
-- Sprawdź: `curl -s https://api.ipify.org`
 
 ### Krok 2 – Wdróż całą pozostałą infrastrukturę
 
@@ -345,21 +311,7 @@ terraform apply \
   -target=module.spoke2_dc
 ```
 
-> ⏱ **Czas**: ~15-25 minut.
->
-> - **VM-Series (FW1, FW2)**: ~5 min deploy + ~15 min bootstrap/PAN-OS boot
-> - **Windows DC**: ~5 min deploy + ~30-45 min AD DS promotion
-> - **Azure Bastion**: ~5-8 min
-
-**Jeśli DC extension timeout** (po 60 min):
-```hcl
-# terraform.tfvars:
-dc_skip_auto_promote = true
-```
-```bash
-terraform apply -target=module.spoke2_dc
-```
-DC jest promowany w tle – extension działało mimo że Terraform przekroczył timeout.
+> ⏱ ~20-30 minut (Bastion Spoke2 + Windows DC najwolniejsze)
 
 ### Krok 3 – Sprawdź outputs
 
@@ -367,36 +319,53 @@ DC jest promowany w tle – extension działało mimo że Terraform przekroczył
 terraform output
 ```
 
-Przykład:
 ```
-apache_server_private_ip     = "10.1.0.4"
-bastion_dns_name             = "bst-xxxx.bastion.azure.com"
-external_lb_public_ip        = "1.2.3.4"
-frontdoor_endpoint_hostname  = "endpoint-panos-app-xxxxx.z01.azurefd.net"
-fw1_management_public_ip     = "5.6.7.8"
-fw2_management_public_ip     = "9.10.11.12"
-internal_lb_private_ip       = "10.0.2.100"
-panorama_public_ip           = "13.14.15.16"
+hub_bastion_name       = "bastion-hub"
+hub_bastion_public_ip  = "X.X.X.X"      ← jedyny publiczny IP do zarządzania
+nat_gateway_public_ip  = "Y.Y.Y.Y"      ← outbound snet-mgmt (licencje, updates)
+external_lb_public_ip  = "Z.Z.Z.Z"      ← ruch aplikacyjny
+fw1_mgmt_private_ip    = "10.0.0.4"
+fw2_mgmt_private_ip    = "10.0.0.5"
+panorama_private_ip    = "10.0.0.10"
+frontdoor_endpoint_hostname = "endpoint-xxx.z01.azurefd.net"
 ```
 
-### Krok 4 – Zweryfikuj że VM-Series zarejestrowały się w Panoramie
+### Krok 4 – Zweryfikuj rejestrację FW w Panoramie
 
-1. Otwórz Panorama: `https://<panorama_public_ip>`
-2. Przejdź do: `Panorama → Managed Devices → Summary`
-3. FW1 (`fw1-transit-hub`) i FW2 (`fw2-transit-hub`) powinny mieć status **Connected** ✅
+```bash
+# Otwórz tunnel do Panoramy (Terminal 1)
+az network bastion tunnel \
+  --name bastion-hub \
+  --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.10 \
+  --resource-port 443 \
+  --port 44300
+```
 
-> Jeśli FW nie pojawiają się po 15 min od zakończenia deploy:
-> - Sprawdź czy `panorama_vm_auth_key` był poprawny
-> - Sprawdź logi bootstrap: w Panorama GUI → `Monitor → System`
-> - Można re-deploying bootstrap: `terraform apply -target=module.bootstrap` (FW musi być zrestartowany)
+```
+# W przeglądarce: https://localhost:44300
+Panorama → Managed Devices → Summary
+FW1 i FW2: Connected ✅
+```
 
 ---
 
-## 🔧 Wdrożenie – Phase 2 (Konfiguracja Panoramy)
+## 🔧 Phase 2 – Konfiguracja Panoramy
 
-> **Poczekaj 15-20 min** od zakończenia Phase 1b – VM-Series potrzebują czasu na bootstrap i rejestrację w Panoramie.
+> **WYMÓG**: Aktywny Bastion Tunnel do Panoramy (Terminal 1) w czasie `terraform apply`!
 
-### Krok 1 – Przygotuj `phase2-panorama-config/terraform.tfvars`
+### Krok 1 – Terminal 1: uruchom Bastion Tunnel (pozostaw otwarty)
+
+```bash
+az network bastion tunnel \
+  --name bastion-hub \
+  --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.10 \
+  --resource-port 443 \
+  --port 44300
+```
+
+### Krok 2 – Terminal 2: przygotuj i uruchom Phase 2
 
 ```bash
 cd phase2-panorama-config
@@ -405,45 +374,123 @@ cp terraform.tfvars.example terraform.tfvars
 
 ```hcl
 # phase2-panorama-config/terraform.tfvars
-panorama_hostname = "<panorama_public_ip>"    # z terraform output (Phase 1)
+panorama_hostname = "127.0.0.1"   # ← przez Bastion Tunnel (localhost)
+panorama_port     = 44300          # ← port tunelu (match --port powyżej)
 panorama_username = "panadmin"
-panorama_password = "<admin_password>"        # to samo co w Phase 1
+panorama_password = "hasło z terraform.tfvars Phase 1"
 
-template_name       = "Transit-VNet-Template"
-template_stack_name = "Transit-VNet-Stack"
-device_group_name   = "Transit-VNet-DG"
-
-trust_subnet_cidr   = "10.0.2.0/24"
-untrust_subnet_cidr = "10.0.1.0/24"
-spoke1_vnet_cidr    = "10.1.0.0/16"
-spoke2_vnet_cidr    = "10.2.0.0/16"
-
-apache_server_ip      = "10.1.0.4"
-external_lb_public_ip = "<external_lb_public_ip>"  # z terraform output (Phase 1)
+external_lb_public_ip = "Z.Z.Z.Z"  # z terraform output (Phase 1)
 ```
 
-### Krok 2 – Deploy konfiguracji Panoramy
-
 ```bash
-cd phase2-panorama-config
 terraform init
 terraform apply
 ```
 
-Terraform skonfiguruje w Panoramie:
-- ✅ Template `Transit-VNet-Template` + Template Stack `Transit-VNet-Stack`
-- ✅ Device Group `Transit-VNet-DG`
-- ✅ Interfejsy: ethernet1/1 (untrust), ethernet1/2 (trust), ethernet1/3 (HA2)
-- ✅ Strefy: `untrust`, `trust`
-- ✅ Virtual Router ze statycznymi trasami do Spoke1, Spoke2, internetu
+Terraform skonfiguruje Panoramę:
+- ✅ Template + Template Stack
+- ✅ Device Group
+- ✅ Interfejsy (ethernet1/1, 1/2, 1/3)
+- ✅ Strefy (untrust, trust)
+- ✅ Virtual Router + trasy statyczne
 - ✅ NAT rules: DNAT HTTP/HTTPS → Apache 10.1.0.4, SNAT outbound
-- ✅ Security rules: Allow Inbound Web, East-West, Outbound, Deny-All
+- ✅ Security Policy
 
-### Krok 3 – Commit i Push konfiguracji w Panoramie
+### Krok 3 – Commit & Push w Panoramie
 
-1. W Panorama GUI kliknij **Commit → Commit and Push**
-2. Wybierz: Template Stack + Device Group → **Push Now**
-3. Poczekaj na **Push Success** na FW1 i FW2
+```
+Panorama GUI → Commit → Commit and Push → Template Stack + Device Group → Push Now
+Czekaj na Push Success na FW1 i FW2
+```
+
+---
+
+## 🔐 Dostęp przez Azure Bastion (SSH + Port Forward)
+
+### SSH do firewalli (PAN-OS CLI)
+
+```bash
+# SSH do FW1 (Active)
+az network bastion ssh \
+  --name bastion-hub \
+  --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.4 \
+  --auth-type password \
+  --username panadmin
+
+# SSH do FW2 (Passive)
+az network bastion ssh \
+  --name bastion-hub \
+  --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.5 \
+  --auth-type password \
+  --username panadmin
+
+# SSH do Panoramy
+az network bastion ssh \
+  --name bastion-hub \
+  --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.10 \
+  --auth-type password \
+  --username panadmin
+```
+
+### Port forwarding – HTTPS GUI (Panorama i firewalle)
+
+Każdy `az network bastion tunnel` **blokuje terminal** – uruchom w osobnym oknie.
+
+```bash
+# ── Terminal A: Panorama GUI → https://localhost:44300 ──────────────
+az network bastion tunnel \
+  --name bastion-hub \
+  --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.10 \
+  --resource-port 443 \
+  --port 44300
+
+# ── Terminal B: FW1 GUI → https://localhost:44301 ────────────────────
+az network bastion tunnel \
+  --name bastion-hub \
+  --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.4 \
+  --resource-port 443 \
+  --port 44301
+
+# ── Terminal C: FW2 GUI → https://localhost:44302 ────────────────────
+az network bastion tunnel \
+  --name bastion-hub \
+  --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.5 \
+  --resource-port 443 \
+  --port 44302
+```
+
+| URL | Cel | Co otwiera |
+|-----|-----|-----------|
+| `https://localhost:44300` | Panorama | Panorama Management GUI |
+| `https://localhost:44301` | FW1 | PAN-OS GUI Firewall 1 (Active) |
+| `https://localhost:44302` | FW2 | PAN-OS GUI Firewall 2 (Passive) |
+
+> **⚠️ Certyfikat self-signed**: przeglądarka pokaże ostrzeżenie.
+> Kliknij **Advanced → Proceed to localhost (unsafe)** lub dodaj wyjątek.
+
+### RDP do Domain Controller (przez Spoke2 Bastion)
+
+```bash
+# Przez Azure Portal (prościej):
+# Portal → Virtual Machines → vm-spoke2-dc → Connect → Bastion
+# Login: dcadmin | Hasło: dc_admin_password z terraform.tfvars
+
+# Przez CLI (port forwarding na localhost:33389):
+DC_ID=$(az vm show -g rg-spoke2-dc -n vm-spoke2-dc --query id -o tsv)
+az network bastion tunnel \
+  --name bastion-spoke2 \
+  --resource-group rg-spoke2-dc \
+  --target-resource-id "$DC_ID" \
+  --resource-port 3389 \
+  --port 33389
+# Potem: mstsc /v:localhost:33389  (Windows) lub rdesktop/xfreerdp (Linux/Mac)
+```
 
 ---
 
@@ -452,247 +499,180 @@ Terraform skonfiguruje w Panoramie:
 ### Test 1 – Hello World via Azure Front Door
 
 ```bash
-AFD_HOSTNAME=$(terraform output -raw frontdoor_endpoint_hostname 2>/dev/null || echo "BRAK")
-curl -s "https://$AFD_HOSTNAME" | grep "HELLO WORLD" && echo "✅ AFD OK" || echo "❌ AFD FAIL"
+AFD=$(terraform output -raw frontdoor_endpoint_hostname)
+curl -s "https://$AFD" | grep "HELLO WORLD" && echo "✅ AFD OK"
 ```
 
-### Test 2 – Bezpośredni test External LB
+### Test 2 – External LB bezpośrednio
 
 ```bash
-EXT_LB_IP=$(terraform output -raw external_lb_public_ip)
-curl -s --connect-timeout 10 http://$EXT_LB_IP | grep "HELLO WORLD" && echo "✅ Ext LB OK"
+ELB=$(terraform output -raw external_lb_public_ip)
+curl -s --connect-timeout 10 "http://$ELB" | grep "HELLO WORLD" && echo "✅ Ext LB OK"
 ```
 
 ### Test 3 – Panorama zarządzanie FW
 
 ```
-Panorama GUI → Managed Devices → Summary
-FW1 i FW2: Connected ✅, Policy Sync: In Sync ✅
+Tunel: az network bastion tunnel ... --port 44300
+GUI: https://localhost:44300
+Panorama → Managed Devices → FW1 + FW2: Connected ✅, In Sync ✅
 ```
 
-### Test 4 – DC przez Azure Bastion
-
-1. Azure Portal → Virtual Machines → vm-spoke2-dc → Connect → Bastion
-2. Login: `dcadmin` / hasło z tfvars
-3. W PowerShell: `Get-ADDomain | Select Name, DomainMode` → powinno zwrócić `panw.labs`
-
-### Test 5 – East-West (Spoke1 → Spoke2)
+### Test 4 – East-West przez Monitor
 
 ```bash
-# Z vm-spoke1-apache (przez SSH z zarządzania lub bastion):
-ping 10.2.0.4  # DC w Spoke2
-# Sprawdź logi w: PAN-OS Monitor → Traffic → filtr "addr.dst in 10.2.0.0/16"
+# SSH do FW1 przez Bastion, wykonaj ping test
+az network bastion ssh --name bastion-hub --resource-group rg-transit-hub \
+  --target-ip-address 10.0.0.4 --auth-type password --username panadmin
+# W PAN-OS CLI:
+# > ping host 10.2.0.4 source 10.0.2.4
+```
+
+### Test 5 – DC przez Spoke2 Bastion
+
+```bash
+# Azure Portal → vm-spoke2-dc → Connect → Bastion
+# PowerShell: Get-ADDomain | Select Name, DomainMode
+# Oczekiwany wynik: panw.labs
 ```
 
 ---
 
 ## 🔧 Rozwiązywanie problemów
 
-### Problem 1: Storage Account 403 – "Azure Policy: Deny"
+### Problem 1: Storage Account 403
 
-**Objaw**: `Error: performing CreateOrUpdate on Storage Account: 403 RequestDisallowed by Policy`
-
-**Przyczyna**: Azure Policy wymaga `network_rules.default_action = "Deny"`. Terraform operator nie ma dostępu do uploadu blobów.
-
-**Rozwiązanie**:
 ```bash
-# Znajdź swój publiczny IP
-curl -s https://api.ipify.org
-
+curl -s https://api.ipify.org  # sprawdź aktualny IP
 # Dodaj do terraform.tfvars:
-terraform_operator_ips = ["TWÓJ.IP"]
-
+# terraform_operator_ips = ["NOWY.IP"]
 terraform apply -target=module.bootstrap
 ```
 
----
+### Problem 2: ImageVersionDeprecated
 
-### Problem 2: ImageVersionDeprecated – "11.1.4 is deprecated"
-
-**Objaw**: `unexpected status 404 with error: ImageVersionDeprecated`
-
-**Rozwiązanie**: Użyj `"latest"` (domyślne od tej wersji projektu):
 ```hcl
-pan_os_version = "latest"
+pan_os_version = "latest"  # domyślne w tym projekcie
 ```
 
-Sprawdź dostępne wersje:
+### Problem 3: State drift – "already exists"
+
 ```bash
-az vm image list --publisher paloaltonetworks --offer vmseries-flex \
-  --sku byol --all --query "[].version" -o tsv | sort -V | tail -10
-```
-
----
-
-### Problem 3: State drift – "already exists – needs to be imported"
-
-**Objaw**: `Error: A resource with the ID "..." already exists`
-
-**Przyczyna**: Zasób istnieje w Azure ale nie ma go w Terraform state (częściowy apply, timeout).
-
-**Rozwiązanie – automatyczny skrypt**:
-```bash
-chmod +x scripts/fix-drift.sh
-./scripts/fix-drift.sh
+chmod +x scripts/fix-drift.sh && ./scripts/fix-drift.sh
 terraform apply
 ```
 
-**Rozwiązanie – ręczne**:
-```bash
-# Dla dc_promote extension:
-SUB=$(az account show --query id -o tsv)
-terraform import module.spoke2_dc.azurerm_virtual_machine_extension.dc_promote[0] \
-  "/subscriptions/$SUB/resourceGroups/rg-spoke2-dc/providers/Microsoft.Compute/virtualMachines/vm-spoke2-dc/extensions/promote-to-dc"
-```
+### Problem 4: DC extension timeout
 
----
-
-### Problem 4: External LB – "All Ports rule not allowed on public LB"
-
-**Objaw**: `Error: The property 'AllocationMethod' is not valid ... AllPorts is not supported`
-
-**Status**: ✅ NAPRAWIONE w tej wersji projektu.
-
-External LB używa reguł TCP 80 i TCP 443 (nie HA Ports).
-Internal LB nadal używa HA Ports (dozwolone dla internal LB).
-
----
-
-### Problem 5: DC extension timeout
-
-**Objaw**: `context deadline exceeded` po 60+ minutach
-
-**Przyczyna**: AD DS promotion zajmuje 30-45 min. Extension jest uruchamiany, DC jest promowany, ale TF może przekroczyć timeout.
-
-**Rozwiązanie**:
 ```hcl
-# terraform.tfvars – jeśli extension już istnieje w Azure:
-dc_skip_auto_promote = true
+dc_skip_auto_promote = true  # jeśli extension już uruchomione w tle
 ```
+
+### Problem 5: FW nie rejestruje się w Panoramie
+
+1. Sprawdź czy `panorama_vm_auth_key` nie jest pusty w tfvars
+2. Zrestartuj FW po aktualizacji bootstrap:
+   ```bash
+   az vm restart -g rg-transit-hub -n vm-panos-fw1
+   az vm restart -g rg-transit-hub -n vm-panos-fw2
+   ```
+3. Sprawdź w Panoramie: `Monitor → System` – logi rejestracji
+
+### Problem 6: Bastion Tunnel – "Tunnel is not available"
+
 ```bash
-terraform apply -target=module.spoke2_dc
+# Sprawdź czy Bastion Standard jest wdrożony
+az network bastion show -g rg-transit-hub -n bastion-hub --query "sku.name" -o tsv
+# Musi zwrócić: "Standard"
 
-# Zweryfikuj DC przez Bastion:
-# Get-ADDomain | Select Name, DomainMode
+# Sprawdź rozszerzenie CLI
+az extension list --query "[?name=='bastion'].version" -o tsv
+az extension update --name bastion
 ```
 
----
+### Problem 7: Phase 2 – "connection refused 127.0.0.1:44300"
 
-### Problem 6: VM-Series nie rejestruje się w Panoramie
-
-**Objaw**: FW nie pojawia się w Panorama → Managed Devices po 20+ min
-
-**Możliwe przyczyny i rozwiązania**:
-
-1. **Pusty `panorama_vm_auth_key`** podczas tworzenia VM:
-   - Dodaj klucz do tfvars: `panorama_vm_auth_key = "KLUCZ"`
-   - Zaktualizuj bootstrap: `terraform apply -target=module.bootstrap`
-   - FW musi być **zrestartowany** by ponownie odczytał bootstrap
-
-2. **NSG blokuje ruch Panorama ↔ FW** (port 3978):
-   - Sprawdź `nsg-mgmt` – powinien zezwalać na ruch w obrębie `snet-mgmt`
-   - Panorama i FW są w tej samej podsieci (`10.0.0.0/24`)
-
-3. **Nieprawidłowy klucz lub klucz wygasł**:
-   - Wygeneruj nowy w: `Panorama → Device Registration Auth Key`
-   - Sprawdź datę ważności klucza
-
----
-
-### Problem 7: Marketplace agreement – "already exists"
-
-**Status**: ✅ NAPRAWIONE w tej wersji projektu.
-
-Zamiast `azurerm_marketplace_agreement` (który fails gdy umowa już istnieje) używamy `null_resource` z `az vm image terms accept` – komenda jest idempotentna.
+```
+Tunel Bastion MUSI być aktywny w osobnym terminalu przed terraform apply Phase 2!
+Sprawdź czy terminal z az network bastion tunnel nadal działa.
+```
 
 ---
 
 ## 🔐 Bezpieczeństwo
 
-### Zalecenia produkcyjne
+### Architektura Zero-Trust (wbudowana)
 
-1. **NSG Management** – ogranicz `source_address_prefix` do IP jump hosta/VPN:
-   ```
-   # modules/networking/main.tf → azurerm_network_security_group.mgmt
-   source_address_prefix = "YOUR.JUMP.HOST.IP/32"
-   ```
+- ✅ **Brak publicznych IP** na VM zarządzania (Panorama, FW1, FW2)
+- ✅ **Hub Azure Bastion Standard** – jedyny punkt wejścia do zarządzania
+- ✅ **NAT Gateway** – kontrolowany ruch wychodzący z snet-mgmt
+- ✅ **NSG snet-mgmt** – SSH/HTTPS tylko z `10.0.4.0/26` (Bastion subnet)
+- ✅ **FW↔Panorama** – komunikacja tylko prywatną siecią (10.0.0.x)
+- ✅ **Storage Account** – `network_rules default_action=Deny`, dostęp przez Service Endpoint
 
-2. **Hasła i auth codes** – użyj zmiennych środowiskowych zamiast `terraform.tfvars`:
-   ```bash
-   export TF_VAR_admin_password="YourPassword"
-   export TF_VAR_fw_auth_code="xxxx-xxxx"
-   export TF_VAR_panorama_auth_code="yyyy-yyyy"
-   ```
+### Dodatkowe zalecenia produkcyjne
 
-3. **Remote State Backend** – nie trzymaj state lokalnie:
+1. **Remote State** w Azure Storage Account:
    ```hcl
-   # providers.tf → dodaj backend block
    backend "azurerm" {
      resource_group_name  = "rg-terraform-state"
      storage_account_name = "stterraformstate"
      container_name       = "tfstate"
-     key                  = "azure-transit-vnet-ha.tfstate"
+     key                  = "transit-vnet-ha.tfstate"
    }
    ```
 
-4. **`terraform.tfvars`** – jest w `.gitignore`. Nigdy nie usuwaj tego wpisu.
+2. **Hasła i auth codes** przez zmienne środowiskowe:
+   ```bash
+   export TF_VAR_admin_password="YourPassword"
+   export TF_VAR_fw_auth_code="xxxx"
+   export TF_VAR_panorama_auth_code="yyyy"
+   ```
 
-5. **Panorama dostęp** – ogranicz NSG dla Panorama public IP do znanych adminów.
+3. **`terraform.tfvars`** jest w `.gitignore` – nigdy nie usuwaj tego wpisu.
 
-6. **`terraform_operator_ips`** – odśwież IP gdy zmienisz lokalizację (np. praca zdalna).
+4. **Panorama i FW access** – ograniczone do Hub Bastion. Jeśli potrzeba dodatkowego dostępu z VPN, dodaj odpowiednie reguły NSG na `snet-mgmt`.
 
 ---
 
-## 🗂 Zasoby Azure
+## 🗂 Zasoby Azure (~70 obiektów)
 
 <details>
-<summary><b>Kliknij, aby rozwinąć pełną listę zasobów (~65 obiektów Azure)</b></summary>
+<summary><b>Kliknij, aby rozwinąć pełną listę zasobów</b></summary>
 
-| Moduł | Typ zasobu | Opis | Ilość |
-|-------|-----------|------|:-----:|
-| networking | `azurerm_virtual_network` | vnet-transit-hub, vnet-spoke1, vnet-spoke2 | 3 |
-| networking | `azurerm_subnet` | snet-mgmt, snet-untrust, snet-trust, snet-ha, snet-spoke1-wl, snet-spoke2-wl, AzureBastionSubnet | 7 |
-| networking | `azurerm_network_security_group` | nsg-mgmt, nsg-untrust, nsg-trust, nsg-ha, nsg-spoke1, nsg-bastion-spoke2, nsg-spoke2 | 7 |
-| networking | `azurerm_subnet_network_security_group_association` | – | 6 |
-| networking | `azurerm_virtual_network_peering` | hub↔spoke1 (x2), hub↔spoke2 (x2) | 4 |
-| networking | `azurerm_public_ip` | pip-external-lb, pip-fw1-mgmt, pip-fw2-mgmt | 3 |
-| panorama | `azurerm_public_ip` | pip-panorama-mgmt | 1 |
-| panorama | `azurerm_network_interface` | nic-panorama-mgmt | 1 |
-| panorama | `azurerm_linux_virtual_machine` | vm-panorama (Standard_D4s_v3) | 1 |
-| panorama | `azurerm_managed_disk` | disk-panorama-logs (2 TB) | 1 |
-| panorama | `azurerm_virtual_machine_data_disk_attachment` | – | 1 |
-| panorama | `null_resource` | accept_panorama_terms (az cli, idempotent) | 1 |
-| bootstrap | `random_string` | sa_suffix | 1 |
-| bootstrap | `azurerm_storage_account` | sapanosbstrap\<rnd\> (network_rules=Deny) | 1 |
-| bootstrap | `azurerm_storage_container` | bootstrap | 1 |
-| bootstrap | `azurerm_storage_blob` | fw1/config/init-cfg.txt, fw1/license/authcodes, fw1/software/.placeholder, fw1/content/.placeholder (i analogicznie fw2) | 8 |
-| bootstrap | `azurerm_user_assigned_identity` | id-fw-bootstrap | 1 |
-| bootstrap | `azurerm_role_assignment` | Storage Blob Data Reader | 1 |
-| firewall | `null_resource` | accept_panos_terms (az cli, idempotent) | 1 |
-| firewall | `azurerm_availability_set` | avset-panos-fw-ha | 1 |
-| firewall | `azurerm_network_interface` | nic-fw1-mgmt/untrust/trust/ha, nic-fw2-mgmt/untrust/trust/ha | 8 |
-| firewall | `azurerm_linux_virtual_machine` | vm-panos-fw1, vm-panos-fw2 (Standard_D8s_v3) | 2 |
-| firewall | `azurerm_network_interface_backend_address_pool_association` | fw1+fw2 untrust→Ext LB, fw1+fw2 trust→Int LB | 4 |
-| loadbalancer | `azurerm_lb` | lb-external-panos (public), lb-internal-panos (private) | 2 |
-| loadbalancer | `azurerm_lb_backend_address_pool` | – | 2 |
-| loadbalancer | `azurerm_lb_probe` | probe-http (Ext), probe-internal (Int) | 2 |
-| loadbalancer | `azurerm_lb_rule` | rule-http-inbound (TCP/80), rule-https-inbound (TCP/443), rule-haports-internal | 3 |
-| loadbalancer | `azurerm_lb_outbound_rule` | outbound-snat | 1 |
-| frontdoor | `azurerm_cdn_frontdoor_profile` | afd-panos-transit (Premium) | 1 |
-| frontdoor | `azurerm_cdn_frontdoor_endpoint` | endpoint-panos-app | 1 |
-| frontdoor | `azurerm_cdn_frontdoor_origin_group` | og-external-lb | 1 |
-| frontdoor | `azurerm_cdn_frontdoor_origin` | origin-external-lb | 1 |
-| frontdoor | `azurerm_cdn_frontdoor_route` | route-http | 1 |
-| routing | `azurerm_route_table` | rt-spoke1-workload, rt-spoke2-workload | 2 |
-| routing | `azurerm_route` | default→fw + spoke2→fw (Spoke1), default→fw + spoke1→fw (Spoke2) | 4 |
-| routing | `azurerm_subnet_route_table_association` | – | 2 |
-| spoke1_app | `azurerm_network_interface` | nic-spoke1-apache | 1 |
-| spoke1_app | `azurerm_linux_virtual_machine` | vm-spoke1-apache (Ubuntu 22.04, Apache2) | 1 |
-| spoke2_dc | `azurerm_network_interface` | nic-spoke2-dc | 1 |
-| spoke2_dc | `azurerm_windows_virtual_machine` | vm-spoke2-dc (WS 2022) | 1 |
-| spoke2_dc | `azurerm_virtual_machine_extension` | promote-to-dc (count=0 gdy skip_auto_promote=true) | 0–1 |
-| spoke2_dc | `azurerm_public_ip` | pip-bastion-spoke2 | 1 |
-| spoke2_dc | `azurerm_bastion_host` | bastion-spoke2 (Standard SKU) | 1 |
+| Moduł | Zasób | Ilość |
+|-------|-------|:-----:|
+| networking | VNet (hub + 2x spoke) | 3 |
+| networking | Subnet (mgmt, untrust, trust, ha, hub-bastion, spoke1-wl, spoke2-wl, spoke2-bastion) | 8 |
+| networking | NSG (mgmt, untrust, trust, ha, hub-bastion, spoke1-wl, spoke2-bastion, spoke2-wl) | 8 |
+| networking | NSG Association | 8 |
+| networking | VNet Peering (hub↔spoke1 x2, hub↔spoke2 x2) | 4 |
+| networking | Public IP: pip-external-lb, pip-bastion-hub, pip-nat-gateway-mgmt | 3 |
+| networking | NAT Gateway: natgw-mgmt | 1 |
+| networking | Azure Bastion: bastion-hub (Standard, tunneling=true) | 1 |
+| panorama | nic-panorama-mgmt (private only) | 1 |
+| panorama | vm-panorama (Standard_D4s_v3) | 1 |
+| panorama | disk-panorama-logs (2 TB) | 1 |
+| panorama | null_resource: accept_panorama_terms | 1 |
+| bootstrap | Storage Account (network_rules=Deny) | 1 |
+| bootstrap | bootstrap container + 8 blobs (fw1 + fw2) | 9 |
+| bootstrap | User Assigned Managed Identity | 1 |
+| bootstrap | Role Assignment (Storage Blob Data Reader) | 1 |
+| firewall | null_resource: accept_panos_terms | 1 |
+| firewall | Availability Set | 1 |
+| firewall | NICs: 4x FW1 + 4x FW2 (private only) | 8 |
+| firewall | VM: vm-panos-fw1, vm-panos-fw2 (D8s_v3) | 2 |
+| firewall | LB backend associations: 4x | 4 |
+| loadbalancer | External LB (public, TCP 80+443) | 1 |
+| loadbalancer | Internal LB (private, HA Ports) | 1 |
+| loadbalancer | Backend pools, probes, rules, outbound rule | 7 |
+| frontdoor | AFD Premium, Endpoint, Origin Group, Origin, Route | 5 |
+| routing | Route Tables (spoke1 + spoke2) | 2 |
+| routing | Routes (4 trasy) + Associations | 6 |
+| spoke1_app | nic + vm-spoke1-apache (Ubuntu 22.04) | 2 |
+| spoke2_dc | nic + vm-spoke2-dc (WS 2022) | 2 |
+| spoke2_dc | vm extension: promote-to-dc (AD DS) | 0-1 |
+| spoke2_dc | Public IP Bastion Spoke2 + Bastion Host | 2 |
 
 </details>
 
@@ -702,35 +682,34 @@ Zamiast `azurerm_marketplace_agreement` (który fails gdy umowa już istnieje) u
 
 ```
 azure-transit-vnet-ha/
-├── providers.tf                    # Terraform + azurerm (hub/spoke1/spoke2) + null provider
-├── variables.tf                    # Globalne zmienne wejściowe
-├── main.tf                         # Root module – wywołania modułów
-├── outputs.tf                      # Wyjścia (IPs, hostnames, itd.)
-├── terraform.tfvars                # ⚠️ WYPEŁNIJ PRZED DEPLOY (NIE commituj do git!)
-├── terraform.tfvars.example        # Szablon tfvars – bezpieczny do commitowania
-├── .gitignore                      # Wyklucza terraform.tfvars, .terraform/, tfstate
-├── README.md                       # Ten plik
+├── providers.tf                    # Terraform + azurerm (hub/spoke1/spoke2)
+├── variables.tf                    # Globalne zmienne
+├── main.tf                         # Root module
+├── outputs.tf                      # Wyjścia (prywatne IPs, bastion info)
+├── terraform.tfvars                # ⚠️ NIE commituj do git
+├── terraform.tfvars.example        # Szablon
+├── .gitignore
+├── README.md
 ├── scripts/
-│   ├── fix-drift.sh                # Naprawa state drift (terraform import)
-│   └── check-panorama.sh          # Skrypt czekający na gotowość Panoramy
-└── modules/
-    ├── networking/                 # VNety, subnety, NSG, peering, Public IPs
-    ├── panorama/                   # VM Panorama, 256 GB OS, 2TB data disk
-    ├── bootstrap/                  # Storage Account, Managed Identity, bootstrap blobs
-    ├── firewall/                   # 2x VM-Series HA, Availability Set
-    ├── loadbalancer/               # External LB (TCP 80/443) + Internal LB (HA Ports)
-    ├── frontdoor/                  # Azure Front Door Premium
-    ├── routing/                    # UDR Route Tables
-    ├── spoke1_app/                 # Ubuntu VM + Apache2 Hello World
-    ├── spoke2_dc/                  # Windows Server 2022 DC + Azure Bastion
-    └── panorama_config/            # panos provider: Template, DG, Zones, NAT, Security
-
-phase2-panorama-config/             # OSOBNY katalog dla Phase 2 (panos provider)
-├── providers.tf                    # panos provider konfiguracja
-├── variables.tf
-├── main.tf
-├── outputs.tf
-└── terraform.tfvars.example
+│   ├── check-panorama.sh           # Czeka na Panoramę + otwiera Bastion Tunnel
+│   └── fix-drift.sh                # Naprawa state drift
+├── modules/
+│   ├── networking/                 # Hub VNet, Bastion, NAT GW, Spokes, NSG
+│   ├── panorama/                   # VM Panorama (private only, NAT GW outbound)
+│   ├── bootstrap/                  # Storage Account + blobs + Managed Identity
+│   ├── firewall/                   # 2x VM-Series HA (private only)
+│   ├── loadbalancer/               # External LB (TCP 80/443) + Internal LB (HA)
+│   ├── frontdoor/                  # Azure Front Door Premium
+│   ├── routing/                    # UDR Spoke1 + Spoke2
+│   ├── spoke1_app/                 # Ubuntu + Apache2
+│   ├── spoke2_dc/                  # Windows DC + Spoke2 Bastion
+│   └── panorama_config/            # panos provider resources
+└── phase2-panorama-config/         # OSOBNY katalog Phase 2
+    ├── providers.tf                # panos provider (przez Bastion tunnel)
+    ├── variables.tf                # panorama_hostname=127.0.0.1, port=44300
+    ├── main.tf
+    ├── outputs.tf
+    └── terraform.tfvars.example
 ```
 
 ---
@@ -739,18 +718,18 @@ phase2-panorama-config/             # OSOBNY katalog dla Phase 2 (panos provider
 
 - [Palo Alto Networks: Azure Transit VNet Deployment Guide](https://www.paloaltonetworks.com/apps/pan/public/downloadResource?pagePath=/content/pan/en_US/resources/guides/azure-transit-vnet-deployment-guide)
 - [VM-Series Bootstrap on Azure](https://docs.paloaltonetworks.com/vm-series/11-1/vm-series-deployment/bootstrap-the-vm-series-firewall/bootstrap-the-vm-series-firewall-in-azure)
+- [Azure Bastion – Native Client Support](https://learn.microsoft.com/azure/bastion/native-client)
+- [az network bastion tunnel](https://learn.microsoft.com/cli/azure/network/bastion#az-network-bastion-tunnel)
 - [Azure Standard Load Balancer](https://docs.microsoft.com/azure/load-balancer/)
-- [Azure Front Door Premium](https://docs.microsoft.com/azure/frontdoor/)
 - [Terraform panos Provider](https://registry.terraform.io/providers/PaloAltoNetworks/panos/latest/docs)
-- [Terraform azurerm Provider](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs)
 
 ---
 
 ## 📄 Licencja
 
-Projekt dostępny na licencji MIT. Szczegóły w pliku [LICENSE](LICENSE).
+MIT. Szczegóły: [LICENSE](LICENSE).
 
 ---
 
 *Azure Transit VNet – VM-Series Active/Passive HA Reference Architecture*
-*Palo Alto Networks | Terraform | Azure*
+*Zero-Trust Management via Azure Bastion | Palo Alto Networks | Terraform | Azure*

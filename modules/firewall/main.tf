@@ -54,7 +54,9 @@ resource "azurerm_availability_set" "fw_avset" {
 # FW1 - Network Interfaces
 ###############################################################################
 
-# NIC0 - Management (primary, with public IP for out-of-band management)
+# NIC0 - Management (primary)
+# UWAGA: Brak publicznego IP – dostęp wyłącznie przez Hub Azure Bastion
+# Wychodząca komunikacja (updates, licencje) przez NAT Gateway na snet-mgmt
 resource "azurerm_network_interface" "fw1_mgmt" {
   name                = "nic-fw1-mgmt"
   location            = var.location
@@ -66,7 +68,6 @@ resource "azurerm_network_interface" "fw1_mgmt" {
     subnet_id                     = var.mgmt_subnet_id
     private_ip_address_allocation = "Static"
     private_ip_address            = var.fw1_mgmt_ip
-    public_ip_address_id          = var.fw1_mgmt_public_ip_id
     primary                       = true
   }
 }
@@ -128,7 +129,7 @@ resource "azurerm_network_interface" "fw1_ha" {
 # FW2 - Network Interfaces
 ###############################################################################
 
-# NIC0 - Management
+# NIC0 - Management (private only – dostęp przez Hub Azure Bastion)
 resource "azurerm_network_interface" "fw2_mgmt" {
   name                = "nic-fw2-mgmt"
   location            = var.location
@@ -140,7 +141,6 @@ resource "azurerm_network_interface" "fw2_mgmt" {
     subnet_id                     = var.mgmt_subnet_id
     private_ip_address_allocation = "Static"
     private_ip_address            = var.fw2_mgmt_ip
-    public_ip_address_id          = var.fw2_mgmt_public_ip_id
     primary                       = true
   }
 }

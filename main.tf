@@ -169,9 +169,6 @@ module "firewall" {
   trust_subnet_id   = module.networking.trust_subnet_id
   ha_subnet_id      = module.networking.ha_subnet_id
 
-  fw1_mgmt_public_ip_id = module.networking.fw1_mgmt_public_ip_id
-  fw2_mgmt_public_ip_id = module.networking.fw2_mgmt_public_ip_id
-
   external_lb_backend_pool_id = module.loadbalancer.external_lb_backend_pool_id
   internal_lb_backend_pool_id = module.loadbalancer.internal_lb_backend_pool_id
 

@@ -25,19 +25,9 @@ resource "null_resource" "accept_panorama_terms" {
 }
 
 ###############################################################################
-# Public IP for Panorama Management
-###############################################################################
-resource "azurerm_public_ip" "panorama" {
-  name                = "pip-panorama-mgmt"
-  location            = var.location
-  resource_group_name = var.resource_group_name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  tags                = var.tags
-}
-
-###############################################################################
 # Network Interface
+# UWAGA: Brak publicznego IP – dostęp wyłącznie przez Hub Azure Bastion
+# Wychodząca komunikacja Internetu (licencje, updates) przez NAT Gateway
 ###############################################################################
 resource "azurerm_network_interface" "panorama" {
   name                = "nic-panorama-mgmt"
@@ -50,7 +40,6 @@ resource "azurerm_network_interface" "panorama" {
     subnet_id                     = var.mgmt_subnet_id
     private_ip_address_allocation = "Static"
     private_ip_address            = var.panorama_private_ip
-    public_ip_address_id          = azurerm_public_ip.panorama.id
     primary                       = true
   }
 }

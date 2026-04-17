@@ -26,6 +26,10 @@ locals {
   trust_subnet_cidr   = cidrsubnet(var.transit_vnet_address_space, 8, 2) # 10.0.2.0/24
   ha_subnet_cidr      = cidrsubnet(var.transit_vnet_address_space, 8, 3) # 10.0.3.0/24
 
+  # Hub AzureBastionSubnet: /26 minimum, using 10.0.4.0/26
+  # cidrsubnet("10.0.0.0/16", 10, 16) = 10.0.4.0/26
+  hub_bastion_subnet_cidr = cidrsubnet(var.transit_vnet_address_space, 10, 16) # 10.0.4.0/26
+
   spoke1_workload_cidr = cidrsubnet(var.spoke1_vnet_address_space, 8, 0) # 10.1.0.0/24
   spoke2_workload_cidr = cidrsubnet(var.spoke2_vnet_address_space, 8, 0) # 10.2.0.0/24
 }
@@ -80,40 +84,44 @@ resource "azurerm_subnet" "ha" {
 # Network Security Groups
 ###############################################################################
 
-# Management NSG - restrict to SSH/HTTPS for admin access
-# NOTE: In production, restrict source_address_prefix to admin jump-host or VPN range
+# Management NSG
+# Dostęp SSH (22) i HTTPS (443) WYŁĄCZNIE z AzureBastionSubnet Huba (10.0.4.0/26)
+# Brak publicznych IP na VM – żaden ruch z Internetu nie dociera do tej podsieci
 resource "azurerm_network_security_group" "mgmt" {
   name                = "nsg-mgmt"
   location            = var.location
   resource_group_name = var.hub_resource_group_name
   tags                = var.tags
 
+  # SSH – tylko z Hub Bastion subnet (admin az network bastion ssh / tunnel)
   security_rule {
-    name                       = "Allow-SSH-Inbound"
+    name                       = "Allow-SSH-From-HubBastion"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "22"
-    source_address_prefix      = "*" # RESTRICT IN PRODUCTION
+    source_address_prefix      = local.hub_bastion_subnet_cidr # 10.0.4.0/26
     destination_address_prefix = "*"
   }
 
+  # HTTPS GUI – tylko z Hub Bastion subnet (az network bastion tunnel port 443)
   security_rule {
-    name                       = "Allow-HTTPS-Inbound"
+    name                       = "Allow-HTTPS-From-HubBastion"
     priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "443"
-    source_address_prefix      = "*" # RESTRICT IN PRODUCTION
+    source_address_prefix      = local.hub_bastion_subnet_cidr # 10.0.4.0/26
     destination_address_prefix = "*"
   }
 
+  # HA1 heartbeat – ruch między Panoramą i firewallami w tej samej podsieci
   security_rule {
-    name                       = "Allow-HA1-Inbound"
+    name                       = "Allow-HA1-MgmtSubnet-Internal"
     priority                   = 120
     direction                  = "Inbound"
     access                     = "Allow"
@@ -124,6 +132,7 @@ resource "azurerm_network_security_group" "mgmt" {
     destination_address_prefix = local.mgmt_subnet_cidr
   }
 
+  # Odmów całego pozostałego ruchu przychodzącego z Internetu
   security_rule {
     name                       = "Deny-All-Inbound"
     priority                   = 4096
@@ -273,7 +282,7 @@ resource "azurerm_subnet_network_security_group_association" "ha" {
 # Public IP Addresses
 ###############################################################################
 
-# External Load Balancer Public IP
+# External Load Balancer Public IP (inbound traffic – aplikacja przez AFD)
 resource "azurerm_public_ip" "external_lb" {
   name                = "pip-external-lb"
   location            = var.location
@@ -284,9 +293,173 @@ resource "azurerm_public_ip" "external_lb" {
   tags                = var.tags
 }
 
-# FW1 Management Public IP
-resource "azurerm_public_ip" "fw1_mgmt" {
-  name                = "pip-fw1-mgmt"
+# UWAGA: Brak publicznych IP dla Panoramy i firewalli!
+# Zarządzanie odbywa się WYŁĄCZNIE przez Hub Azure Bastion (poniżej).
+# FW → Panorama komunikacja: prywatne IP (10.0.0.4 → 10.0.0.10)
+
+###############################################################################
+# NAT Gateway dla snet-mgmt
+# Zapewnia wychodzący dostęp do Internetu dla Panoramy i FW (eth0) bez PIP:
+#   - Aktywacja licencji Panoramy (updates.paloaltonetworks.com)
+#   - Pobieranie aktualizacji content/app przez management interface FW
+###############################################################################
+
+resource "azurerm_public_ip" "nat_gateway_mgmt" {
+  name                = "pip-nat-gateway-mgmt"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  zones               = ["1"]
+  tags                = var.tags
+}
+
+resource "azurerm_nat_gateway" "mgmt" {
+  name                    = "natgw-mgmt"
+  location                = var.location
+  resource_group_name     = var.hub_resource_group_name
+  sku_name                = "Standard"
+  idle_timeout_in_minutes = 10
+  tags                    = var.tags
+}
+
+resource "azurerm_nat_gateway_public_ip_association" "mgmt" {
+  nat_gateway_id       = azurerm_nat_gateway.mgmt.id
+  public_ip_address_id = azurerm_public_ip.nat_gateway_mgmt.id
+}
+
+resource "azurerm_subnet_nat_gateway_association" "mgmt" {
+  subnet_id      = azurerm_subnet.mgmt.id
+  nat_gateway_id = azurerm_nat_gateway.mgmt.id
+}
+
+###############################################################################
+# Hub AzureBastionSubnet + Hub Azure Bastion (Standard SKU)
+# Jedyna "brama" do zarządzania Panoramą i firewallami
+#
+# Dostęp SSH do FW/Panoramy:
+#   az network bastion ssh --name bastion-hub --resource-group rg-transit-hub \
+#     --target-ip-address 10.0.0.4 --auth-type password --username panadmin
+#
+# Tunel HTTPS do GUI Panoramy/FW (port forwarding na localhost):
+#   az network bastion tunnel --name bastion-hub --resource-group rg-transit-hub \
+#     --target-ip-address 10.0.0.10 --resource-port 443 --port 44300
+#   # Potem otwórz: https://localhost:44300 (Panorama GUI)
+###############################################################################
+
+# AzureBastionSubnet w Hub VNet (10.0.4.0/26)
+resource "azurerm_subnet" "hub_bastion" {
+  name                 = "AzureBastionSubnet"
+  resource_group_name  = var.hub_resource_group_name
+  virtual_network_name = azurerm_virtual_network.transit.name
+  address_prefixes     = [local.hub_bastion_subnet_cidr] # 10.0.4.0/26
+}
+
+# NSG dla Hub Bastion (wymagane przez Azure Bastion)
+resource "azurerm_network_security_group" "hub_bastion" {
+  name                = "nsg-hub-bastion"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  tags                = var.tags
+
+  security_rule {
+    name                       = "Allow-HTTPS-Inbound-Internet"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "Internet"
+    destination_address_prefix = "*"
+  }
+  security_rule {
+    name                       = "Allow-GatewayManager"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "GatewayManager"
+    destination_address_prefix = "*"
+  }
+  security_rule {
+    name                       = "Allow-AzureLoadBalancer"
+    priority                   = 120
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "AzureLoadBalancer"
+    destination_address_prefix = "*"
+  }
+  security_rule {
+    name                       = "Allow-BastionHostCommunication"
+    priority                   = 130
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_ranges    = ["8080", "5701"]
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "VirtualNetwork"
+  }
+  security_rule {
+    name                       = "Allow-SSH-HTTPS-Outbound"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["22", "443"]
+    source_address_prefix      = "*"
+    destination_address_prefix = "VirtualNetwork"
+  }
+  security_rule {
+    name                       = "Allow-AzureCloud-Outbound"
+    priority                   = 110
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "*"
+    destination_address_prefix = "AzureCloud"
+  }
+  security_rule {
+    name                       = "Allow-BastionCommunication-Outbound"
+    priority                   = 120
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_ranges    = ["8080", "5701"]
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "VirtualNetwork"
+  }
+  security_rule {
+    name                       = "Allow-HTTP-Outbound"
+    priority                   = 130
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "80"
+    source_address_prefix      = "*"
+    destination_address_prefix = "Internet"
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "hub_bastion" {
+  subnet_id                 = azurerm_subnet.hub_bastion.id
+  network_security_group_id = azurerm_network_security_group.hub_bastion.id
+}
+
+# Public IP dla Hub Bastion
+resource "azurerm_public_ip" "bastion_hub" {
+  name                = "pip-bastion-hub"
   location            = var.location
   resource_group_name = var.hub_resource_group_name
   allocation_method   = "Static"
@@ -294,14 +467,25 @@ resource "azurerm_public_ip" "fw1_mgmt" {
   tags                = var.tags
 }
 
-# FW2 Management Public IP
-resource "azurerm_public_ip" "fw2_mgmt" {
-  name                = "pip-fw2-mgmt"
+# Hub Azure Bastion Host – Standard SKU z tunelowaniem
+resource "azurerm_bastion_host" "hub" {
+  name                = "bastion-hub"
   location            = var.location
   resource_group_name = var.hub_resource_group_name
-  allocation_method   = "Static"
   sku                 = "Standard"
-  tags                = var.tags
+
+  # tunneling_enabled wymagane do az network bastion tunnel (port forwarding)
+  tunneling_enabled      = true
+  copy_paste_enabled     = true
+  file_copy_enabled      = false
+  shareable_link_enabled = false
+  tags                   = var.tags
+
+  ip_configuration {
+    name                 = "ipconfig-bastion-hub"
+    subnet_id            = azurerm_subnet.hub_bastion.id
+    public_ip_address_id = azurerm_public_ip.bastion_hub.id
+  }
 }
 
 ###############################################################################

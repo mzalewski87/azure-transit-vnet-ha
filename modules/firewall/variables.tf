@@ -69,19 +69,6 @@ variable "ha_subnet_id" {
 }
 
 #------------------------------------------------------------------------------
-# Public IP IDs for management interfaces
-#------------------------------------------------------------------------------
-variable "fw1_mgmt_public_ip_id" {
-  description = "Public IP resource ID for FW1 management"
-  type        = string
-}
-
-variable "fw2_mgmt_public_ip_id" {
-  description = "Public IP resource ID for FW2 management"
-  type        = string
-}
-
-#------------------------------------------------------------------------------
 # Load Balancer Backend Pool IDs
 #------------------------------------------------------------------------------
 variable "external_lb_backend_pool_id" {

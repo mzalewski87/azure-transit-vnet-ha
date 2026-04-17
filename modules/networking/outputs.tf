@@ -62,26 +62,6 @@ output "external_lb_public_ip_address" {
   value       = azurerm_public_ip.external_lb.ip_address
 }
 
-output "fw1_mgmt_public_ip_id" {
-  description = "FW1 management public IP resource ID"
-  value       = azurerm_public_ip.fw1_mgmt.id
-}
-
-output "fw2_mgmt_public_ip_id" {
-  description = "FW2 management public IP resource ID"
-  value       = azurerm_public_ip.fw2_mgmt.id
-}
-
-output "fw1_mgmt_public_ip_address" {
-  description = "FW1 management public IP address"
-  value       = azurerm_public_ip.fw1_mgmt.ip_address
-}
-
-output "fw2_mgmt_public_ip_address" {
-  description = "FW2 management public IP address"
-  value       = azurerm_public_ip.fw2_mgmt.ip_address
-}
-
 output "spoke2_bastion_subnet_id" {
   description = "AzureBastionSubnet ID in Spoke 2 VNet"
   value       = azurerm_subnet.spoke2_bastion.id
@@ -90,4 +70,27 @@ output "spoke2_bastion_subnet_id" {
 output "spoke2_bastion_subnet_cidr" {
   description = "AzureBastionSubnet CIDR in Spoke 2 VNet"
   value       = azurerm_subnet.spoke2_bastion.address_prefixes[0]
+}
+
+#------------------------------------------------------------------------------
+# Hub Azure Bastion (zarządzanie Panoramą i firewallami)
+#------------------------------------------------------------------------------
+output "hub_bastion_name" {
+  description = "Nazwa Hub Azure Bastion (używana w komendach az network bastion)"
+  value       = azurerm_bastion_host.hub.name
+}
+
+output "hub_bastion_rg" {
+  description = "Resource Group Hub Azure Bastion"
+  value       = azurerm_bastion_host.hub.resource_group_name
+}
+
+output "hub_bastion_public_ip" {
+  description = "Publiczny IP Hub Azure Bastion (dostęp admin przez portal/CLI)"
+  value       = azurerm_public_ip.bastion_hub.ip_address
+}
+
+output "nat_gateway_public_ip" {
+  description = "NAT Gateway public IP (wychodząca komunikacja snet-mgmt – Panorama/FW updates)"
+  value       = azurerm_public_ip.nat_gateway_mgmt.ip_address
 }

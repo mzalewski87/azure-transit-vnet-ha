@@ -4,38 +4,64 @@
 ###############################################################################
 
 #------------------------------------------------------------------------------
-# Management Access
+# Hub Azure Bastion – jedyny punkt dostępu do zarządzania FW i Panoramą
 #------------------------------------------------------------------------------
-output "fw1_management_public_ip" {
-  description = "FW1 management public IP – open https://<ip> in browser"
-  value       = module.networking.fw1_mgmt_public_ip_address
+output "hub_bastion_name" {
+  description = "Hub Bastion name – używany w komendach az network bastion"
+  value       = module.networking.hub_bastion_name
 }
 
-output "fw2_management_public_ip" {
-  description = "FW2 management public IP – open https://<ip> in browser"
-  value       = module.networking.fw2_mgmt_public_ip_address
+output "hub_bastion_rg" {
+  description = "Resource Group Hub Bastion"
+  value       = module.networking.hub_bastion_rg
 }
 
-output "panorama_public_ip" {
-  description = "Panorama management public IP – open https://<ip> in browser. Use this value for panorama_public_ip variable in Phase 2"
-  value       = module.panorama.panorama_public_ip
+output "hub_bastion_public_ip" {
+  description = "Hub Bastion public IP (dostęp przez Azure Portal lub az CLI)"
+  value       = module.networking.hub_bastion_public_ip
 }
 
+output "nat_gateway_public_ip" {
+  description = "NAT Gateway public IP (wychodząca komunikacja z snet-mgmt – licencje, updates)"
+  value       = module.networking.nat_gateway_public_ip
+}
+
+#------------------------------------------------------------------------------
+# Firewall – prywatne IPs (dostęp przez Hub Bastion)
+#------------------------------------------------------------------------------
+output "fw1_mgmt_private_ip" {
+  description = "FW1 management private IP (10.0.0.4) – SSH/GUI przez Hub Bastion"
+  value       = module.firewall.fw1_mgmt_private_ip
+}
+
+output "fw2_mgmt_private_ip" {
+  description = "FW2 management private IP (10.0.0.5) – SSH/GUI przez Hub Bastion"
+  value       = module.firewall.fw2_mgmt_private_ip
+}
+
+#------------------------------------------------------------------------------
+# Panorama – prywatne IP (dostęp przez Hub Bastion)
+#------------------------------------------------------------------------------
 output "panorama_private_ip" {
-  description = "Panorama private IP (used in FW bootstrap init-cfg.txt as panorama-server)"
+  description = "Panorama private IP (10.0.0.10) – dostęp przez Hub Bastion tunnel"
   value       = module.panorama.panorama_private_ip
+}
+
+output "panorama_vm_id" {
+  description = "Panorama VM resource ID (az network bastion tunnel --target-resource-id)"
+  value       = module.panorama.panorama_vm_id
 }
 
 #------------------------------------------------------------------------------
 # Load Balancers
 #------------------------------------------------------------------------------
 output "external_lb_public_ip" {
-  description = "External Load Balancer public IP – inbound traffic entry point"
+  description = "External Load Balancer public IP – inbound traffic entry point (AFD origin)"
   value       = module.networking.external_lb_public_ip_address
 }
 
 output "internal_lb_private_ip" {
-  description = "Internal Load Balancer private IP – UDR next-hop in Spoke VNets"
+  description = "Internal Load Balancer private IP – UDR next-hop w Spoke VNetach"
   value       = module.loadbalancer.internal_lb_private_ip
 }
 
@@ -43,7 +69,7 @@ output "internal_lb_private_ip" {
 # Azure Front Door
 #------------------------------------------------------------------------------
 output "frontdoor_endpoint_hostname" {
-  description = "Azure Front Door endpoint hostname – use this URL to test Hello World app"
+  description = "Azure Front Door endpoint hostname – URL aplikacji Hello World"
   value       = module.frontdoor.frontdoor_endpoint_hostname
 }
 
@@ -51,12 +77,12 @@ output "frontdoor_endpoint_hostname" {
 # Application Servers
 #------------------------------------------------------------------------------
 output "apache_server_private_ip" {
-  description = "Apache Hello World server private IP in Spoke1 (DNAT target)"
+  description = "Apache Hello World server private IP w Spoke1 (DNAT target)"
   value       = module.spoke1_app.apache_private_ip
 }
 
 output "domain_controller_private_ip" {
-  description = "Windows Server DC private IP in Spoke2 (User-ID Agent target)"
+  description = "Windows Server DC private IP w Spoke2 (User-ID Agent target)"
   value       = module.spoke2_dc.dc_private_ip
 }
 
@@ -66,15 +92,15 @@ output "domain_name" {
 }
 
 #------------------------------------------------------------------------------
-# Azure Bastion (Spoke2 DC access)
+# Azure Bastion – Spoke2 DC access
 #------------------------------------------------------------------------------
-output "bastion_public_ip" {
-  description = "Azure Bastion public IP for Spoke2 – use Azure Portal Bastion to RDP to DC"
+output "spoke2_bastion_public_ip" {
+  description = "Spoke2 Bastion public IP – RDP do DC przez Azure Portal"
   value       = module.spoke2_dc.bastion_public_ip
 }
 
-output "bastion_dns_name" {
-  description = "Azure Bastion DNS hostname"
+output "spoke2_bastion_dns_name" {
+  description = "Spoke2 Bastion DNS hostname"
   value       = module.spoke2_dc.bastion_dns_name
 }
 
