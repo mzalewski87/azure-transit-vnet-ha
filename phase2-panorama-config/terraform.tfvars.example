@@ -2,20 +2,36 @@
 # Phase 2 – terraform.tfvars.example
 #
 # INSTRUKCJA:
-# 1. Upewnij się że Phase 1 jest wdrożona i Panorama jest uruchomiona
-# 2. Pobierz wartości z Phase 1: cd .. && terraform output
+# 1. WYMAGANIE: Phase 1a wdrożona (Panorama + DC + Bastion działają)
+# 2. WYMAGANIE: Aktywny Bastion Tunnel do Panoramy w osobnym terminalu:
+#      PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
+#      az network bastion tunnel \
+#        --name bastion-spoke2 --resource-group rg-spoke2-dc \
+#        --target-resource-id "$PANORAMA_ID" --resource-port 443 --port 44300
 # 3. Skopiuj: cp terraform.tfvars.example terraform.tfvars
-# 4. Wypełnij wartości poniżej
+# 4. Uzupełnij TYLKO: panorama_password i external_lb_public_ip
 # 5. cd phase2-panorama-config/ && terraform init && terraform apply
+#
+# SKAD WZIAC external_lb_public_ip:
+#   cd .. && terraform output -raw external_lb_public_ip
+#   (dostepne juz po Phase 1a – IP jest tworzone razem z module.networking)
+#
+# UWAGA: Panorama NIE ma publicznego IP!
+#   panorama_hostname MUSI byc "127.0.0.1" gdy uzywasz Bastion tunnel
 ###############################################################################
 
 # ─── Panorama Connection ────────────────────────────────────────────────────
-# Pobierz z: cd .. && terraform output panorama_public_ip
-panorama_hostname = "REPLACE_ME"   # np. "52.174.10.20"
+# ZAWSZE "127.0.0.1" – Panorama nie ma publicznego IP, dostep przez Bastion tunnel
+panorama_hostname = "127.0.0.1"
+# ZAWSZE 44300 – lokalny port tunelu (--port 44300 w az bastion tunnel)
+panorama_port     = 44300
 panorama_username = "panadmin"
-panorama_password = "REPLACE_ME"   # to samo hasło co admin_password w Phase 1
+# To samo haslo co admin_password w Phase 1 terraform.tfvars
+panorama_password = "REPLACE_ME"
 
 # ─── Panorama Objects (pozostaw domyślne jeśli nie zmieniałeś) ──────────────
+# Te nazwy MUSZĄ zgadzac sie z panorama_template_stack i panorama_device_group
+# w terraform.tfvars Phase 1 (używane przez bootstrap FW)
 template_name       = "Transit-VNet-Template"
 template_stack_name = "Transit-VNet-Stack"
 device_group_name   = "Transit-VNet-DG"
@@ -26,9 +42,10 @@ untrust_subnet_cidr = "10.0.1.0/24"
 spoke1_vnet_cidr    = "10.1.0.0/16"
 spoke2_vnet_cidr    = "10.2.0.0/16"
 
-# ─── Endpoints (pobierz z: cd .. && terraform output) ───────────────────────
-# terraform output apache_server_private_ip
+# ─── Endpoints (pobierz z Phase 1 outputs) ──────────────────────────────────
+# Statyczny – Apache zawsze na tym IP (z module.spoke1_app)
 apache_server_ip = "10.1.0.4"
 
-# terraform output external_lb_public_ip
-external_lb_public_ip = "REPLACE_ME"   # np. "52.174.20.30"
+# Pobierz poleceniem: cd .. && terraform output -raw external_lb_public_ip
+# (dostepne po Phase 1a – pip-external-lb tworzony w module.networking)
+external_lb_public_ip = "REPLACE_ME"
