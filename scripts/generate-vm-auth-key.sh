@@ -74,7 +74,7 @@ KEYGEN_RESPONSE=$(curl -sk "${PANORAMA_URL}/api/" \
   --data-urlencode "user=${PANORAMA_USER}" \
   --data-urlencode "password=${PANORAMA_PASS}")
 
-API_KEY=$(echo "$KEYGEN_RESPONSE" | grep -oP '(?<=<key>)[^<]+' || true)
+API_KEY=$(echo "$KEYGEN_RESPONSE" | grep -oE '<key>[^<]+' | sed 's/<key>//')
 
 if [ -z "$API_KEY" ]; then
   echo ""
@@ -92,7 +92,7 @@ AUTH_KEY_RESPONSE=$(curl -sk "${PANORAMA_URL}/api/" \
   --data-urlencode "cmd=<request><bootstrap-vm-auth-key><generate><lifetime>${KEY_LIFETIME_HOURS}</lifetime></generate></bootstrap-vm-auth-key></request>" \
   --data-urlencode "key=${API_KEY}")
 
-VM_AUTH_KEY=$(echo "$AUTH_KEY_RESPONSE" | grep -oP '(?<=<vm-auth-key>)[^<]+' || true)
+VM_AUTH_KEY=$(echo "$AUTH_KEY_RESPONSE" | grep -oE '<vm-auth-key>[^<]+' | sed 's/<vm-auth-key>//')
 
 if [ -z "$VM_AUTH_KEY" ]; then
   echo ""

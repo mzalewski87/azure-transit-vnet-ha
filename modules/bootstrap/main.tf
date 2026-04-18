@@ -45,18 +45,9 @@ resource "azurerm_storage_account" "bootstrap" {
   # Azure Policy: "Storage accounts should prevent cross tenant object replication"
   cross_tenant_replication_enabled = false
 
-  # Azure Policy: "Storage accounts should restrict network access"
-  # - default_action = Deny  (required by policy)
-  # - bypass: AzureServices  (allows Managed Identity from FW VMs)
-  # - virtual_network_subnet_ids: mgmt subnet with Microsoft.Storage service endpoint
-  # - ip_rules: Terraform operator's public IP (for blob upload during apply)
-  network_rules {
-    default_action             = "Deny"
-    bypass                     = ["AzureServices", "Logging", "Metrics"]
-    virtual_network_subnet_ids = var.allowed_subnet_ids
-    ip_rules                   = compact(var.terraform_operator_ips)
-  }
-
+  # UWAGA: network_rules NIE są tutaj – są w osobnym zasobie poniżej.
+  # Powód: inline network_rules blokuje Terraform zanim uploady blobów się zakończą.
+  # Rozwiązanie: azurerm_storage_account_network_rules z depends_on na wszystkich blobsach.
   tags = var.tags
 }
 
@@ -169,4 +160,34 @@ resource "azurerm_storage_blob" "fw2_content_placeholder" {
   storage_container_name = azurerm_storage_container.bootstrap.name
   type                   = "Block"
   source_content         = ""
+}
+
+###############################################################################
+# Storage Account Network Rules
+# WAŻNE: Muszą być PO uploadzie blobów (depends_on na wszystkich blobsach).
+# Inline network_rules w azurerm_storage_account blokuje Terraform przed uploadem.
+#
+# Działanie:
+#   - default_action = Deny: blokuje cały dostęp po wdrożeniu
+#   - bypass = AzureServices: pozwala FW (Managed Identity) czytać boostrap blobs
+#   - virtual_network_subnet_ids: mgmt subnet z service endpoint Microsoft.Storage
+#   - ip_rules: IP operatora Terraform (do ewentualnych późniejszych zmian blobów)
+###############################################################################
+resource "azurerm_storage_account_network_rules" "bootstrap" {
+  storage_account_id         = azurerm_storage_account.bootstrap.id
+  default_action             = "Deny"
+  bypass                     = ["AzureServices", "Logging", "Metrics"]
+  virtual_network_subnet_ids = var.allowed_subnet_ids
+  ip_rules                   = compact(var.terraform_operator_ips)
+
+  depends_on = [
+    azurerm_storage_blob.fw1_init_cfg,
+    azurerm_storage_blob.fw1_authcodes,
+    azurerm_storage_blob.fw1_software_placeholder,
+    azurerm_storage_blob.fw1_content_placeholder,
+    azurerm_storage_blob.fw2_init_cfg,
+    azurerm_storage_blob.fw2_authcodes,
+    azurerm_storage_blob.fw2_software_placeholder,
+    azurerm_storage_blob.fw2_content_placeholder,
+  ]
 }

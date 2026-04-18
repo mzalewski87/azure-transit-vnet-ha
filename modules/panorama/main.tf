@@ -88,8 +88,9 @@ resource "azurerm_linux_virtual_machine" "panorama" {
   # Bootstrap init-cfg for Panorama: sets hostname and auth code
   # Panorama reads custom_data directly (not via storage account)
   custom_data = base64encode(templatefile("${path.module}/templates/panorama-init-cfg.txt.tpl", {
-    hostname           = var.panorama_hostname
-    panorama_auth_code = var.panorama_auth_code
+    hostname               = var.panorama_hostname
+    serial_number          = var.panorama_serial_number
+    panorama_auth_code     = var.panorama_auth_code
   }))
 
   depends_on = [null_resource.accept_panorama_terms]

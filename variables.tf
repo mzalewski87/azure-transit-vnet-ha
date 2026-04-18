@@ -190,6 +190,17 @@ variable "panorama_device_group" {
   default     = "Transit-VNet-DG"
 }
 
+variable "panorama_serial_number" {
+  description = <<-EOT
+    Numer seryjny Panoramy z Palo Alto CSP Portal (Assets → Devices).
+    Wymagany do automatycznej aktywacji licencji przy starcie VM.
+    Format: np. "007300014999" lub "007900000111".
+    Zostaw "" jeśli nie znasz – licencja będzie wymagać ręcznej aktywacji.
+  EOT
+  type    = string
+  default = ""
+}
+
 variable "panorama_vm_size" {
   description = "Azure VM size for Panorama"
   type        = string
@@ -235,24 +246,20 @@ variable "dc_vm_size" {
 
 #------------------------------------------------------------------------------
 # DC Auto-Promote Control
+# Domyślnie true – DC promotion jest opcjonalna i wykonywana osobno.
+# Patrz: optional/dc-promote/ dla instrukcji promocji DC.
 #------------------------------------------------------------------------------
 variable "dc_skip_auto_promote" {
   description = <<-EOT
-    Pomiń automatyczną promocję DC przez Custom Script Extension.
+    Pomiń automatyczną promocję DC przez Custom Script Extension w module.spoke2_dc.
+    Domyślnie TRUE – promocja DC jest OPCJONALNA i odbywa się w osobnym module.
+    Patrz: optional/dc-promote/ – uruchom po Phase 1b jeśli potrzebujesz AD DS.
 
-    Ustaw na TRUE gdy terraform apply zwraca:
-      "A resource with the ID .../extensions/promote-to-dc already exists"
-
-    DC jest już promowany w Azure (extension się uruchomiło mimo timeoutu TF).
-    Ustawienie true pomija tworzenie extension – DC pozostaje promowany.
-
-    Workflow naprawczy:
-      1. Ustaw dc_skip_auto_promote = true w terraform.tfvars
-      2. terraform apply  (extension pominięty, reszta wdrożona)
-      3. Zweryfikuj DC przez Azure Bastion: nltest /sc_verify:panw.labs
+    Ustaw FALSE tylko jeśli chcesz automatycznej promocji DC razem z Phase 1a
+    (ostrzeżenie: znacznie wydłuża czas deploy – 30-45 min dodatkowe).
   EOT
   type    = bool
-  default = false
+  default = true
 }
 
 #------------------------------------------------------------------------------

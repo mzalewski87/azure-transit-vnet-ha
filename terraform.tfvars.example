@@ -87,6 +87,12 @@ admin_password = "REPLACE_ME"  # min 12 znaków, wielkie/małe litery, cyfry, zn
 fw_auth_code       = "REPLACE_ME"  # auth code VM-Series BYOL
 panorama_auth_code = "REPLACE_ME"  # auth code Panoramy BYOL
 
+# Numer seryjny Panoramy z Palo Alto CSP Portal:
+#   https://support.paloaltonetworks.com → Assets → Devices
+# Wymagany do automatycznej aktywacji licencji. Format: np. "007300014999"
+# Zostaw "" jeśli nie znasz – licencja będzie wymagać ręcznej aktywacji przez GUI.
+panorama_serial_number = ""  # np. "007300014999"
+
 # Device Registration Auth Key – generuje się przez Panorama API (SKRYPT):
 #   1. Uruchom Bastion tunnel do Panoramy (jak w Phase 2)
 #   2. chmod +x scripts/generate-vm-auth-key.sh
@@ -135,17 +141,14 @@ frontdoor_sku = "Premium_AzureFrontDoor"
 terraform_operator_ips = ["REPLACE_ME"]  # np. ["1.2.3.4"]
 
 #------------------------------------------------------------------------------
-# DC Auto-Promote Control
+# DC Promotion – opcjonalny krok po wdrożeniu
 #
-# Ustaw na true gdy terraform apply zwraca błąd:
-#   "A resource with the ID .../extensions/promote-to-dc already exists"
+# Domyślnie dc_skip_auto_promote = true (pomija długotrwałą promocję DC)
+# Promocja AD DS jest wykonywana osobno DOPO Phase 1b:
+#   cd optional/dc-promote/
+#   cp terraform.tfvars.example terraform.tfvars && terraform init && terraform apply
 #
-# Oznacza to że DC jest już promowany w Azure (extension działało mimo
-# że Terraform przekroczył timeout). Ustaw true, ponów apply, reszta
-# infrastruktury wdroży się normalnie.
-#
-# Weryfikacja po wdrożeniu (przez Azure Bastion → RDP → vm-spoke2-dc):
-#   nltest /sc_verify:panw.labs
-#   Get-ADDomain | Select Name,DomainMode
+# Zostaw domyślne true – NIE zmieniaj na false.
+# Promocja DC trwa 30-45 min i nie jest wymagana dla podstawowego wdrożenia FW.
 #------------------------------------------------------------------------------
-dc_skip_auto_promote = false  # zmień na true jeśli extension już istnieje
+dc_skip_auto_promote = true  # DOMYŚLNE - nie zmieniaj. Patrz optional/dc-promote/

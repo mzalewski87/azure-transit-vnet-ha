@@ -149,11 +149,12 @@ module "panorama" {
   mgmt_subnet_id      = module.networking.mgmt_subnet_id
   panorama_private_ip = "10.0.0.10"
 
-  vm_size            = var.panorama_vm_size
-  admin_username     = var.admin_username
-  admin_password     = var.admin_password
-  panorama_auth_code = var.panorama_auth_code
-  log_disk_size_gb   = var.panorama_log_disk_size_gb
+  vm_size                = var.panorama_vm_size
+  admin_username         = var.admin_username
+  admin_password         = var.admin_password
+  panorama_serial_number = var.panorama_serial_number
+  panorama_auth_code     = var.panorama_auth_code
+  log_disk_size_gb       = var.panorama_log_disk_size_gb
 
   tags = var.tags
 }

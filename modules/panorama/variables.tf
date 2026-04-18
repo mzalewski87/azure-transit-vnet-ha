@@ -52,6 +52,18 @@ variable "admin_password" {
   sensitive   = true
 }
 
+variable "panorama_serial_number" {
+  description = <<-EOT
+    Numer seryjny Panoramy z Palo Alto CSP Portal (Assets → Devices).
+    Wymagany do automatycznej aktywacji licencji przy starcie.
+    Format: np. "007300014999" lub "007900000111".
+    Jeśli pusty (""), Panorama generuje własny serial z fingerprinta VM
+    i może wymagać ręcznej aktywacji licencji.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "panorama_auth_code" {
   description = "Panorama BYOL auth code for license activation"
   type        = string

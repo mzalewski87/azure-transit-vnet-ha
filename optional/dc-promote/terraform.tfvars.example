@@ -1,0 +1,24 @@
+###############################################################################
+# optional/dc-promote/terraform.tfvars.example
+#
+# INSTRUKCJA:
+#   cp terraform.tfvars.example terraform.tfvars
+#   # Uzupełnij poniższe wartości
+#   terraform init && terraform apply
+#
+# CZAS: ~30-45 minut (instalacja AD DS + reboot)
+# WERYFIKACJA (przez Bastion → RDP → vm-spoke2-dc):
+#   nltest /sc_verify:panw.labs
+#   Get-ADDomain | Select Name,DomainMode
+###############################################################################
+
+# Subskrypcja Spoke2 (ta sama co spoke2_subscription_id w głównym terraform.tfvars)
+spoke2_subscription_id = "REPLACE_ME"
+
+# Hasło DC admina (to samo co dc_admin_password w głównym terraform.tfvars)
+admin_password = "REPLACE_ME"
+
+# Opcjonalnie – zmień jeśli różni się od domyślnych:
+# spoke2_resource_group_name = "rg-spoke2-dc"
+# dc_vm_name                 = "vm-spoke2-dc"
+# domain_name                = "panw.labs"
