@@ -87,10 +87,13 @@ admin_password = "REPLACE_ME"  # min 12 znaków, wielkie/małe litery, cyfry, zn
 fw_auth_code       = "REPLACE_ME"  # auth code VM-Series BYOL
 panorama_auth_code = "REPLACE_ME"  # auth code Panoramy BYOL
 
-# Device Registration Auth Key – generuje się W Panoramie po jej uruchomieniu:
-#   Panorama GUI → Device Registration Auth Key → Generate → 8760 hours
-# ZOSTAW "" dla Phase 1a deploy. Uzupełnij PRZED Phase 1b (FW deploy).
-# NIE mylić z auth code powyżej – to są różne rzeczy!
+# Device Registration Auth Key – generuje się przez Panorama API (SKRYPT):
+#   1. Uruchom Bastion tunnel do Panoramy (jak w Phase 2)
+#   2. chmod +x scripts/generate-vm-auth-key.sh
+#   3. ./scripts/generate-vm-auth-key.sh  (pyta o hasło)
+#      → Skrypt wywołuje Panorama API i drukuje gotową linię do wklejenia
+# ZOSTAW "" dla Phase 1a deploy. Uzupełnij PRZED Phase 1b (terraform apply -target=module.bootstrap).
+# NIE mylić z fw_auth_code/panorama_auth_code (auth code licencji) – to inne rzeczy!
 panorama_vm_auth_key = ""
 
 #------------------------------------------------------------------------------

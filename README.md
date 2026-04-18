@@ -339,20 +339,42 @@ Phase 2 tworzy w Panoramie:
 > **CEL**: FW startują z bootstrap (init-cfg z panorama_vm_auth_key, DG, Template Stack)
 > i automatycznie rejestrują się w Panoramie w Device Group i Template Stack z Phase 2.
 
-### Krok 1 – Wygeneruj Device Registration Auth Key w Panoramie
+### Krok 1 – Wygeneruj Device Registration Auth Key przez Panorama API
 
-Przez DC, Chrome → `https://10.0.0.10`:
+`vm-auth-key` to klucz do **automatycznej** rejestracji FW w Panoramie (DG + Template Stack).
+Bez niego FW pojawia się w Panoramie jako "Pending" i wymaga ręcznego zatwierdzenia.
 
+Skrypt `generate-vm-auth-key.sh` wywołuje Panorama API przez istniejący Bastion tunnel – **nie wymaga logowania do GUI**.
+
+> ⚠️ **Wymaganie**: Bastion tunnel do Panoramy z Phase 2 MUSI być aktywny (127.0.0.1:44300).
+> Jeśli zamknąłeś terminal z tunelem po Phase 2 – uruchom go ponownie:
+> ```bash
+> PANORAMA_ID=$(terraform output -raw panorama_vm_id)
+> az network bastion tunnel --name bastion-spoke2 --resource-group rg-spoke2-dc \
+>   --target-resource-id "$PANORAMA_ID" --resource-port 443 --port 44300
+> ```
+
+```bash
+chmod +x scripts/generate-vm-auth-key.sh
+./scripts/generate-vm-auth-key.sh
+# Skrypt pyta o hasło (to samo co admin_password w terraform.tfvars)
+# LUB: ./scripts/generate-vm-auth-key.sh --password "TwojeHaslo123!"
 ```
-Panorama → Device Registration Auth Key → Generate
-Ważność: 8760 hours (1 rok)
-→ SKOPIUJ klucz (wygląda np. tak: 2:BKLVoIq7Ty2GZqT1JcNI8aAIRHUH...)
+
+Output skryptu:
+```
+✅ VM Auth Key wygenerowany pomyślnie!
+panorama_vm_auth_key = "2:BKLVoIq7Ty2GZqT1JcNI8aAIRHUH..."
 ```
 
-> ⚠️ To jest **Device Registration Auth Key**, NIE auth code do licencji.
-> Auth code (np. D5541146) używany jest do aktywacji licencji FW przez bootstrap/authcodes.
+> ℹ️ **vm-auth-key vs auth-code** – to są różne rzeczy:
+> - `panorama_vm_auth_key` (vm-auth-key) → rejestracja FW w Panoramie (generowany w Panoramie)
+> - `fw_auth_code` → aktywacja licencji BYOL (z Palo Alto CSP Portal)
+> - `panorama_auth_code` → aktywacja licencji Panoramy (z Palo Alto CSP Portal)
 
 ### Krok 2 – Zaktualizuj terraform.tfvars
+
+Wklej wartość z outputu skryptu:
 
 ```hcl
 panorama_vm_auth_key = "2:BKLVoIq7Ty2GZqT1JcNI8a..."
@@ -529,27 +551,28 @@ az vm restart -g rg-transit-hub -n vm-panorama --no-wait
 ### Panorama nie aktywowana
 
 1. Sprawdź czy `panorama_auth_code` w terraform.tfvars jest poprawny (format: `F3862013`)
-2. Sprawdź logs init-cfg: `show system logs follow` w PAN-OS CLI
-3. Ręczna aktywacja przez GUI (TCP 443 przez NAT Gateway działa):
+2. Sprawdź logi init-cfg w PAN-OS CLI: `show system logs follow`
+3. Ręczna aktywacja przez GUI (TCP 443 przez NAT Gateway powinien działać):
    `Panorama → Licenses → Activate feature using auth code`
-4. Jeśli TCP 443 nie działa: sprawdź czy NAT Gateway jest wdrożony:
+4. Weryfikacja NAT Gateway:
    ```bash
-   az network nat-gateway show -g rg-transit-hub -n natgw-mgmt --query "provisioningState"
+   az network nat-gateway show -g rg-transit-hub -n natgw-mgmt --query provisioningState
    ```
 
 ### FW nie rejestruje się w Panoramie (brak w Managed Devices)
 
-**Najczęstsza przyczyna**: Phase 2 nie była wykonana przed Phase 1b (FW).
-Device Group lub Template Stack nie istniały gdy FW się bootstrapował.
+**Najczęstsza przyczyna**: Phase 2 nie była wykonana przed Phase 1b (FW),
+lub Device Group/Template Stack nie istniały gdy FW się bootstrapował.
 
 **Rozwiązanie**:
 1. Upewnij się że Phase 2 jest wdrożona (`cd phase2-panorama-config && terraform apply`)
-2. Zrestartuj FW (FW ponownie czyta bootstrap i próbuje rejestracji):
+2. Sprawdź czy `panorama_vm_auth_key` w terraform.tfvars jest wypełniony (nie pusty)
+3. Zrestartuj FW (ponownie czyta bootstrap i próbuje rejestracji):
    ```bash
    az vm restart -g rg-transit-hub -n vm-panos-fw1
    az vm restart -g rg-transit-hub -n vm-panos-fw2
    ```
-3. Sprawdź logs w Panoramie: `Monitor → System` (filtruj: `subtype eq registration`)
+4. Logi w Panoramie: `Monitor → System` (filtruj: `subtype eq registration`)
 
 ### Phase 2 – "connection refused 127.0.0.1:44300"
 
@@ -600,6 +623,7 @@ azure-transit-vnet-ha/
 ├── terraform.tfvars.example
 ├── scripts/
 │   ├── check-panorama.sh           # Czeka na Panoramę + RDP tunnel do DC
+│   ├── generate-vm-auth-key.sh     # Generuje vm-auth-key przez Panorama API (bez GUI)
 │   └── fix-drift.sh
 ├── modules/
 │   ├── networking/                 # Hub VNet, Spoke VNety, NSG, NAT GW, peering
