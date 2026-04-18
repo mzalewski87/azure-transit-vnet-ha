@@ -113,15 +113,24 @@ DC (10.2.0.4) → VNet peering → Hub VNet:
 | vm-spoke2-dc (10.2.0.4) | ❌ | Bastion IpConnect RDP |
 | pip-bastion-spoke2 | ✅ | Spoke2 Bastion – jedyny punkt wejścia |
 | pip-external-lb | ✅ | Ruch aplikacyjny przez FW |
-| pip-nat-gateway-mgmt | ✅ | Outbound snet-mgmt (TCP/UDP) – tylko wychodzący |
+| pip-nat-gateway-mgmt | ✅ | Outbound snet-mgmt (TCP/UDP/ICMP) – tylko wychodzący |
 
 ### Internet z Panoramy/FW – NAT Gateway
 
-NAT Gateway zapewnia wychodzący dostęp do Internetu dla `snet-mgmt` (licencje, updates).
+NAT Gateway (`natgw-mgmt` + `pip-nat-gateway-mgmt`) zapewnia wychodzący dostęp do Internetu dla `snet-mgmt`. Obsługuje **TCP, UDP i ICMP** – ping do zewnętrznych adresów powinien działać.
 
-> ⚠️ **Azure NAT Gateway nie obsługuje ICMP!**
-> `ping 8.8.8.8` zawiedzie nawet przy prawidłowej konfiguracji.
-> TCP i UDP działają poprawnie. Test: `curl -s https://www.google.com` z Panoramy.
+NSG `snet-mgmt` ma jawną regułę `Allow-All-Outbound-Internet` (priorytet 200) która gwarantuje przepuszczenie całego ruchu wychodzącego niezależnie od potencjalnych Azure Policy.
+
+> **Test internetu z Panoramy:**
+> ```
+> # SSH do Panoramy przez Bastion:
+> az network bastion ssh --name bastion-spoke2 --resource-group rg-spoke2-dc \
+>   --target-ip-address 10.0.0.10 --auth-type password --username panadmin
+>
+> # PAN-OS CLI – testy:
+> > ping host 8.8.8.8 count 3          ← ICMP – powien działać
+> > request system software info        ← TCP do Palo Alto servers
+> ```
 
 ---
 
@@ -255,7 +264,8 @@ Panorama → Licenses → Activate feature using auth code
 ```
 
 > ℹ️ Licencja wymaga połączenia TCP 443 → `updates.paloaltonetworks.com`
-> Połączenie idzie przez NAT Gateway. Ping do 8.8.8.8 zawiedzie (ICMP nie obsługiwany przez NAT GW), ale aktywacja licencji przez HTTPS działa.
+> Połączenie idzie przez NAT Gateway (TCP, UDP, ICMP obsługiwane).
+> Jeśli aktywacja się nie powiedzie, sprawdź sekcję [Rozwiązywanie problemów](#-rozwiązywanie-problemów).
 
 ### Krok 6 – Pobierz external_lb_public_ip (potrzebne w Phase 2)
 
@@ -464,14 +474,15 @@ FW1: Connected, In Sync ✅
 FW2: Connected, In Sync ✅
 ```
 
-### Test 4 – Internet z Panoramy (TCP, nie ICMP)
+### Test 4 – Internet z Panoramy
 
 ```bash
-az network bastion ssh --name bastion-spoke2 --resource-group rg-spoke2-dc --target-ip-address 10.0.0.10 --auth-type password --username panadmin
+az network bastion ssh --name bastion-spoke2 --resource-group rg-spoke2-dc \
+  --target-ip-address 10.0.0.10 --auth-type password --username panadmin
 # W PAN-OS CLI:
-# > request system software info          ← wymaga internetu, sprawdza TCP connectivity
-# > show system info | match serial       ← czy FW ma serial number (wymaga licencji)
-# UWAGA: ping 8.8.8.8 zawiedzie – ICMP nie jest obsługiwany przez Azure NAT Gateway
+# > ping host 8.8.8.8 count 3            ← ICMP – powinien działać przez NAT Gateway
+# > request system software info         ← TCP do Palo Alto update servers
+# > show system info | match serial      ← serial number (pojawia się po aktywacji)
 ```
 
 ### Test 5 – East-West przez FW
@@ -487,10 +498,33 @@ az network bastion ssh --name bastion-spoke2 --resource-group rg-spoke2-dc --tar
 
 ### Ping z Panoramy/FW do internetu nie działa
 
-**To jest oczekiwane zachowanie!** Azure NAT Gateway nie obsługuje ICMP (tylko TCP i UDP).
-Testuj łączność przez TCP:
-- W PAN-OS: `request system software info` (wymaga internet via TCP)
-- Lub: SSH do Panoramy → `curl -s https://www.google.com` przez management bash
+NAT Gateway obsługuje TCP, UDP i ICMP. Jeśli ping nie działa, sprawdź:
+
+```bash
+# 1. Czy NAT Gateway jest wdrożony i powiązany z snet-mgmt?
+az network nat-gateway show -g rg-transit-hub -n natgw-mgmt \
+  --query '{state:provisioningState, subnets:subnets}' -o json
+
+# 2. Czy Public IP NAT Gateway jest przypisany?
+az network nat-gateway show -g rg-transit-hub -n natgw-mgmt \
+  --query 'publicIpAddresses[0].id' -o tsv
+
+# 3. Czy NSG snet-mgmt ma regułę Allow-All-Outbound-Internet?
+az network nsg rule show -g rg-transit-hub \
+  --nsg-name nsg-mgmt --name Allow-All-Outbound-Internet --query access
+# Oczekiwane: "Allow"
+
+# 4. Effective routes dla Panoramy
+az network nic show-effective-route-table \
+  --resource-group rg-transit-hub --name nic-panorama-mgmt -o table
+# Oczekiwane: 0.0.0.0/0 → NextHopType=Internet (przez NAT Gateway)
+```
+
+Jeśli NAT Gateway ma `provisioningState: Succeeded` ale internet nie działa, spróbuj:
+```bash
+# Zrestart Panoramy (ponowne pobranie DHCP i default gateway)
+az vm restart -g rg-transit-hub -n vm-panorama --no-wait
+```
 
 ### Panorama nie aktywowana
 

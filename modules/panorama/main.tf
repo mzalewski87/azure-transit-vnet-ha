@@ -7,8 +7,8 @@
 #            lub Bastion tunnel --target-resource-id dla HTTPS/panos provider)
 # Storage:   Premium SSD data disk dla logów (domyślnie 2TB)
 # License:   BYOL – auth code z custom_data (panorama-init-cfg.txt.tpl) przy starcie
-# Internet:  Outbound przez NAT Gateway (pip-nat-gateway-mgmt) – TCP/UDP działa,
-#            ICMP nie jest obsługiwany przez Azure NAT Gateway (ping zawiedzie)
+# Internet:  Outbound przez NAT Gateway (pip-nat-gateway-mgmt) – TCP, UDP, ICMP
+#            NSG snet-mgmt: jawna reguła Allow-All-Outbound-Internet (priorytet 200)
 ###############################################################################
 
 ###############################################################################

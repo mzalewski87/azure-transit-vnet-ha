@@ -81,15 +81,18 @@ resource "azurerm_subnet" "ha" {
 ###############################################################################
 
 # Management NSG
-# Dostęp SSH (22) i HTTPS (443) WYŁĄCZNIE z Spoke2 VNet (10.2.0.0/16):
-#   - Spoke2 Bastion IpConnect → SSH do FW/Panoramy
-#   - DC (10.2.0.4) browser → HTTPS GUI Panoramy/FW
-# Brak publicznych IP na VM – żaden ruch z Internetu nie dociera do tej podsieci
+# INBOUND: dostęp SSH/HTTPS WYŁĄCZNIE z Spoke2 VNet (10.2.0.0/16) + HA wewnętrznie
+# OUTBOUND: jawne zezwolenie na cały ruch wychodzący do internetu
+#   Wymagane dla: aktywacji licencji, content updates, Panorama ↔ Palo Alto cloud
+#   Transport: TCP, UDP, ICMP – wszystkie protokoły przez NAT Gateway
+#   Brak jawnej reguły outbound → Azure Policy w niektórych tenantach może blokować
 resource "azurerm_network_security_group" "mgmt" {
   name                = "nsg-mgmt"
   location            = var.location
   resource_group_name = var.hub_resource_group_name
   tags                = var.tags
+
+  # ── INBOUND ──────────────────────────────────────────────────────────────
 
   # SSH z Spoke2 VNet: Spoke2 Bastion IpConnect i DC PuTTY → FW/Panorama CLI
   security_rule {
@@ -141,6 +144,40 @@ resource "azurerm_network_security_group" "mgmt" {
     destination_port_range     = "*"
     source_address_prefix      = "*"
     destination_address_prefix = "*"
+  }
+
+  # ── OUTBOUND ─────────────────────────────────────────────────────────────
+
+  # Jawne zezwolenie na cały ruch wychodzący do internetu (TCP, UDP, ICMP)
+  # Wymagane dla: Panorama/FW aktywacja licencji, content/threat updates,
+  #               Cortex Data Lake, AutoFocus, WildFire itp.
+  # NAT Gateway (pip-nat-gateway-mgmt) obsługuje translację adresów.
+  # UWAGA: Azure domyślna reguła 65001 (AllowInternetOutBound) może być
+  #        nadpisana przez Azure Policy w niektórych subskrypcjach.
+  #        Jawna reguła ma priorytet 200 i gwarantuje przepuszczenie ruchu.
+  security_rule {
+    name                       = "Allow-All-Outbound-Internet"
+    priority                   = 200
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "Internet"
+  }
+
+  # Zezwól na ruch wewnątrz VNet (między Panoramą, FW1, FW2 w snet-mgmt)
+  security_rule {
+    name                       = "Allow-VNet-Outbound"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "VirtualNetwork"
   }
 }
 
@@ -292,7 +329,7 @@ resource "azurerm_public_ip" "external_lb" {
 }
 
 # UWAGA: Brak publicznych IP dla Panoramy i firewalli!
-# Zarządzanie odbywa się WYŁĄCZNIE przez Hub Azure Bastion (poniżej).
+# Zarządzanie odbywa się WYŁĄCZNIE przez Spoke2 Bastion.
 # FW → Panorama komunikacja: prywatne IP (10.0.0.4 → 10.0.0.10)
 
 ###############################################################################
@@ -302,13 +339,16 @@ resource "azurerm_public_ip" "external_lb" {
 #   - Pobieranie aktualizacji content/app przez management interface FW
 ###############################################################################
 
+# NAT Gateway Public IP – strefowo niezależny (Regional/non-zonal)
+# Spójność: non-zonal PIP + non-zonal NAT Gateway
+# Zapewnia wychodzący dostęp TCP/UDP/ICMP dla snet-mgmt (Panorama, FW eth0)
 resource "azurerm_public_ip" "nat_gateway_mgmt" {
   name                = "pip-nat-gateway-mgmt"
   location            = var.location
   resource_group_name = var.hub_resource_group_name
   allocation_method   = "Static"
   sku                 = "Standard"
-  zones               = ["1"]
+  # Brak zones → non-zonal (regional) – spójny z non-zonal NAT Gateway
   tags                = var.tags
 }
 
@@ -318,6 +358,7 @@ resource "azurerm_nat_gateway" "mgmt" {
   resource_group_name     = var.hub_resource_group_name
   sku_name                = "Standard"
   idle_timeout_in_minutes = 10
+  # Brak zones → non-zonal (regional) – spójny z non-zonal Public IP
   tags                    = var.tags
 }
 
