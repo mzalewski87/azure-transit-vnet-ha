@@ -45,16 +45,39 @@ resource "azurerm_storage_account" "bootstrap" {
   # Azure Policy: "Storage accounts should prevent cross tenant object replication"
   cross_tenant_replication_enabled = false
 
-  # UWAGA: network_rules NIE są tutaj – są w osobnym zasobie poniżej.
-  # Powód: inline network_rules blokuje Terraform zanim uploady blobów się zakończą.
-  # Rozwiązanie: azurerm_storage_account_network_rules z depends_on na wszystkich blobsach.
+  # Azure Policy: "Storage accounts should restrict network access" (Deny effect)
+  # Polityka wymaga network_rules z default_action=Deny JUŻ PRZY TWORZENIU konta.
+  # Bez tego bloku Azure Policy odrzuca stworzenie SA z błędem 403 RequestDisallowedByPolicy.
+  #
+  # ip_rules: IP operatora Terraform → umożliwia wgranie blobów (init-cfg, authcodes)
+  # bypass = AzureServices: umożliwia VM-Series (Managed Identity) czytanie blobów
+  # virtual_network_subnet_ids: mgmt subnet z service endpoint Microsoft.Storage
+  network_rules {
+    default_action             = "Deny"
+    bypass                     = ["AzureServices", "Logging", "Metrics"]
+    virtual_network_subnet_ids = var.allowed_subnet_ids
+    ip_rules                   = compact(var.terraform_operator_ips)
+  }
+
   tags = var.tags
+}
+
+###############################################################################
+# time_sleep: Czeka 60s po stworzeniu SA zanim stworzy kontener/blobs.
+# Wymagane: Azure propaguje network_rules (ip_rules) z opóźnieniem ~15-30s.
+# Bez sleep: natychmiastowa próba stworzenia kontenera kończy się 403.
+###############################################################################
+resource "time_sleep" "wait_for_sa_network_rules" {
+  depends_on      = [azurerm_storage_account.bootstrap]
+  create_duration = "60s"
 }
 
 resource "azurerm_storage_container" "bootstrap" {
   name                  = "bootstrap"
   storage_account_name  = azurerm_storage_account.bootstrap.name
   container_access_type = "private"
+
+  depends_on = [time_sleep.wait_for_sa_network_rules]
 }
 
 ###############################################################################
@@ -162,32 +185,3 @@ resource "azurerm_storage_blob" "fw2_content_placeholder" {
   source_content         = ""
 }
 
-###############################################################################
-# Storage Account Network Rules
-# WAŻNE: Muszą być PO uploadzie blobów (depends_on na wszystkich blobsach).
-# Inline network_rules w azurerm_storage_account blokuje Terraform przed uploadem.
-#
-# Działanie:
-#   - default_action = Deny: blokuje cały dostęp po wdrożeniu
-#   - bypass = AzureServices: pozwala FW (Managed Identity) czytać boostrap blobs
-#   - virtual_network_subnet_ids: mgmt subnet z service endpoint Microsoft.Storage
-#   - ip_rules: IP operatora Terraform (do ewentualnych późniejszych zmian blobów)
-###############################################################################
-resource "azurerm_storage_account_network_rules" "bootstrap" {
-  storage_account_id         = azurerm_storage_account.bootstrap.id
-  default_action             = "Deny"
-  bypass                     = ["AzureServices", "Logging", "Metrics"]
-  virtual_network_subnet_ids = var.allowed_subnet_ids
-  ip_rules                   = compact(var.terraform_operator_ips)
-
-  depends_on = [
-    azurerm_storage_blob.fw1_init_cfg,
-    azurerm_storage_blob.fw1_authcodes,
-    azurerm_storage_blob.fw1_software_placeholder,
-    azurerm_storage_blob.fw1_content_placeholder,
-    azurerm_storage_blob.fw2_init_cfg,
-    azurerm_storage_blob.fw2_authcodes,
-    azurerm_storage_blob.fw2_software_placeholder,
-    azurerm_storage_blob.fw2_content_placeholder,
-  ]
-}

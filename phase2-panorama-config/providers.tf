@@ -32,6 +32,10 @@ terraform {
       source  = "PaloAltoNetworks/panos"
       version = "~> 1.11"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
 }
 

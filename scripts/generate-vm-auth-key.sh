@@ -26,7 +26,7 @@ set -euo pipefail
 
 PANORAMA_URL="https://127.0.0.1:44300"
 PANORAMA_USER="panadmin"
-KEY_LIFETIME_HOURS=8760  # 1 rok
+KEY_LIFETIME_HOURS=1  # 1 godzina – wystarczy na czas deploy (max 8760h)
 
 # ── Parsuj argumenty ─────────────────────────────────────────────────────────
 PANORAMA_PASS="${PANORAMA_PASSWORD:-}"
@@ -74,7 +74,8 @@ KEYGEN_RESPONSE=$(curl -sk "${PANORAMA_URL}/api/" \
   --data-urlencode "user=${PANORAMA_USER}" \
   --data-urlencode "password=${PANORAMA_PASS}")
 
-API_KEY=$(echo "$KEYGEN_RESPONSE" | grep -oE '<key>[^<]+' | sed 's/<key>//')
+# || true: zapobiega cichemu wyjściu z set -e gdy grep nie znajdzie dopasowania
+API_KEY=$(echo "$KEYGEN_RESPONSE" | grep -oE '<key>[^<]+' | sed 's/<key>//' || true)
 
 if [ -z "$API_KEY" ]; then
   echo ""
@@ -92,7 +93,9 @@ AUTH_KEY_RESPONSE=$(curl -sk "${PANORAMA_URL}/api/" \
   --data-urlencode "cmd=<request><bootstrap-vm-auth-key><generate><lifetime>${KEY_LIFETIME_HOURS}</lifetime></generate></bootstrap-vm-auth-key></request>" \
   --data-urlencode "key=${API_KEY}")
 
-VM_AUTH_KEY=$(echo "$AUTH_KEY_RESPONSE" | grep -oE '<vm-auth-key>[^<]+' | sed 's/<vm-auth-key>//')
+# XML response tag: <bootstrap-vm-auth-key> (nie <vm-auth-key>)
+# || true: zapobiega cichemu wyjściu z set -e gdy grep nie znajdzie dopasowania
+VM_AUTH_KEY=$(echo "$AUTH_KEY_RESPONSE" | grep -oE '<bootstrap-vm-auth-key>[^<]+' | sed 's/<bootstrap-vm-auth-key>//' || true)
 
 if [ -z "$VM_AUTH_KEY" ]; then
   echo ""
