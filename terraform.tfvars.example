@@ -82,9 +82,16 @@ admin_password = "REPLACE_ME"  # min 12 znaków, wielkie/małe litery, cyfry, zn
 #   - WAŻNE: Wygeneruj po uruchomieniu Panoramy (Etap 2 deploy)
 #   - Klucz wygasa po określonym czasie - sprawdź ważność
 #------------------------------------------------------------------------------
-fw_auth_code         = "REPLACE_ME"  # np. "I5678901-ABCD-EFGH-IJKL"
-panorama_auth_code   = "REPLACE_ME"  # np. "P1234567-ABCD-EFGH-IJKL"
-panorama_vm_auth_key = "REPLACE_ME"  # generuj po uruchomieniu Panoramy
+# Auth codes licencji – z Palo Alto CSP Portal → Assets → Auth Codes
+# Format dla VM-Series i Panoramy: np. "D5541146" lub "F3862013"
+fw_auth_code       = "REPLACE_ME"  # auth code VM-Series BYOL
+panorama_auth_code = "REPLACE_ME"  # auth code Panoramy BYOL
+
+# Device Registration Auth Key – generuje się W Panoramie po jej uruchomieniu:
+#   Panorama GUI → Device Registration Auth Key → Generate → 8760 hours
+# ZOSTAW "" dla Phase 1a deploy. Uzupełnij PRZED Phase 1b (FW deploy).
+# NIE mylić z auth code powyżej – to są różne rzeczy!
+panorama_vm_auth_key = ""
 
 #------------------------------------------------------------------------------
 # Konfiguracja Panoramy

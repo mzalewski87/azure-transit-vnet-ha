@@ -57,9 +57,9 @@ variable "spoke1_resource_group_name" {
 }
 
 variable "spoke2_resource_group_name" {
-  description = "Name of the Spoke 2 resource group"
+  description = "Name of the Spoke 2 resource group (contains DC + Spoke2 Bastion)"
   type        = string
-  default     = "rg-spoke2-app"
+  default     = "rg-spoke2-dc"
 }
 
 #------------------------------------------------------------------------------
@@ -167,8 +167,8 @@ variable "panorama_vm_auth_key" {
   description = <<-EOT
     VM Auth Key generated in Panorama (Panorama → Devices → VM Auth Key → Generate).
     Used by VM-Series bootstrap to auto-register with Panorama.
-    IMPORTANT: Generate AFTER Panorama VM is running (deploy Phase 2).
-    Set to empty string "" for Phase 1 deploy, then re-apply after generating.
+  IMPORTANT: Generate AFTER Phase 1a (Panorama running) AND Phase 2 (Panorama config).
+  Leave empty "" for Phase 1a deploy. Uzupelnij przed Phase 1b (FW deploy).
   EOT
   type        = string
   sensitive   = true

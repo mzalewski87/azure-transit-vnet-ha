@@ -2,10 +2,13 @@
 # Panorama Module
 # Palo Alto Panorama - Centralized Management VM
 #
-# Placement: snet-mgmt (10.0.0.0/24), private IP 10.0.0.10
-# Access:    Public IP for HTTPS GUI (443) and SSH (22)
-# Storage:   2TB Premium SSD data disk for log storage
-# License:   BYOL - auth code applied via custom_data on first boot
+# Placement: snet-mgmt (10.0.0.0/24), private IP 10.0.0.10 (statyczny)
+# Access:    BRAK publicznego IP – wyłącznie przez Spoke2 Bastion (IpConnect SSH
+#            lub Bastion tunnel --target-resource-id dla HTTPS/panos provider)
+# Storage:   Premium SSD data disk dla logów (domyślnie 2TB)
+# License:   BYOL – auth code z custom_data (panorama-init-cfg.txt.tpl) przy starcie
+# Internet:  Outbound przez NAT Gateway (pip-nat-gateway-mgmt) – TCP/UDP działa,
+#            ICMP nie jest obsługiwany przez Azure NAT Gateway (ping zawiedzie)
 ###############################################################################
 
 ###############################################################################
@@ -25,9 +28,9 @@ resource "null_resource" "accept_panorama_terms" {
 }
 
 ###############################################################################
-# Network Interface
-# UWAGA: Brak publicznego IP – dostęp wyłącznie przez Hub Azure Bastion
-# Wychodząca komunikacja Internetu (licencje, updates) przez NAT Gateway
+# Network Interface (private only – no public IP)
+# Dostęp: Spoke2 Bastion → SSH (IpConnect) lub HTTPS (Bastion tunnel)
+# Wychodząca komunikacja: przez NAT Gateway (snet-mgmt) → TCP/UDP do internetu
 ###############################################################################
 resource "azurerm_network_interface" "panorama" {
   name                = "nic-panorama-mgmt"

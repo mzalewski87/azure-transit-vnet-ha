@@ -1,27 +1,50 @@
 ###############################################################################
-# Root Module – Phase 1 (Infrastructure only)
-# Azure Transit VNet - Palo Alto VM-Series Active/Passive HA
-# Reference: PAN Azure Transit VNet Deployment Guide
+# Root Module – Azure Transit VNet (Infrastructure)
+# Palo Alto VM-Series Active/Passive HA Reference Architecture
 #
-# DEPLOY IN TWO PHASES:
+# WYMAGANA KOLEJNOŚĆ DEPLOY (patrz README.md):
 #
-# Phase 1 – Infrastructure (ten katalog):
+# ──────────────────────────────────────────────────────────────────────────
+# PHASE 1a – Sieć + Panorama + DC/Bastion (BEZ firewalli):
 #   terraform apply \
+#     -target=azurerm_resource_group.hub \
+#     -target=azurerm_resource_group.spoke1 \
+#     -target=azurerm_resource_group.spoke2 \
 #     -target=module.networking \
-#     -target=module.bootstrap \
 #     -target=module.panorama \
+#     -target=module.spoke2_dc
+#   → Poczekaj na Panoramę, aktywuj licencję przez GUI
+#
+# PHASE 2 – Konfiguracja Panoramy przez panos provider (PRZED FW!):
+#   cd phase2-panorama-config/
+#   # Uruchom Bastion tunnel w osobnym terminalu (patrz README.md)
+#   terraform init && terraform apply
+#   → Tworzy Device Group i Template Stack w Panoramie
+#
+# PHASE 1b – Bootstrap + Firewalle + reszta infrastruktury:
+#   # 1. Wygeneruj Device Registration Auth Key w Panoramie
+#   # 2. Ustaw panorama_vm_auth_key w terraform.tfvars
+#   terraform apply -target=module.bootstrap
+#   terraform apply \
 #     -target=module.loadbalancer \
 #     -target=module.firewall \
 #     -target=module.routing \
 #     -target=module.frontdoor \
-#     -target=module.spoke1_app \
-#     -target=module.spoke2_dc
+#     -target=module.spoke1_app
 #
-# Phase 2 – Konfiguracja Panoramy (osobny katalog):
-#   cd phase2-panorama-config/
-#   terraform init
-#   terraform apply
-#   Szczegóły: patrz README.md sekcja "Phase 2"
+# DLACZEGO Phase 2 PRZED Phase 1b:
+#   FW bootstrap init-cfg zawiera: tplname=Transit-VNet-Stack, dgname=Transit-VNet-DG
+#   Gdy FW startuje, szuka tych obiektów w Panoramie.
+#   Phase 2 tworzy je. Bez Phase 2 FW nie może się zarejestrować w Panoramie.
+# ──────────────────────────────────────────────────────────────────────────
+#
+# UWAGA o adresach IP:
+#   module.bootstrap.panorama_private_ip = "10.0.0.10"
+#     → TO jest IP które FW używa do połączenia z Panoramą (w init-cfg)
+#     → FW łączy się bezpośrednio po sieci prywatnej (snet-mgmt)
+#   phase2-panorama-config/terraform.tfvars: panorama_hostname = "127.0.0.1"
+#     → TO jest IP dla TYLKO panos Terraform provider (przez Bastion tunnel)
+#     → NIE wpływa na konfigurację FW
 ###############################################################################
 
 #------------------------------------------------------------------------------
@@ -88,6 +111,10 @@ module "bootstrap" {
   location            = var.location
   resource_group_name = azurerm_resource_group.hub.name
 
+  # WAŻNE: To IP (10.0.0.10) trafia do init-cfg.txt jako panorama-server.
+  # FW używa tego IP do połączenia z Panoramą przez sieć prywatną snet-mgmt.
+  # NIE mylić z panorama_hostname="127.0.0.1" w phase2-panorama-config
+  # (to jest tylko dla panos Terraform provider przez Bastion tunnel).
   panorama_private_ip     = "10.0.0.10"
   panorama_template_stack = var.panorama_template_stack
   panorama_device_group   = var.panorama_device_group
