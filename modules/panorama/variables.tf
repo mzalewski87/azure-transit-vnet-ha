@@ -40,12 +40,6 @@ variable "panorama_version" {
   default     = "latest"
 }
 
-variable "panorama_hostname" {
-  description = "Hostname for Panorama instance"
-  type        = string
-  default     = "panorama-transit-hub"
-}
-
 variable "admin_username" {
   description = "Administrator username for Panorama"
   type        = string
@@ -57,22 +51,16 @@ variable "admin_password" {
   sensitive   = true
 }
 
-variable "panorama_serial_number" {
+variable "bootstrap_custom_data" {
   description = <<-EOT
-    Numer seryjny Panoramy z Palo Alto CSP Portal (Assets → Devices).
-    Wymagany do automatycznej aktywacji licencji przy starcie.
-    Format: np. "007300014999" lub "007900000111".
-    Jeśli pusty (""), Panorama generuje własny serial z fingerprinta VM
-    i może wymagać ręcznej aktywacji licencji.
+    base64-encoded bootstrap pointer do Azure Storage Account.
+    Format: storage-account=<name>\nfile-share=<container>\nshare-directory=panorama\naccess-key=<key>
+    Generowany przez module.bootstrap (panorama_custom_data output).
+    PAN-OS pobiera init-cfg z SA: <container>/panorama/config/init-cfg.txt
+    Panorama jest PAN-OS – czyta bootstrap identycznie jak VM-Series FW.
   EOT
-  type        = string
-  default     = ""
-}
-
-variable "panorama_auth_code" {
-  description = "Panorama BYOL auth code for license activation"
-  type        = string
-  sensitive   = true
+  type      = string
+  sensitive = true
 }
 
 variable "log_disk_size_gb" {

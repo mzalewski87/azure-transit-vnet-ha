@@ -60,3 +60,20 @@ output "fw2_custom_data" {
     "access-key=${azurerm_storage_account.bootstrap.primary_access_key}",
   ]))
 }
+
+output "panorama_custom_data" {
+  description = <<-EOT
+    base64-encoded custom_data dla Panoramy wskazujący na bootstrap SA.
+    Panorama jest PAN-OS i czyta bootstrap IDENTYCZNIE jak VM-Series FW:
+      customData → wskaźnik do SA → SA:bootstrap/panorama/config/init-cfg.txt
+    Format: storage-account + file-share + share-directory + access-key
+    Uwaga: PAN-OS IGNORUJE bezpośrednią treść init-cfg w customData!
+  EOT
+  sensitive = true
+  value = base64encode(join("\n", [
+    "storage-account=${azurerm_storage_account.bootstrap.name}",
+    "file-share=${azurerm_storage_container.bootstrap.name}",
+    "share-directory=panorama",
+    "access-key=${azurerm_storage_account.bootstrap.primary_access_key}",
+  ]))
+}

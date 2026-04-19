@@ -185,3 +185,33 @@ resource "azurerm_storage_blob" "fw2_content_placeholder" {
   source_content         = ""
 }
 
+###############################################################################
+# Bootstrap blobs – Panorama
+#
+# Panorama jest PAN-OS z dodatkowymi modułami. Czyta bootstrap IDENTYCZNIE jak
+# VM-Series: customData zawiera wskaźnik do SA, Panorama pobiera init-cfg z SA.
+#
+# UWAGA: Panorama NIE przyjmuje init-cfg bezpośrednio w customData/userData!
+#   Jedyna niezawodna metoda: storage-account bootstrap (tak samo jak FW).
+#   Bezpośrednie init-cfg w customData/userData jest ignorowane przez PAN-OS.
+###############################################################################
+resource "azurerm_storage_blob" "panorama_init_cfg" {
+  name                   = "panorama/config/init-cfg.txt"
+  storage_account_name   = azurerm_storage_account.bootstrap.name
+  storage_container_name = azurerm_storage_container.bootstrap.name
+  type                   = "Block"
+  source_content = templatefile("${path.module}/templates/panorama-init-cfg.txt.tpl", {
+    hostname           = var.panorama_hostname
+    serial_number      = var.panorama_serial_number
+    panorama_auth_code = var.panorama_auth_code
+  })
+}
+
+resource "azurerm_storage_blob" "panorama_authcodes" {
+  name                   = "panorama/license/authcodes"
+  storage_account_name   = azurerm_storage_account.bootstrap.name
+  storage_container_name = azurerm_storage_container.bootstrap.name
+  type                   = "Block"
+  source_content         = var.panorama_auth_code
+}
+

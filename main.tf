@@ -5,15 +5,18 @@
 # WYMAGANA KOLEJNOŚĆ DEPLOY (patrz README.md):
 #
 # ──────────────────────────────────────────────────────────────────────────
-# PHASE 1a – Sieć + Panorama + DC/Bastion (BEZ firewalli):
+# PHASE 1a – Sieć + Bootstrap SA + Panorama + DC/Bastion (BEZ firewalli):
 #   terraform apply \
 #     -target=azurerm_resource_group.hub \
 #     -target=azurerm_resource_group.spoke1 \
 #     -target=azurerm_resource_group.spoke2 \
 #     -target=module.networking \
+#     -target=module.bootstrap \
 #     -target=module.panorama \
 #     -target=module.spoke2_dc
-#   → Poczekaj na Panoramę, aktywuj licencję przez GUI
+#   → UWAGA: module.bootstrap MUSI być przed module.panorama (zależność jawna)
+#   → Panorama czyta init-cfg z Bootstrap SA (nie z customData bezpośrednio!)
+#   → Poczekaj ~15 min na boot Panoramy, weryfikuj przez GUI przez Bastion tunnel
 #
 # PHASE 2 – Konfiguracja Panoramy przez panos provider (PRZED FW!):
 #   cd phase2-panorama-config/
@@ -21,10 +24,10 @@
 #   terraform init && terraform apply
 #   → Tworzy Device Group i Template Stack w Panoramie
 #
-# PHASE 1b – Bootstrap + Firewalle + reszta infrastruktury:
+# PHASE 1b – Aktualizacja Bootstrap (z vm-auth-key) + Firewalle + reszta:
 #   # 1. Wygeneruj Device Registration Auth Key w Panoramie
 #   # 2. Ustaw panorama_vm_auth_key w terraform.tfvars
-#   terraform apply -target=module.bootstrap
+#   terraform apply -target=module.bootstrap   # aktualizuje FW init-cfg z vm-auth-key
 #   terraform apply \
 #     -target=module.loadbalancer \
 #     -target=module.firewall \
@@ -122,6 +125,11 @@ module "bootstrap" {
 
   fw_auth_code = var.fw_auth_code
 
+  # Panorama bootstrap – init-cfg dla Panoramy w SA (panorama/config/init-cfg.txt)
+  # Panorama jest PAN-OS i czyta bootstrap identycznie jak FW (storage pointer w customData)
+  panorama_serial_number = var.panorama_serial_number
+  panorama_auth_code     = var.panorama_auth_code
+
   # Azure Policy compliance: network_rules default_action=Deny
   # mgmt subnet has Microsoft.Storage service endpoint (set in networking module)
   allowed_subnet_ids = [
@@ -149,14 +157,20 @@ module "panorama" {
   mgmt_subnet_id      = module.networking.mgmt_subnet_id
   panorama_private_ip = "10.0.0.10"
 
-  vm_size                = var.panorama_vm_size
-  admin_username         = var.admin_username
-  admin_password         = var.admin_password
-  panorama_serial_number = var.panorama_serial_number
-  panorama_auth_code     = var.panorama_auth_code
-  log_disk_size_gb       = var.panorama_log_disk_size_gb
+  vm_size        = var.panorama_vm_size
+  admin_username = var.admin_username
+  admin_password = var.admin_password
+
+  # Panorama czyta init-cfg z Bootstrap SA (identycznie jak VM-Series FW).
+  # module.bootstrap MUSI być wdrożony PRZED Panoramą (Phase 1a obejmuje oba).
+  # SA tworzy: bootstrap/<container>/panorama/config/init-cfg.txt z hostname+serial+authcode.
+  bootstrap_custom_data = module.bootstrap.panorama_custom_data
+
+  log_disk_size_gb = var.panorama_log_disk_size_gb
 
   tags = var.tags
+
+  depends_on = [module.bootstrap]
 }
 
 #------------------------------------------------------------------------------

@@ -85,28 +85,17 @@ resource "azurerm_linux_virtual_machine" "panorama" {
     product   = "panorama"
   }
 
-  # Bootstrap init-cfg dla Panoramy.
+  # Bootstrap Panoramy przez Azure Storage Account (IDENTYCZNY mechanizm jak VM-Series FW).
   #
-  # WAŻNE: PAN-OS 11.x czyta konfigurację bootstrap z Azure userData (NIE customData).
-  #   Azure Portal: zakładka "User data" → Terraform: user_data
-  #   Azure "customData" = stary mechanizm (pre-10.x), plik /var/lib/waagent/CustomData
-  #   Azure "userData"   = nowy mechanizm (10.x+), dostępny przez Azure IMDS endpoint
-  #   Źródło: https://docs.paloaltonetworks.com/vm-series/11-1/vm-series-deployment/
-  #            set-up-the-vm-series-firewall-on-azure
+  # KLUCZOWA ZASADA: Panorama to PAN-OS z dodatkowymi modułami.
+  #   PAN-OS czyta customData jako WSKAŹNIK do Storage Account, NIE jako treść init-cfg!
+  #   Format: storage-account=<name>\nfile-share=<container>\nshare-directory=panorama\naccess-key=<key>
+  #   PAN-OS pobiera init-cfg z: <sa>/<container>/panorama/config/init-cfg.txt
   #
-  # Ustawiamy OBA pola dla kompatybilności wstecznej:
-  #   user_data   → PAN-OS 11.x (primary)
-  #   custom_data → PAN-OS <10.x (fallback)
-  user_data = base64encode(templatefile("${path.module}/templates/panorama-init-cfg.txt.tpl", {
-    hostname           = var.panorama_hostname
-    serial_number      = var.panorama_serial_number
-    panorama_auth_code = var.panorama_auth_code
-  }))
-  custom_data = base64encode(templatefile("${path.module}/templates/panorama-init-cfg.txt.tpl", {
-    hostname           = var.panorama_hostname
-    serial_number      = var.panorama_serial_number
-    panorama_auth_code = var.panorama_auth_code
-  }))
+  # Ustawiamy OBA pola (custom_data + user_data) dla maksymalnej kompatybilności
+  # między wersjami PAN-OS (różne wersje czytają z różnych pól Azure IMDS):
+  user_data   = var.bootstrap_custom_data
+  custom_data = var.bootstrap_custom_data
 
   depends_on = [null_resource.accept_panorama_terms]
 }

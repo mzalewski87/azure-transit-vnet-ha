@@ -42,6 +42,32 @@ variable "fw_auth_code" {
   sensitive   = true
 }
 
+#------------------------------------------------------------------------------
+# Panorama bootstrap variables
+# Panorama reads init-cfg from SA (same mechanism as VM-Series FW)
+#------------------------------------------------------------------------------
+variable "panorama_hostname" {
+  description = "Hostname for Panorama in init-cfg.txt"
+  type        = string
+  default     = "panorama-transit-hub"
+}
+
+variable "panorama_serial_number" {
+  description = <<-EOT
+    Numer seryjny Panoramy z CSP Portal (Assets → Devices).
+    Wymagany do automatycznej aktywacji licencji przy starcie.
+    Zostaw "" jeśli nieznany – aktywacja wymaga ręcznej interwencji w GUI.
+  EOT
+  type      = string
+  default   = ""
+}
+
+variable "panorama_auth_code" {
+  description = "Panorama BYOL auth code for license activation (from CSP Portal → Assets → Auth Codes)"
+  type        = string
+  sensitive   = true
+}
+
 variable "fw1_hostname" {
   description = "Hostname for FW1 in init-cfg.txt"
   type        = string

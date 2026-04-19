@@ -158,6 +158,7 @@ terraform apply \
   -target=azurerm_resource_group.spoke1 \
   -target=azurerm_resource_group.spoke2 \
   -target=module.networking \
+  -target=module.bootstrap \
   -target=module.panorama \
   -target=module.spoke2_dc
 ```
@@ -166,10 +167,13 @@ terraform apply \
 
 > **Co się dzieje:**
 > - Tworzone są VNety, subnety, NSG, NAT Gateway, VNet Peering
+> - **Tworzony jest Bootstrap Storage Account** z plikami init-cfg dla Panoramy i FW
+>   - SA jest wymagany PRZED Panoramą – Panorama czyta init-cfg z SA (nie z customData bezpośrednio)
+>   - SA zawiera: `bootstrap/panorama/config/init-cfg.txt` (hostname, serial, authcodes)
+>   - SA zawiera też: `bootstrap/fw1/config/init-cfg.txt` i `bootstrap/fw2/config/init-cfg.txt`
 > - Wdrażana jest Panorama VM (Standard_D16s_v3 / 64 GB RAM)
->   - Panorama bootuje ~10-15 min
->   - Jeśli `panorama_serial_number` jest ustawiony w tfvars → automatyczna aktywacja licencji
->   - Jeśli nie → ręczna aktywacja przez GUI (patrz Rozwiązywanie problemów)
+>   - Panorama (jako PAN-OS) czyta `customData` → wskaźnik do SA → init-cfg z SA
+>   - Panorama bootuje ~10-15 min; jeśli `panorama_serial_number` ustawiony → auto-aktywacja licencji
 > - Wdrażany jest Windows DC w Spoke2 + Bastion
 
 ---
@@ -254,19 +258,17 @@ panorama_vm_auth_key = "2:BKLVoIq7Ty2GZqT1JcNI8a..."
 
 ### Etap 1b – Bootstrap + Firewall + pozostałe zasoby (Phase 1b)
 
-**Krok 1 – Bootstrap Storage Account:**
+**Krok 1 – Aktualizacja Bootstrap z vm-auth-key:**
 
 ```bash
 terraform apply -target=module.bootstrap
 ```
 
-⏱ **Czas:** ~3-5 min (w tym 60s sleep na propagację network rules)
+⏱ **Czas:** ~1-2 min (SA już istnieje z Phase 1a, aktualizacja blobów FW1/FW2 z vm-auth-key)
 
 > **Co się dzieje:**
-> - Tworzony jest Azure Storage Account z `network_rules.default_action = Deny`
->   (wymóg Azure Policy "Storage accounts should restrict network access")
-> - Tworzony jest kontener bootstrap z init-cfg.txt (Panorama IP, vm-auth-key, authcodes, NTP, DNS, timezone)
-> - FW odczyta bootstrap przy starcie za pomocą klucza SA (access-key) – niezawodna metoda
+> - Aktualizuje blobs `fw1/config/init-cfg.txt` i `fw2/config/init-cfg.txt` z `panorama_vm_auth_key`
+> - FW odczyta zaktualizowany init-cfg przy starcie za pomocą klucza SA (access-key)
 
 **Krok 2 – Load Balancer, Firewall, Routing, Front Door, App:**
 
