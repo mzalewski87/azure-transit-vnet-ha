@@ -26,7 +26,7 @@ spoke2_subscription_id = "REPLACE_ME"  # może być ten sam co hub
 #------------------------------------------------------------------------------
 # Lokalizacja i tagi
 #------------------------------------------------------------------------------
-location = "West Europe"
+location = "Germany West Central"
 
 tags = {
   Environment = "Demo"

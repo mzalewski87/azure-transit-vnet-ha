@@ -28,23 +28,26 @@ output "managed_identity_client_id" {
 }
 
 output "fw1_custom_data" {
-  description = "base64-encoded custom_data for FW1 pointing to bootstrap storage"
+  description = "base64-encoded custom_data for FW1 pointing to bootstrap storage (Managed Identity)"
   sensitive   = true
+  # Format wymagany przez PAN-OS 11.x dla Azure Blob Storage z Managed Identity:
+  #   access-key=  (puste) – sygnalizuje PAN-OS aby użył Managed Identity do autentykacji
+  #   NIE używaj storage-account-key=None (błędna nazwa parametru + błędna wartość)
   value = base64encode(join("\n", [
     "storage-account=${azurerm_storage_account.bootstrap.name}",
     "file-share=${azurerm_storage_container.bootstrap.name}",
     "share-directory=fw1",
-    "storage-account-key=None",
+    "access-key=",
   ]))
 }
 
 output "fw2_custom_data" {
-  description = "base64-encoded custom_data for FW2 pointing to bootstrap storage"
+  description = "base64-encoded custom_data for FW2 pointing to bootstrap storage (Managed Identity)"
   sensitive   = true
   value = base64encode(join("\n", [
     "storage-account=${azurerm_storage_account.bootstrap.name}",
     "file-share=${azurerm_storage_container.bootstrap.name}",
     "share-directory=fw2",
-    "storage-account-key=None",
+    "access-key=",
   ]))
 }

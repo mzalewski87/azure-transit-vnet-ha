@@ -24,9 +24,14 @@ variable "panorama_private_ip" {
 }
 
 variable "vm_size" {
-  description = "Azure VM size for Panorama"
+  description = <<-EOT
+    Azure VM size for Panorama. Minimalne wymagania PAN-OS:
+    - min: Standard_D8s_v3  (8 vCPU, 32 GB RAM)
+    - zalecane: Standard_D16s_v3 (16 vCPU, 64 GB RAM)
+    Standard_D4s_v3 (16 GB) jest NIEWYSTARCZAJĄCY – Panorama może crashować.
+  EOT
   type        = string
-  default     = "Standard_D4s_v3"
+  default     = "Standard_D16s_v3"
 }
 
 variable "panorama_version" {

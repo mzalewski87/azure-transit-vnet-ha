@@ -25,9 +25,13 @@ variable "spoke2_subscription_id" {
 # General Settings
 #------------------------------------------------------------------------------
 variable "location" {
-  description = "Azure region for all resources"
+  description = <<-EOT
+    Azure region dla wszystkich zasobów.
+    Germany West Central (Frankfurt) – zalecane dla danych EU/PL.
+    Inne opcje: "West Europe" (Amsterdam), "North Europe" (Dublin).
+  EOT
   type        = string
-  default     = "West Europe"
+  default     = "Germany West Central"
 }
 
 variable "tags" {
@@ -202,9 +206,13 @@ variable "panorama_serial_number" {
 }
 
 variable "panorama_vm_size" {
-  description = "Azure VM size for Panorama"
+  description = <<-EOT
+    Azure VM size dla Panoramy. Min 32 GB RAM, zalecane 64 GB.
+    Standard_D8s_v3 = 8 vCPU, 32 GB (minimum produkcyjne)
+    Standard_D16s_v3 = 16 vCPU, 64 GB (zalecane)
+  EOT
   type        = string
-  default     = "Standard_D4s_v3"
+  default     = "Standard_D16s_v3"
 }
 
 variable "panorama_log_disk_size_gb" {
