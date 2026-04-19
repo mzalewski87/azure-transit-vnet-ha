@@ -28,26 +28,35 @@ output "managed_identity_client_id" {
 }
 
 output "fw1_custom_data" {
-  description = "base64-encoded custom_data for FW1 pointing to bootstrap storage (Managed Identity)"
+  description = "base64-encoded custom_data for FW1 pointing to bootstrap storage (account key auth)"
   sensitive   = true
-  # Format wymagany przez PAN-OS 11.x dla Azure Blob Storage z Managed Identity:
-  #   access-key=  (puste) – sygnalizuje PAN-OS aby użył Managed Identity do autentykacji
-  #   NIE używaj storage-account-key=None (błędna nazwa parametru + błędna wartość)
+  # Format wymagany przez PAN-OS 11.x dla Azure Blob Storage z kluczem konta:
+  #   access-key=<key>  – jawny klucz SA (niezawodny, bez zależności od timing MI)
+  #   file-share=<container>  – nazwa kontenera Blob Storage
+  #   share-directory=<fw1>   – podkatalog wewnątrz kontenera
+  #
+  # Dlaczego klucz SA zamiast Managed Identity (access-key= puste):
+  #   Managed Identity wymaga propagacji roli (5-15 min) zanim FW może czytać blobs.
+  #   FW bootuje już po ~2-5 min → czyta bootstrap zanim MI role jest propagowana → fail.
+  #   Jawny klucz SA działa natychmiastowo i niezawodnie.
+  #
+  # Bezpieczeństwo: klucz SA jest w VM custom_data (dostępny dla admina VM).
+  #   Dla produkcji: użyj SAS token z krótkim TTL. Dla demo: klucz SA jest akceptowalny.
   value = base64encode(join("\n", [
     "storage-account=${azurerm_storage_account.bootstrap.name}",
     "file-share=${azurerm_storage_container.bootstrap.name}",
     "share-directory=fw1",
-    "access-key=",
+    "access-key=${azurerm_storage_account.bootstrap.primary_access_key}",
   ]))
 }
 
 output "fw2_custom_data" {
-  description = "base64-encoded custom_data for FW2 pointing to bootstrap storage (Managed Identity)"
+  description = "base64-encoded custom_data for FW2 pointing to bootstrap storage (account key auth)"
   sensitive   = true
   value = base64encode(join("\n", [
     "storage-account=${azurerm_storage_account.bootstrap.name}",
     "file-share=${azurerm_storage_container.bootstrap.name}",
     "share-directory=fw2",
-    "access-key=",
+    "access-key=${azurerm_storage_account.bootstrap.primary_access_key}",
   ]))
 }
