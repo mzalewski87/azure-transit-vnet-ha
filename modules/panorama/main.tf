@@ -85,12 +85,27 @@ resource "azurerm_linux_virtual_machine" "panorama" {
     product   = "panorama"
   }
 
-  # Bootstrap init-cfg for Panorama: sets hostname and auth code
-  # Panorama reads custom_data directly (not via storage account)
+  # Bootstrap init-cfg dla Panoramy.
+  #
+  # WAŻNE: PAN-OS 11.x czyta konfigurację bootstrap z Azure userData (NIE customData).
+  #   Azure Portal: zakładka "User data" → Terraform: user_data
+  #   Azure "customData" = stary mechanizm (pre-10.x), plik /var/lib/waagent/CustomData
+  #   Azure "userData"   = nowy mechanizm (10.x+), dostępny przez Azure IMDS endpoint
+  #   Źródło: https://docs.paloaltonetworks.com/vm-series/11-1/vm-series-deployment/
+  #            set-up-the-vm-series-firewall-on-azure
+  #
+  # Ustawiamy OBA pola dla kompatybilności wstecznej:
+  #   user_data   → PAN-OS 11.x (primary)
+  #   custom_data → PAN-OS <10.x (fallback)
+  user_data = base64encode(templatefile("${path.module}/templates/panorama-init-cfg.txt.tpl", {
+    hostname           = var.panorama_hostname
+    serial_number      = var.panorama_serial_number
+    panorama_auth_code = var.panorama_auth_code
+  }))
   custom_data = base64encode(templatefile("${path.module}/templates/panorama-init-cfg.txt.tpl", {
-    hostname               = var.panorama_hostname
-    serial_number          = var.panorama_serial_number
-    panorama_auth_code     = var.panorama_auth_code
+    hostname           = var.panorama_hostname
+    serial_number      = var.panorama_serial_number
+    panorama_auth_code = var.panorama_auth_code
   }))
 
   depends_on = [null_resource.accept_panorama_terms]

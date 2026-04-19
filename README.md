@@ -331,6 +331,48 @@ terraform apply
 
 ## Rozwiązywanie problemów
 
+### ⚠️ Panorama / FW: brak konfiguracji po boocie – user_data vs customData
+
+**Przyczyna:** PAN-OS 10.x+ czyta konfigurację bootstrap z **Azure `userData`**, NIE z `customData`.  
+Są to dwa odrębne pola w Azure API:
+
+| Pole Azure | Terraform | Kto czyta | Uwaga |
+|------------|-----------|-----------|-------|
+| `osProfile.customData` | `custom_data` | PAN-OS < 10.x, cloud-init | Stary mechanizm |
+| `userData` | `user_data` | PAN-OS 10.x, 11.x | **Nowy mechanizm** |
+
+W Azure Portal przy tworzeniu VM widoczna jest zakładka **"User data"** – to właśnie `userData`.  
+Jeśli init-cfg trafi do `customData` (nie `userData`), PAN-OS 11.x go zignoruje.
+
+Ten projekt ustawia **oba pola** (`user_data` + `custom_data`) dla kompatybilności wstecznej.  
+Jeśli Panorama lub FW nie mają konfiguracji po boocie, sprawdź czy `user_data` jest ustawione:
+```bash
+az vm show -g rg-transit-hub -n vm-panos-fw1 \
+  --query 'storageProfile' -o json | grep -i userData
+# lub sprawdź przez Azure Portal → VM → Configuration → User data
+```
+
+### generate-vm-auth-key.sh: komenda "unexpected" – brak licencji Panoramy
+
+**Przyczyna:** Komenda `vm-auth-key generate` wymaga **aktywnej licencji Panoramy**.  
+Jeśli init-cfg nie zadziałał (np. przez customData/userData issue), Panorama nie ma licencji  
+i wszystkie próby generowania klucza kończą się błędem `code="17" is unexpected`.
+
+**Diagnostyka:**
+```bash
+# Skrypt pokazuje teraz diagnostykę: wersję, hostname, serial i status licencji
+./scripts/generate-vm-auth-key.sh
+# Sprawdź linię: "Licencja Panoramy: ✅ aktywna" LUB ostrzeżenie o braku licencji
+```
+
+**Jeśli Panorama ma licencję** (✅) ale vm-auth-key ciągle "unexpected":
+```
+Edge → https://127.0.0.1:44300
+→ Panorama → Devices → VM Auth Key → Generate → 1 hour  (PAN-OS 10.x)
+  LUB
+→ Panorama → Setup → Bootstrap → Generate VM Auth Key   (PAN-OS 11.x)
+```
+
 ### Panorama: brak numeru seryjnego / licencja nie aktywuje się
 
 **Przyczyna:** `panorama_serial_number` jest pusty lub niedostępny.

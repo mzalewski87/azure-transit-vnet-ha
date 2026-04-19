@@ -276,6 +276,9 @@ resource "azurerm_linux_virtual_machine" "fw1" {
 
   # Bootstrap: points VM-Series to Azure Storage Account bootstrap package
   # Managed Identity provides secure access without static storage keys
+  # PAN-OS 11.x czyta bootstrap pointer z user_data (Azure userData).
+  # custom_data (Azure customData) zachowany dla kompatybilności wstecznej.
+  user_data   = var.bootstrap_custom_data_fw1
   custom_data = var.bootstrap_custom_data_fw1
 
   identity {
@@ -327,6 +330,7 @@ resource "azurerm_linux_virtual_machine" "fw2" {
     product   = "vmseries-flex"
   }
 
+  user_data   = var.bootstrap_custom_data_fw2
   custom_data = var.bootstrap_custom_data_fw2
 
   identity {
