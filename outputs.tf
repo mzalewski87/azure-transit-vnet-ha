@@ -18,10 +18,51 @@ output "panorama_private_ip" {
   value       = var.panorama_private_ip
 }
 
+#--- Firewall IPs ---
+output "fw1_mgmt_private_ip" {
+  description = "FW1 management interface IP (snet-mgmt, for Bastion SSH/HTTPS)"
+  value       = module.firewall.fw1_mgmt_private_ip
+}
+
+output "fw2_mgmt_private_ip" {
+  description = "FW2 management interface IP (snet-mgmt, for Bastion SSH/HTTPS)"
+  value       = module.firewall.fw2_mgmt_private_ip
+}
+
+output "fw1_untrust_private_ip" {
+  description = "FW1 untrust interface IP (snet-public, eth1/1)"
+  value       = module.firewall.fw1_untrust_private_ip
+}
+
+output "fw2_untrust_private_ip" {
+  description = "FW2 untrust interface IP (snet-public, eth1/1)"
+  value       = module.firewall.fw2_untrust_private_ip
+}
+
+output "fw1_trust_private_ip" {
+  description = "FW1 trust interface IP (snet-private, eth1/2)"
+  value       = module.firewall.fw1_trust_private_ip
+}
+
+output "fw2_trust_private_ip" {
+  description = "FW2 trust interface IP (snet-private, eth1/2)"
+  value       = module.firewall.fw2_trust_private_ip
+}
+
 #--- Resource IDs (for Bastion commands) ---
 output "panorama_vm_id" {
   description = "Panorama VM resource ID (for Bastion tunnel --target-resource-id)"
   value       = module.panorama.panorama_vm_id
+}
+
+output "fw1_vm_id" {
+  description = "FW1 VM resource ID (for Bastion tunnel --target-resource-id)"
+  value       = module.firewall.fw1_vm_id
+}
+
+output "fw2_vm_id" {
+  description = "FW2 VM resource ID (for Bastion tunnel --target-resource-id)"
+  value       = module.firewall.fw2_vm_id
 }
 
 output "dc_vm_id" {
@@ -50,4 +91,19 @@ output "bootstrap_storage_account" {
 output "frontdoor_endpoint" {
   description = "Azure Front Door endpoint hostname"
   value       = module.frontdoor.frontdoor_endpoint_hostname
+}
+
+#--- Bastion Quick Reference ---
+output "bastion_ssh_commands" {
+  description = "Quick reference: Bastion SSH commands for FW and Panorama"
+  value       = <<-EOT
+    # Panorama
+    az network bastion ssh --name ${module.networking.bastion_name} --resource-group ${module.networking.bastion_resource_group} --target-resource-id ${module.panorama.panorama_vm_id} --auth-type password --username panadmin
+
+    # FW1 (Active)   mgmt IP: ${module.firewall.fw1_mgmt_private_ip}
+    az network bastion ssh --name ${module.networking.bastion_name} --resource-group ${module.networking.bastion_resource_group} --target-resource-id ${module.firewall.fw1_vm_id} --auth-type password --username panadmin
+
+    # FW2 (Passive)  mgmt IP: ${module.firewall.fw2_mgmt_private_ip}
+    az network bastion ssh --name ${module.networking.bastion_name} --resource-group ${module.networking.bastion_resource_group} --target-resource-id ${module.firewall.fw2_vm_id} --auth-type password --username panadmin
+  EOT
 }

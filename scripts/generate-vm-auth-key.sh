@@ -189,16 +189,25 @@ try:
         print(f'ERROR: {msg}', file=sys.stderr)
         sys.exit(1)
 
-    # Try direct key element first
+    # 1. Try <key> element (direct)
     key_elem = root.find('.//key')
-    if key_elem is not None and key_elem.text:
+    if key_elem is not None and key_elem.text and len(key_elem.text.strip()) > 20:
         print(key_elem.text.strip())
         sys.exit(0)
 
-    # Try any element text matching key pattern
+    # 2. Try <result> element – Panorama authkey add returns key in result text
+    result_elem = root.find('.//result')
+    if result_elem is not None and result_elem.text:
+        m = re.search(r'(2:[\w-]{20,})', result_elem.text)
+        if m:
+            print(m.group(1))
+            sys.exit(0)
+
+    # 3. Regex fallback – scan ALL element text
+    # WAŻNE: char class zawiera '-' (format klucza: 2:XXXXXX-YYYYYYY)
     for elem in root.iter():
         if elem.text:
-            m = re.search(r'([\w:]+\w{32,})', elem.text)
+            m = re.search(r'(2:[\w-]{20,})', elem.text)
             if m:
                 print(m.group(1))
                 sys.exit(0)

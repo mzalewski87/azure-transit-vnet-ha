@@ -455,6 +455,56 @@ resource "azurerm_network_security_group" "transit_mgmt" {
     destination_address_prefix = local.transit_mgmt_cidr
   }
 
+  # SSH/HTTPS from App2 VNet (np. Windows DC diagnostics, FW mgmt)
+  security_rule {
+    name                       = "Allow-SSH-From-App2-VNet"
+    priority                   = 130
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = var.app2_vnet_address_space
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Allow-HTTPS-From-App2-VNet"
+    priority                   = 140
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = var.app2_vnet_address_space
+    destination_address_prefix = "*"
+  }
+
+  # SSH/HTTPS from App1 VNet
+  security_rule {
+    name                       = "Allow-SSH-From-App1-VNet"
+    priority                   = 150
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = var.app1_vnet_address_space
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Allow-HTTPS-From-App1-VNet"
+    priority                   = 160
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = var.app1_vnet_address_space
+    destination_address_prefix = "*"
+  }
+
   security_rule {
     name                       = "Deny-All-Inbound"
     priority                   = 4096

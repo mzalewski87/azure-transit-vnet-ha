@@ -174,13 +174,14 @@ except Exception as e:
       echo "  API key: OK"
 
       # Krok 3a: Ustaw numer seryjny przez XML API (tryb config)
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+      # UWAGA: element PAN-OS XML to <serial-number>, NIE <serial>
+      SET_RESP=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=set" \
         --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system" \
-        --data-urlencode "element=<serial>$SERIAL_NUM</serial>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  Numer seryjny $SERIAL_NUM ustawiony w konfiguracji."
+        --data-urlencode "element=<serial-number>$SERIAL_NUM</serial-number>" \
+        --data-urlencode "key=$API_KEY" 2>/dev/null)
+      echo "  Numer seryjny $SERIAL_NUM ustawiony w konfiguracji. Odpowiedz API: $SET_RESP"
 
       # Krok 3b: Commit (wymagany zanim serial number zadziala z serwerem licencji)
       curl -sk --max-time 90 "$PANORAMA_URL/api/" \
