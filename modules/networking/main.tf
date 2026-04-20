@@ -891,6 +891,11 @@ resource "azurerm_virtual_network_peering" "app1_to_management" {
   allow_forwarded_traffic      = true
   allow_gateway_transit        = false
   use_remote_gateways          = false
+
+  depends_on = [
+    azurerm_subnet.management_panorama,
+    azurerm_subnet.management_bastion,
+  ]
 }
 
 # Management ↔ App2
@@ -915,6 +920,11 @@ resource "azurerm_virtual_network_peering" "app2_to_management" {
   allow_forwarded_traffic      = true
   allow_gateway_transit        = false
   use_remote_gateways          = false
+
+  depends_on = [
+    azurerm_subnet.management_panorama,
+    azurerm_subnet.management_bastion,
+  ]
 }
 
 # Transit Hub ↔ App1
@@ -939,6 +949,13 @@ resource "azurerm_virtual_network_peering" "app1_to_transit" {
   allow_forwarded_traffic      = true
   allow_gateway_transit        = false
   use_remote_gateways          = false
+
+  depends_on = [
+    azurerm_subnet.transit_mgmt,
+    azurerm_subnet.transit_public,
+    azurerm_subnet.transit_private,
+    azurerm_subnet.transit_ha,
+  ]
 }
 
 # Transit Hub ↔ App2
@@ -963,4 +980,11 @@ resource "azurerm_virtual_network_peering" "app2_to_transit" {
   allow_forwarded_traffic      = true
   allow_gateway_transit        = false
   use_remote_gateways          = false
+
+  depends_on = [
+    azurerm_subnet.transit_mgmt,
+    azurerm_subnet.transit_public,
+    azurerm_subnet.transit_private,
+    azurerm_subnet.transit_ha,
+  ]
 }
