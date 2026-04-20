@@ -1,15 +1,13 @@
 ###############################################################################
 # Spoke2 DC Module
-# Windows Server 2022 – Active Directory Domain Controller (panw.labs)
-# Azure Bastion – Secure RDP access without public IP on DC
+# Windows Server 2022 Domain Controller
 #
-# Access path:
-#   Azure Portal → Bastion → RDP to vm-spoke2-dc (10.2.0.4)
-#   No public IP on DC, no VPN required for management access
+# Placement: App2 VNet snet-workload (10.113.0.0/24), static IP 10.113.0.4
+# Access:    Azure Bastion Standard (Management VNet) – IpConnect lub RDP
+#            Bastion Standard obsługuje VMs w peeredowanych VNetach
+# Domain:    panw.labs (konfiguracja przez cloud-init PowerShell)
 #
-# User-ID integration:
-#   After DC is promoted, configure PAN-OS User-ID Agent pointing to DC
-#   for User-ID based security policies (user/group to IP mapping)
+# UWAGA: Bastion jest w Management VNet (module.networking), NIE tutaj.
 ###############################################################################
 
 terraform {
@@ -22,11 +20,11 @@ terraform {
 }
 
 ###############################################################################
-# Domain Controller NIC (no public IP – access via Bastion only)
+# Network Interface
 ###############################################################################
 resource "azurerm_network_interface" "dc" {
   provider            = azurerm.spoke2
-  name                = "nic-spoke2-dc"
+  name                = "nic-dc-workload"
   location            = var.location
   resource_group_name = var.resource_group_name
   tags                = var.tags
@@ -35,17 +33,17 @@ resource "azurerm_network_interface" "dc" {
     name                          = "ipconfig-dc"
     subnet_id                     = var.workload_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = var.dc_private_ip
+    private_ip_address            = "10.113.0.4"
     primary                       = true
   }
 }
 
 ###############################################################################
-# Windows Server 2022 Domain Controller VM
+# Windows Server 2022 VM (Domain Controller)
 ###############################################################################
 resource "azurerm_windows_virtual_machine" "dc" {
   provider            = azurerm.spoke2
-  name                = "vm-spoke2-dc"
+  name                = "vm-dc-app2"
   location            = var.location
   resource_group_name = var.resource_group_name
   size                = var.dc_vm_size
@@ -58,7 +56,7 @@ resource "azurerm_windows_virtual_machine" "dc" {
   ]
 
   os_disk {
-    name                 = "osdisk-spoke2-dc"
+    name                 = "osdisk-dc"
     caching              = "ReadWrite"
     storage_account_type = "Premium_LRS"
     disk_size_gb         = 128
@@ -67,103 +65,18 @@ resource "azurerm_windows_virtual_machine" "dc" {
   source_image_reference {
     publisher = "MicrosoftWindowsServer"
     offer     = "WindowsServer"
-    sku       = "2022-datacenter-g2"
+    sku       = "2022-Datacenter"
     version   = "latest"
   }
+
+  # Active Directory Domain Services installation + promotion (if not skipped)
+  custom_data = var.skip_auto_promote ? null : base64encode(templatefile("${path.module}/dc-setup.ps1.tpl", {
+    domain_name    = var.domain_name
+    admin_password = var.admin_password
+  }))
 }
 
 ###############################################################################
-# AD DS Promotion Script (Custom Script Extension)
-# Installs AD DS role and promotes Windows Server to Domain Controller
-# Domain: panw.labs (configurable via var.domain_name)
+# DC Setup Script placeholder
+# If skip_auto_promote = true (default), promote via optional/dc-promote module
 ###############################################################################
-resource "azurerm_virtual_machine_extension" "dc_promote" {
-  # count = 0 → Terraform pomija CREATE i DESTROY extension
-  # Użyj gdy extension już istnieje w Azure (błąd "already exists")
-  # Ustaw dc_skip_auto_promote = true w terraform.tfvars
-  count = var.skip_auto_promote ? 0 : 1
-
-  provider             = azurerm.spoke2
-  name                 = "promote-to-dc"
-  virtual_machine_id   = azurerm_windows_virtual_machine.dc.id
-  publisher            = "Microsoft.Compute"
-  type                 = "CustomScriptExtension"
-  type_handler_version = "1.10"
-  tags                 = var.tags
-
-  # PowerShell script runs inline via protected_settings
-  # 1. Install AD DS + DNS + RSAT tools
-  # 2. Create new AD forest with domain panw.labs
-  # 3. Reboot after promotion (extension handles reboot)
-  protected_settings = jsonencode({
-    commandToExecute = join("; ", [
-      "powershell -ExecutionPolicy Unrestricted -Command \"",
-      "Install-WindowsFeature -Name AD-Domain-Services,DNS,RSAT-AD-Tools,RSAT-DNS-Server -IncludeManagementTools;",
-      "$securePass = ConvertTo-SecureString '${var.admin_password}' -AsPlainText -Force;",
-      "Import-Module ADDSDeployment;",
-      "Install-ADDSForest",
-      "  -DomainName '${var.domain_name}'",
-      "  -DomainNetBIOSName '${upper(split(".", var.domain_name)[0])}'",
-      "  -SafeModeAdministratorPassword $securePass",
-      "  -InstallDns:$true",
-      "  -Force:$true",
-      "  -NoRebootOnCompletion:$false",
-      "\""
-    ])
-  })
-
-  timeouts {
-    create = "60m" # AD DS promotion + forest creation can take 30-45 min
-  }
-
-  # ignore_changes: jeśli extension już istnieje w Azure (np. z poprzedniego
-  # przerwaneego apply), Terraform nie próbuje go odtworzyć ani zaktualizować.
-  # DC promotion jest nieodwracalna – jeśli DC jest już promowany, to jest OK.
-  lifecycle {
-    ignore_changes = all
-  }
-
-  depends_on = [azurerm_windows_virtual_machine.dc]
-}
-
-###############################################################################
-# Azure Bastion Public IP
-###############################################################################
-resource "azurerm_public_ip" "bastion" {
-  provider            = azurerm.spoke2
-  name                = "pip-bastion-spoke2"
-  location            = var.location
-  resource_group_name = var.resource_group_name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  tags                = var.tags
-}
-
-###############################################################################
-# Azure Bastion Host (Standard SKU)
-# Standard allows RDP/SSH via browser and native client
-###############################################################################
-resource "azurerm_bastion_host" "spoke2" {
-  provider            = azurerm.spoke2
-  name                = "bastion-spoke2"
-  location            = var.location
-  resource_group_name = var.resource_group_name
-  sku                 = "Standard"
-  # copy_paste_enabled  – schowek w przeglądarce Azure Portal
-  # file_copy_enabled   – przesyłanie plików przez Bastion
-  # tunneling_enabled   – az network bastion tunnel (port forwarding)
-  # ip_connect_enabled  – --target-ip-address (porty 22 i 3389 oraz przez VNet peering)
-  #                       Umożliwia SSH do Panoramy/FW w Hub VNet przez Spoke2↔Hub peering
-  copy_paste_enabled     = true
-  file_copy_enabled      = true
-  tunneling_enabled      = true
-  ip_connect_enabled     = true
-  shareable_link_enabled = false
-  tags                   = var.tags
-
-  ip_configuration {
-    name                 = "ipconfig-bastion"
-    subnet_id            = var.bastion_subnet_id
-    public_ip_address_id = azurerm_public_ip.bastion.id
-  }
-}

@@ -1,6 +1,8 @@
 ###############################################################################
 # Bootstrap Module Variables
-# Creates Azure Storage Account with VM-Series bootstrap package
+# Storage Account + FW Bootstrap Package (init-cfg.txt, authcodes)
+# UWAGA: Bootstrap SA jest TYLKO dla VM-Series FW.
+#        Panorama używa bezpośredniej treści init-cfg w customData (nie SA pointer).
 ###############################################################################
 
 variable "location" {
@@ -9,82 +11,58 @@ variable "location" {
 }
 
 variable "resource_group_name" {
-  description = "Resource group for bootstrap storage account"
+  description = "Resource group for Bootstrap Storage Account"
   type        = string
 }
 
 variable "panorama_private_ip" {
-  description = "Private IP of Panorama VM (used in init-cfg.txt as panorama-server)"
+  description = "Private IP of Panorama (in Management VNet). Used in FW init-cfg as panorama-server="
   type        = string
-  default     = "10.0.0.10"
+  default     = "10.255.0.4"
 }
 
 variable "panorama_template_stack" {
-  description = "Panorama Template Stack name"
+  description = "Panorama Template Stack name for FW (in FW init-cfg tplname=)"
   type        = string
+  default     = "Transit-VNet-Stack"
 }
 
 variable "panorama_device_group" {
-  description = "Panorama Device Group name"
+  description = "Panorama Device Group name for FW (in FW init-cfg dgname=)"
   type        = string
+  default     = "Transit-VNet-DG"
 }
 
 variable "panorama_vm_auth_key" {
-  description = "VM Auth Key from Panorama (empty string for Phase 1 deploy)"
+  description = <<-EOT
+    Device Registration Auth Key generated in Panorama (Panorama → Devices → VM Auth Key).
+    Required for FW to register with Panorama during bootstrap.
+    Format: 2:XXXXXXXXXXXXXXXX...
+    If empty: FW still bootstraps (license + basic config), but won't register in Panorama
+    automatically. Registration will happen via Device Certificate (PAN-OS 12.x) or manually.
+  EOT
   type        = string
-  sensitive   = true
   default     = ""
+  sensitive   = true
 }
 
 variable "fw_auth_code" {
-  description = "VM-Series BYOL auth code for license activation"
-  type        = string
-  sensitive   = true
-}
-
-#------------------------------------------------------------------------------
-# Panorama bootstrap variables
-# Panorama reads init-cfg from SA (same mechanism as VM-Series FW)
-#------------------------------------------------------------------------------
-variable "panorama_hostname" {
-  description = "Hostname for Panorama in init-cfg.txt"
-  type        = string
-  default     = "panorama-transit-hub"
-}
-
-variable "panorama_serial_number" {
   description = <<-EOT
-    Numer seryjny Panoramy z CSP Portal (Assets → Devices).
-    Wymagany do automatycznej aktywacji licencji przy starcie.
-    Zostaw "" jeśli nieznany – aktywacja wymaga ręcznej interwencji w GUI.
+    Authorization code for VM-Series FW BYOL license from CSP Portal.
+    Format: XXXX-XXXX-XXXX-XXXX
+    Used in FW init-cfg authcodes= for automatic license activation.
   EOT
-  type      = string
-  default   = ""
-}
-
-variable "panorama_auth_code" {
-  description = "Panorama BYOL auth code for license activation (from CSP Portal → Assets → Auth Codes)"
   type        = string
+  default     = ""
   sensitive   = true
-}
-
-variable "fw1_hostname" {
-  description = "Hostname for FW1 in init-cfg.txt"
-  type        = string
-  default     = "fw1-transit-hub"
-}
-
-variable "fw2_hostname" {
-  description = "Hostname for FW2 in init-cfg.txt"
-  type        = string
-  default     = "fw2-transit-hub"
 }
 
 variable "allowed_subnet_ids" {
   description = <<-EOT
-    Subnet IDs allowed to access the bootstrap storage account via Service Endpoint.
-    Must have Microsoft.Storage service endpoint enabled (set in networking module).
-    FW VMs access the bootstrap blobs via Managed Identity through these subnets.
+    List of subnet IDs allowed to access the Bootstrap Storage Account.
+    Required for Azure Policy: "Storage accounts should restrict network access"
+    Must include: Transit FW mgmt subnet (service endpoint Microsoft.Storage)
+    Add Management VNet subnet if Panorama needs SA access (not required for direct init-cfg).
   EOT
   type        = list(string)
   default     = []
@@ -92,11 +70,10 @@ variable "allowed_subnet_ids" {
 
 variable "terraform_operator_ips" {
   description = <<-EOT
-    List of public IP addresses of machines running terraform apply.
-    Required because storage account has network_rules default_action=Deny (Azure Policy).
+    Public IP(s) of the Terraform operator machine(s) for blob upload.
+    Required because SA network_rules.default_action = "Deny" (Azure Policy compliance).
     Get your IP: curl -s https://api.ipify.org
-    Example: ["1.2.3.4"]
-    Leave empty [] only if running Terraform from within the Azure VNet.
+    Example: ["203.0.113.10"]
   EOT
   type        = list(string)
   default     = []

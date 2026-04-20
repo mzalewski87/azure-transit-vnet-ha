@@ -1,121 +1,95 @@
 ###############################################################################
 # terraform.tfvars.example
+# Skopiuj do terraform.tfvars i uzupełnij wartości REPLACE_ME
 #
-# INSTRUKCJA:
-# 1. Skopiuj ten plik do terraform.tfvars:
-#      cp terraform.tfvars.example terraform.tfvars
-# 2. Wypełnij wszystkie wartości oznaczone jako REPLACE_ME
-# 3. NIE commituj terraform.tfvars do repozytorium! (plik jest w .gitignore)
-#
-# ALTERNATYWA - zmienne środowiskowe (zalecane dla CI/CD):
-#   export TF_VAR_hub_subscription_id="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-#   export TF_VAR_fw_auth_code="XXXX-XXXX-XXXX-XXXX"
-#   export TF_VAR_admin_password="YourStrongPassword123!"
-#   itd.
+#   cp terraform.tfvars.example terraform.tfvars
+#   nano terraform.tfvars
 ###############################################################################
 
 #------------------------------------------------------------------------------
-# Subscription IDs
-# Pobierz z: az account list --output table
-# Dla demo wszystkie trzy mogą wskazywać na tę samą subskrypcję
+# Subskrypcje Azure
+# Dla demo single-subscription: wstaw tę samą subskrypcję w każdym polu
+# az account show --query id -o tsv
 #------------------------------------------------------------------------------
-hub_subscription_id    = "REPLACE_ME"  # np. "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-spoke1_subscription_id = "REPLACE_ME"  # może być ten sam co hub
-spoke2_subscription_id = "REPLACE_ME"  # może być ten sam co hub
+hub_subscription_id    = "REPLACE_ME_HUB_SUBSCRIPTION_ID"
+spoke1_subscription_id = "REPLACE_ME_SPOKE1_SUBSCRIPTION_ID"
+spoke2_subscription_id = "REPLACE_ME_SPOKE2_SUBSCRIPTION_ID"
 
 #------------------------------------------------------------------------------
-# Lokalizacja i tagi
+# Lokalizacja i Resource Groups
 #------------------------------------------------------------------------------
-location = "Germany West Central"
+location = "germanywestcentral"
 
-tags = {
-  Environment = "Demo"
-  Project     = "PAN-Transit-VNet-HA"
-  Owner       = "REPLACE_ME"  # np. "Network-Team"
-  ManagedBy   = "Terraform"
-  CostCenter  = "REPLACE_ME"  # np. "IT-Security"
-}
+hub_resource_group_name  = "rg-transit-hub"
+app1_resource_group_name = "rg-app1"
+app2_resource_group_name = "rg-app2-dc"
 
 #------------------------------------------------------------------------------
-# Resource Groups
+# VNet Address Spaces (architektura referencyjna PANW)
 #------------------------------------------------------------------------------
-hub_resource_group_name    = "rg-transit-hub"
-spoke1_resource_group_name = "rg-spoke1-app"
-spoke2_resource_group_name = "rg-spoke2-dc"
+management_vnet_address_space = "10.255.0.0/16"
+transit_vnet_address_space    = "10.110.0.0/16"
+app1_vnet_address_space       = "10.112.0.0/16"
+app2_vnet_address_space       = "10.113.0.0/16"
+
+# Internal LB IP (musi być w snet-private 10.110.0.0/24)
+internal_lb_private_ip = "10.110.0.21"
 
 #------------------------------------------------------------------------------
-# Sieć
+# VM-Series Firewall + Panorama – hasła i rozmiary
 #------------------------------------------------------------------------------
-transit_vnet_address_space = "10.0.0.0/16"
-spoke1_vnet_address_space  = "10.1.0.0/16"
-spoke2_vnet_address_space  = "10.2.0.0/16"
-internal_lb_private_ip     = "10.0.2.100"
-
-#------------------------------------------------------------------------------
-# VM-Series Firewall
-#------------------------------------------------------------------------------
-fw_vm_size     = "Standard_D8s_v3"
-
-# Wersja PAN-OS: "latest" = zawsze najnowsza niewyofana z Azure Marketplace
-# W produkcji przypnij konkretną wersję po testach, np. "11.2.3"
-# Sprawdź dostępne wersje:
-#   az vm image list --publisher paloaltonetworks --offer vmseries-flex \
-#     --sku byol --all --query "[].version" -o tsv
+fw_vm_size     = "Standard_D8s_v3"   # 8 vCPU (wymagane przez zadanie), 32 GB
 pan_os_version = "latest"
 
-# Konto admin dla VM-Series i Panoramy
+panorama_vm_size = "Standard_D16s_v3"  # 16 vCPU, 64 GB
+
 admin_username = "panadmin"
-admin_password = "REPLACE_ME"  # min 12 znaków, wielkie/małe litery, cyfry, znaki specjalne
+# Min 12 znaków, uppercase+lowercase+digit+special
+admin_password = "REPLACE_ME_Admin@Password1!"
 
 #------------------------------------------------------------------------------
-# Licencje PAN-OS - WRAŻLIWE DANE
+# Panorama – dane z CSP Portal (support.paloaltonetworks.com)
 #
-# fw_auth_code: Auth code licencji VM-Series BYOL
-#   - Pobierz z: Palo Alto Customer Support Portal → Assets → Auth Codes
-#   - Format: XXXX-XXXX-XXXX-XXXX (zwykle)
-#
-# panorama_auth_code: Auth code licencji Panoramy BYOL
-#   - Pobierz z: Palo Alto Customer Support Portal → Assets → Auth Codes
-#
-# panorama_vm_auth_key: VM Auth Key generowany w Panoramie
-#   - Generuj w: Panorama → Devices → VM Auth Key → Generate
-#   - WAŻNE: Wygeneruj po uruchomieniu Panoramy (Etap 2 deploy)
-#   - Klucz wygasa po określonym czasie - sprawdź ważność
+# KOLEJNOŚĆ: panorama_serial_number + panorama_auth_code → KROK 1a
+#            panorama_vm_auth_key → po aktywacji licencji Panoramy → KROK 1b
 #------------------------------------------------------------------------------
-# Auth codes licencji – z Palo Alto CSP Portal → Assets → Auth Codes
-# Format dla VM-Series i Panoramy: np. "D5541146" lub "F3862013"
-fw_auth_code       = "REPLACE_ME"  # auth code VM-Series BYOL
-panorama_auth_code = "REPLACE_ME"  # auth code Panoramy BYOL
+panorama_private_ip    = "10.255.0.4"
+panorama_hostname      = "panorama-transit-hub"
 
-# Numer seryjny Panoramy z Palo Alto CSP Portal:
-#   https://support.paloaltonetworks.com → Assets → Devices
-# Wymagany do automatycznej aktywacji licencji. Format: np. "007300014999"
-# Zostaw "" jeśli nie znasz – licencja będzie wymagać ręcznej aktywacji przez GUI.
-panorama_serial_number = ""  # np. "007300014999"
+# CSP Portal → Assets → Devices → wybierz Panorama → Serial Number
+panorama_serial_number = ""   # Format: 007300XXXXXXX
 
-# Device Registration Auth Key – generuje się przez Panorama API (SKRYPT):
-#   1. Uruchom Bastion tunnel do Panoramy (jak w Phase 2)
-#   2. chmod +x scripts/generate-vm-auth-key.sh
-#   3. ./scripts/generate-vm-auth-key.sh  (pyta o hasło)
-#      → Skrypt wywołuje Panorama API i drukuje gotową linię do wklejenia
-# ZOSTAW "" dla Phase 1a deploy. Uzupełnij PRZED Phase 1b (terraform apply -target=module.bootstrap).
-# NIE mylić z fw_auth_code/panorama_auth_code (auth code licencji) – to inne rzeczy!
-panorama_vm_auth_key = ""
+# CSP Portal → Assets → Auth Codes → Panorama BYOL
+panorama_auth_code = ""   # Format: XXXX-XXXX-XXXX-XXXX
 
-#------------------------------------------------------------------------------
-# Konfiguracja Panoramy
-# panorama_template_stack: nazwa Template Stack w Panoramie
-# panorama_device_group: nazwa Device Group w Panoramie
-#------------------------------------------------------------------------------
+panorama_log_disk_size_gb = 2048   # 2TB Premium SSD
+
+# Panorama Template Stack + Device Group (muszą istnieć zanim wdrożysz FW)
 panorama_template_stack = "Transit-VNet-Stack"
 panorama_device_group   = "Transit-VNet-DG"
 
+# VM Auth Key – generuj po aktywacji licencji Panoramy:
+#   az network bastion ssh --name bastion-management \
+#     --resource-group rg-transit-hub \
+#     --target-ip-address 10.255.0.4 \
+#     --auth-type password --username panadmin
+#   admin@panorama> request vm-auth-key generate lifetime 168
+panorama_vm_auth_key = ""   # Format: 2:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
 #------------------------------------------------------------------------------
-# Kontroler domeny Windows (Spoke2)
-# Hasło musi spełniać wymagania Windows Server (złożoność)
+# VM-Series FW Licencja
+# CSP Portal → Assets → Auth Codes → VM-Series BYOL
 #------------------------------------------------------------------------------
-dc_admin_username = "dcadmin"
-dc_admin_password = "REPLACE_ME"  # np. "DomainP@ssw0rd123!" - min 12 znaków
+fw_auth_code = ""   # Format: XXXX-XXXX-XXXX-XXXX
+
+#------------------------------------------------------------------------------
+# Windows Domain Controller
+#------------------------------------------------------------------------------
+dc_admin_username    = "dcadmin"
+dc_admin_password    = "REPLACE_ME_DcAdmin@Password1!"
+dc_vm_size           = "Standard_B2ms"
+dc_domain_name       = "panw.labs"
+dc_skip_auto_promote = false   # true = pomiń automatyczną promocję DC
 
 #------------------------------------------------------------------------------
 # Azure Front Door
@@ -123,32 +97,19 @@ dc_admin_password = "REPLACE_ME"  # np. "DomainP@ssw0rd123!" - min 12 znaków
 frontdoor_sku = "Premium_AzureFrontDoor"
 
 #------------------------------------------------------------------------------
-# Azure Policy Compliance – Storage Account Network Access
-#
-# Wymagane przez politykę: "Storage accounts should restrict network access"
-# Storage Account bootstrapu ma network_rules default_action=Deny.
-# Terraform musi mieć dostęp do wgrywania blobów (init-cfg.txt, authcodes).
-#
-# Jak uzyskać swój publiczny IP:
-#   curl -s https://api.ipify.org
-#
-# Wiele IP (np. kilku operatorów lub CI/CD runner):
-#   terraform_operator_ips = ["1.2.3.4", "5.6.7.8"]
-#
-# Jeśli używasz Azure Cloud Shell lub self-hosted runner w VNet:
-#   terraform_operator_ips = []   # dostęp przez service endpoint
+# Bootstrap SA – dostęp z maszyny Terraform operatora
+# Azure Policy wymaga ograniczenia dostępu do SA (network_rules.default_action = Deny)
+# Pobierz swój IP: curl -s https://api.ipify.org
 #------------------------------------------------------------------------------
-terraform_operator_ips = ["REPLACE_ME"]  # np. ["1.2.3.4"]
+terraform_operator_ips = ["REPLACE_ME_YOUR_PUBLIC_IP"]  # np. ["203.0.113.10"]
 
 #------------------------------------------------------------------------------
-# DC Promotion – opcjonalny krok po wdrożeniu
-#
-# Domyślnie dc_skip_auto_promote = true (pomija długotrwałą promocję DC)
-# Promocja AD DS jest wykonywana osobno DOPO Phase 1b:
-#   cd optional/dc-promote/
-#   cp terraform.tfvars.example terraform.tfvars && terraform init && terraform apply
-#
-# Zostaw domyślne true – NIE zmieniaj na false.
-# Promocja DC trwa 30-45 min i nie jest wymagana dla podstawowego wdrożenia FW.
+# Tags
 #------------------------------------------------------------------------------
-dc_skip_auto_promote = true  # DOMYŚLNE - nie zmieniaj. Patrz optional/dc-promote/
+tags = {
+  Environment = "Demo"
+  Project     = "PAN-Transit-VNet-HA"
+  ManagedBy   = "Terraform"
+  Owner       = "REPLACE_ME_YOUR_NAME"
+  CostCenter  = "IT-Security"
+}

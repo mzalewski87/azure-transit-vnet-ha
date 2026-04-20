@@ -1,293 +1,262 @@
 ###############################################################################
-# Root Variables
-# Azure Transit VNet - VM-Series HA Reference Architecture
+# Root Module Variables
+# Azure Transit VNet – VM-Series HA Reference Architecture
 ###############################################################################
 
 #------------------------------------------------------------------------------
-# Subscription IDs
+# Azure Subscriptions
 #------------------------------------------------------------------------------
 variable "hub_subscription_id" {
-  description = "Azure Subscription ID for the Hub/Transit VNet resources"
+  description = "Hub subscription ID (Management VNet + Transit VNet + Bootstrap SA)"
   type        = string
 }
 
 variable "spoke1_subscription_id" {
-  description = "Azure Subscription ID for Spoke 1 (can be same as hub for demo)"
+  description = "App1 (Spoke1) subscription ID – application workloads"
   type        = string
 }
 
 variable "spoke2_subscription_id" {
-  description = "Azure Subscription ID for Spoke 2 (can be same as hub for demo)"
+  description = "App2 (Spoke2) subscription ID – Windows DC"
   type        = string
 }
 
 #------------------------------------------------------------------------------
-# General Settings
+# Location & Resource Groups
 #------------------------------------------------------------------------------
 variable "location" {
-  description = <<-EOT
-    Azure region dla wszystkich zasobów.
-    Germany West Central (Frankfurt) – zalecane dla danych EU/PL.
-    Inne opcje: "West Europe" (Amsterdam), "North Europe" (Dublin).
-  EOT
+  description = "Azure region for all resources"
   type        = string
-  default     = "Germany West Central"
+  default     = "germanywestcentral"
 }
 
-variable "tags" {
-  description = "Tags applied to all resources"
-  type        = map(string)
-  default = {
-    Environment = "Demo"
-    Project     = "PAN-Transit-VNet"
-    Owner       = "Network-Team"
-    ManagedBy   = "Terraform"
-  }
-}
-
-#------------------------------------------------------------------------------
-# Resource Group Names
-#------------------------------------------------------------------------------
 variable "hub_resource_group_name" {
-  description = "Name of the Hub/Transit resource group"
+  description = "Resource group for hub resources (Management VNet + Transit VNet)"
   type        = string
   default     = "rg-transit-hub"
 }
 
-variable "spoke1_resource_group_name" {
-  description = "Name of the Spoke 1 resource group"
+variable "app1_resource_group_name" {
+  description = "Resource group for App1 VNet (spoke1 subscription)"
   type        = string
-  default     = "rg-spoke1-app"
+  default     = "rg-app1"
 }
 
-variable "spoke2_resource_group_name" {
-  description = "Name of the Spoke 2 resource group (contains DC + Spoke2 Bastion)"
+variable "app2_resource_group_name" {
+  description = "Resource group for App2 VNet + DC (spoke2 subscription)"
   type        = string
-  default     = "rg-spoke2-dc"
+  default     = "rg-app2-dc"
 }
 
 #------------------------------------------------------------------------------
-# Network Address Spaces
+# VNet Address Spaces (matching PANW reference architecture)
 #------------------------------------------------------------------------------
+variable "management_vnet_address_space" {
+  description = "CIDR for Management VNet (Panorama + Bastion)"
+  type        = string
+  default     = "10.255.0.0/16"
+}
+
 variable "transit_vnet_address_space" {
-  description = "Address space for the Transit (Hub) VNet. Must be /16 or larger."
+  description = "CIDR for Transit Hub VNet (VM-Series HA pair)"
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "10.110.0.0/16"
 }
 
-variable "spoke1_vnet_address_space" {
-  description = "Address space for Spoke 1 VNet"
+variable "app1_vnet_address_space" {
+  description = "CIDR for App1 VNet (application workloads)"
   type        = string
-  default     = "10.1.0.0/16"
+  default     = "10.112.0.0/16"
 }
 
-variable "spoke2_vnet_address_space" {
-  description = "Address space for Spoke 2 VNet"
+variable "app2_vnet_address_space" {
+  description = "CIDR for App2 VNet (Windows DC)"
   type        = string
-  default     = "10.2.0.0/16"
+  default     = "10.113.0.0/16"
 }
 
 #------------------------------------------------------------------------------
-# VM-Series Firewall Settings
+# Authentication (shared across all VMs)
 #------------------------------------------------------------------------------
-variable "fw_vm_size" {
-  description = "Azure VM size for VM-Series firewalls (must be 8+ vCPU)"
-  type        = string
-  default     = "Standard_D8s_v3"
-}
-
-variable "pan_os_version" {
-  description = <<-EOT
-    PAN-OS image version for VM-Series BYOL SKU.
-    Domyślnie "latest" – zawsze najnowsza niewyofana wersja z Marketplace.
-    W produkcji przypnij do konkretnej wersji po testach (np. "11.2.3").
-    Dostępne wersje:
-      az vm image list --publisher paloaltonetworks --offer vmseries-flex \
-        --sku byol --all --query "[].version" -o tsv
-  EOT
-  type        = string
-  default     = "latest"
-}
-
 variable "admin_username" {
-  description = "Administrator username for VM-Series firewalls"
+  description = "Administrator username for Panorama and VM-Series FW"
   type        = string
   default     = "panadmin"
 }
 
 variable "admin_password" {
-  description = "Administrator password for VM-Series firewalls (min 12 chars, mixed case, numbers, special)"
+  description = "Administrator password for Panorama and VM-Series FW (min 12 chars, upper/lower/digit/special)"
   type        = string
   sensitive   = true
 }
 
-#------------------------------------------------------------------------------
-# Internal LB IP (next-hop for UDR)
-#------------------------------------------------------------------------------
-variable "internal_lb_private_ip" {
-  description = "Static private IP for the Internal Load Balancer frontend (Trust subnet)"
-  type        = string
-  default     = "10.0.2.100"
-}
-
-#------------------------------------------------------------------------------
-# Azure Front Door
-#------------------------------------------------------------------------------
-variable "frontdoor_sku" {
-  description = "Azure Front Door SKU: Standard_AzureFrontDoor or Premium_AzureFrontDoor"
-  type        = string
-  default     = "Premium_AzureFrontDoor"
-
-  validation {
-    condition     = contains(["Standard_AzureFrontDoor", "Premium_AzureFrontDoor"], var.frontdoor_sku)
-    error_message = "frontdoor_sku must be either 'Standard_AzureFrontDoor' or 'Premium_AzureFrontDoor'."
-  }
-}
-
-#------------------------------------------------------------------------------
-# PAN-OS License Auth Codes (sensitive – never commit values to source control)
-# Provide via terraform.tfvars (local, gitignored) or TF_VAR_* env variables
-#------------------------------------------------------------------------------
-variable "fw_auth_code" {
-  description = <<-EOT
-    VM-Series BYOL auth code from Palo Alto Customer Support Portal.
-    Portal: https://support.paloaltonetworks.com → Assets → Auth Codes
-    Used in bootstrap to activate VM-Series licenses automatically.
-  EOT
-  type        = string
-  sensitive   = true
-}
-
-variable "panorama_auth_code" {
-  description = <<-EOT
-    Panorama BYOL auth code from Palo Alto Customer Support Portal.
-    Portal: https://support.paloaltonetworks.com → Assets → Auth Codes
-  EOT
-  type        = string
-  sensitive   = true
-}
-
-variable "panorama_vm_auth_key" {
-  description = <<-EOT
-    VM Auth Key generated in Panorama (Panorama → Devices → VM Auth Key → Generate).
-    Used by VM-Series bootstrap to auto-register with Panorama.
-  IMPORTANT: Generate AFTER Phase 1a (Panorama running) AND Phase 2 (Panorama config).
-  Leave empty "" for Phase 1a deploy. Uzupelnij przed Phase 1b (FW deploy).
-  EOT
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-#------------------------------------------------------------------------------
-# Panorama Configuration
-#------------------------------------------------------------------------------
-variable "panorama_template_stack" {
-  description = "Panorama Template Stack name (created by panorama_config module)"
-  type        = string
-  default     = "Transit-VNet-Stack"
-}
-
-variable "panorama_device_group" {
-  description = "Panorama Device Group name (created by panorama_config module)"
-  type        = string
-  default     = "Transit-VNet-DG"
-}
-
-variable "panorama_serial_number" {
-  description = <<-EOT
-    Numer seryjny Panoramy z Palo Alto CSP Portal (Assets → Devices).
-    Wymagany do automatycznej aktywacji licencji przy starcie VM.
-    Format: np. "007300014999" lub "007900000111".
-    Zostaw "" jeśli nie znasz – licencja będzie wymagać ręcznej aktywacji.
-  EOT
-  type    = string
-  default = ""
-}
-
-variable "panorama_vm_size" {
-  description = <<-EOT
-    Azure VM size dla Panoramy. Min 32 GB RAM, zalecane 64 GB.
-    Standard_D8s_v3 = 8 vCPU, 32 GB (minimum produkcyjne)
-    Standard_D16s_v3 = 16 vCPU, 64 GB (zalecane)
-  EOT
-  type        = string
-  default     = "Standard_D16s_v3"
-}
-
-variable "panorama_log_disk_size_gb" {
-  description = "Data disk size in GB for Panorama log storage"
-  type        = number
-  default     = 2048
-}
-
-#------------------------------------------------------------------------------
-# Windows Domain Controller (Spoke2)
-#------------------------------------------------------------------------------
 variable "dc_admin_username" {
-  description = "Administrator username for Windows Server Domain Controller"
+  description = "Administrator username for Windows DC VM"
   type        = string
   default     = "dcadmin"
 }
 
 variable "dc_admin_password" {
-  description = <<-EOT
-    Administrator password for Windows Server DC.
-    Must meet Windows complexity requirements:
-    min 12 chars, uppercase, lowercase, digit, special character.
-  EOT
+  description = "Administrator password for Windows DC VM"
   type        = string
   sensitive   = true
 }
 
+#------------------------------------------------------------------------------
+# Panorama Configuration
+#------------------------------------------------------------------------------
+variable "panorama_private_ip" {
+  description = "Static private IP for Panorama in Management VNet snet-management"
+  type        = string
+  default     = "10.255.0.4"
+}
+
+variable "panorama_hostname" {
+  description = "Hostname for Panorama (set via init-cfg bootstrap)"
+  type        = string
+  default     = "panorama-transit-hub"
+}
+
+variable "panorama_serial_number" {
+  description = <<-EOT
+    Panorama serial number from CSP Portal (Assets → Devices).
+    Required for automatic license activation via init-cfg.
+    Format: 007300XXXXXXX
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "panorama_auth_code" {
+  description = "Panorama BYOL license auth code from CSP Portal. Format: XXXX-XXXX-XXXX-XXXX"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "panorama_vm_size" {
+  description = "VM size for Panorama (min Standard_D8s_v3, recommended Standard_D16s_v3)"
+  type        = string
+  default     = "Standard_D16s_v3"
+}
+
+variable "panorama_log_disk_size_gb" {
+  description = "Log disk size for Panorama in GB"
+  type        = number
+  default     = 2048
+}
+
+#------------------------------------------------------------------------------
+# Panorama Templates (used in FW init-cfg and phase2-panorama-config)
+#------------------------------------------------------------------------------
+variable "panorama_template_stack" {
+  description = "Panorama Template Stack name (must match phase2-panorama-config)"
+  type        = string
+  default     = "Transit-VNet-Stack"
+}
+
+variable "panorama_device_group" {
+  description = "Panorama Device Group name (must match phase2-panorama-config)"
+  type        = string
+  default     = "Transit-VNet-DG"
+}
+
+variable "panorama_vm_auth_key" {
+  description = <<-EOT
+    Device Registration Auth Key from Panorama (Panorama → Devices → VM Auth Key).
+    Generate via SSH: request vm-auth-key generate lifetime 168
+    Or via script: ./scripts/generate-vm-auth-key.sh
+    Format: 2:XXXXXXXXXXXXXXXX...
+    Leave empty to deploy FW without auto-registration (manual or Device Certificate).
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+#------------------------------------------------------------------------------
+# VM-Series Firewall Configuration
+#------------------------------------------------------------------------------
+variable "fw_vm_size" {
+  description = "VM size for VM-Series FW (8 vCPU = Standard_D8s_v3)"
+  type        = string
+  default     = "Standard_D8s_v3"
+}
+
+variable "fw_auth_code" {
+  description = "VM-Series BYOL license auth code from CSP Portal. Format: XXXX-XXXX-XXXX-XXXX"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "pan_os_version" {
+  description = "PAN-OS version for VM-Series FW Marketplace image"
+  type        = string
+  default     = "latest"
+}
+
+#------------------------------------------------------------------------------
+# Load Balancer
+#------------------------------------------------------------------------------
+variable "internal_lb_private_ip" {
+  description = "Private IP for Internal Load Balancer (in snet-private/trust, per PANW reference)"
+  type        = string
+  default     = "10.110.0.21"
+}
+
+#------------------------------------------------------------------------------
+# Front Door
+#------------------------------------------------------------------------------
+variable "frontdoor_sku" {
+  description = "Azure Front Door SKU (Premium_AzureFrontDoor recommended for WAF)"
+  type        = string
+  default     = "Premium_AzureFrontDoor"
+}
+
+#------------------------------------------------------------------------------
+# Bootstrap SA Access
+#------------------------------------------------------------------------------
+variable "terraform_operator_ips" {
+  description = <<-EOT
+    Public IP(s) of Terraform operator for Bootstrap SA access.
+    Required: SA network_rules.default_action = Deny (Azure Policy).
+    Get your IP: curl -s https://api.ipify.org
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+#------------------------------------------------------------------------------
+# Windows Domain Controller
+#------------------------------------------------------------------------------
+variable "dc_vm_size" {
+  description = "VM size for Windows DC"
+  type        = string
+  default     = "Standard_B2ms"
+}
+
 variable "dc_domain_name" {
-  description = "Active Directory domain name for Domain Controller"
+  description = "Active Directory domain name (FQDN)"
   type        = string
   default     = "panw.labs"
 }
 
-variable "dc_vm_size" {
-  description = "Azure VM size for Windows Domain Controller"
-  type        = string
-  default     = "Standard_D2s_v3"
-}
-
-#------------------------------------------------------------------------------
-# DC Auto-Promote Control
-# Domyślnie true – DC promotion jest opcjonalna i wykonywana osobno.
-# Patrz: optional/dc-promote/ dla instrukcji promocji DC.
-#------------------------------------------------------------------------------
 variable "dc_skip_auto_promote" {
-  description = <<-EOT
-    Pomiń automatyczną promocję DC przez Custom Script Extension w module.spoke2_dc.
-    Domyślnie TRUE – promocja DC jest OPCJONALNA i odbywa się w osobnym module.
-    Patrz: optional/dc-promote/ – uruchom po Phase 1b jeśli potrzebujesz AD DS.
-
-    Ustaw FALSE tylko jeśli chcesz automatycznej promocji DC razem z Phase 1a
-    (ostrzeżenie: znacznie wydłuża czas deploy – 30-45 min dodatkowe).
-  EOT
-  type    = bool
-  default = true
+  description = "Skip automatic DC promotion (promote manually via optional/dc-promote)"
+  type        = bool
+  default     = false
 }
 
 #------------------------------------------------------------------------------
-# Azure Policy Compliance
+# Tags
 #------------------------------------------------------------------------------
-variable "terraform_operator_ips" {
-  description = <<-EOT
-    List of public IP addresses of the machine(s) running terraform apply.
-    Required because storage account network_rules has default_action=Deny
-    (enforced by Azure Policy: Storage accounts should restrict network access).
-
-    Get your current public IP:
-      curl -s https://api.ipify.org
-
-    Example in terraform.tfvars:
-      terraform_operator_ips = ["1.2.3.4"]
-
-    Leave empty [] only when running Terraform from within the Azure VNet
-    (self-hosted runner, Azure DevOps agent, Cloud Shell).
-  EOT
-  type        = list(string)
-  default     = []
+variable "tags" {
+  description = "Tags applied to all resources"
+  type        = map(string)
+  default = {
+    Project     = "azure-transit-vnet-ha"
+    ManagedBy   = "Terraform"
+    Environment = "Demo"
+  }
 }

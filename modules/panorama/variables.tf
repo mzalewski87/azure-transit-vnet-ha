@@ -12,23 +12,49 @@ variable "resource_group_name" {
   type        = string
 }
 
-variable "mgmt_subnet_id" {
-  description = "Management subnet ID where Panorama NIC will be placed"
+variable "management_subnet_id" {
+  description = "Subnet ID in Management VNet (snet-management) where Panorama NIC is placed"
   type        = string
 }
 
 variable "panorama_private_ip" {
-  description = "Static private IP for Panorama in management subnet"
+  description = "Static private IP for Panorama (in Management VNet snet-management)"
   type        = string
-  default     = "10.0.0.10"
+  default     = "10.255.0.4"
+}
+
+variable "panorama_hostname" {
+  description = "Hostname for Panorama (set via init-cfg bootstrap)"
+  type        = string
+  default     = "panorama-transit-hub"
+}
+
+variable "panorama_serial_number" {
+  description = <<-EOT
+    Serial number of Panorama from Palo Alto CSP Portal (Assets → Devices).
+    Required for automatic license activation. If empty, manual activation needed.
+    Format: 007300XXXXXXX (13 digits)
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "panorama_auth_code" {
+  description = <<-EOT
+    Authorization code for Panorama BYOL license from CSP Portal.
+    Format: XXXX-XXXX-XXXX-XXXX
+    Used in init-cfg authcodes= for automatic license activation.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "vm_size" {
   description = <<-EOT
-    Azure VM size for Panorama. Minimalne wymagania PAN-OS:
-    - min: Standard_D8s_v3  (8 vCPU, 32 GB RAM)
-    - zalecane: Standard_D16s_v3 (16 vCPU, 64 GB RAM)
-    Standard_D4s_v3 (16 GB) jest NIEWYSTARCZAJĄCY – Panorama może crashować.
+    Azure VM size for Panorama.
+    Minimum: Standard_D8s_v3 (8 vCPU, 32 GB RAM)
+    Recommended: Standard_D16s_v3 (16 vCPU, 64 GB RAM) for production
   EOT
   type        = string
   default     = "Standard_D16s_v3"
@@ -49,18 +75,6 @@ variable "admin_password" {
   description = "Administrator password for Panorama"
   type        = string
   sensitive   = true
-}
-
-variable "bootstrap_custom_data" {
-  description = <<-EOT
-    base64-encoded bootstrap pointer do Azure Storage Account.
-    Format: storage-account=<name>\nfile-share=<container>\nshare-directory=panorama\naccess-key=<key>
-    Generowany przez module.bootstrap (panorama_custom_data output).
-    PAN-OS pobiera init-cfg z SA: <container>/panorama/config/init-cfg.txt
-    Panorama jest PAN-OS – czyta bootstrap identycznie jak VM-Series FW.
-  EOT
-  type      = string
-  sensitive = true
 }
 
 variable "log_disk_size_gb" {

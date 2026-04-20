@@ -8,50 +8,56 @@ variable "location" {
 }
 
 variable "hub_resource_group_name" {
-  description = "Hub/Transit resource group name"
+  description = "Resource group for hub/transit resources (Management VNet + Transit VNet)"
   type        = string
 }
 
-variable "spoke1_resource_group_name" {
-  description = "Spoke 1 resource group name"
+variable "app1_resource_group_name" {
+  description = "Resource group for App1 VNet (spoke1 subscription)"
   type        = string
 }
 
-variable "spoke2_resource_group_name" {
-  description = "Spoke 2 resource group name"
+variable "app2_resource_group_name" {
+  description = "Resource group for App2 VNet (spoke2 subscription)"
   type        = string
+}
+
+variable "management_vnet_address_space" {
+  description = "CIDR for Management VNet (Panorama + Bastion). Default: 10.255.0.0/16"
+  type        = string
+  default     = "10.255.0.0/16"
 }
 
 variable "transit_vnet_address_space" {
-  description = "Transit VNet CIDR block (/16 recommended)"
+  description = "CIDR for Transit Hub VNet (VM-Series HA pair). Default: 10.110.0.0/16"
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "10.110.0.0/16"
 }
 
-variable "spoke1_vnet_address_space" {
-  description = "Spoke 1 VNet CIDR block"
+variable "app1_vnet_address_space" {
+  description = "CIDR for App1 VNet (application workloads). Default: 10.112.0.0/16"
   type        = string
-  default     = "10.1.0.0/16"
+  default     = "10.112.0.0/16"
 }
 
-variable "spoke2_vnet_address_space" {
-  description = "Spoke 2 VNet CIDR block"
+variable "app2_vnet_address_space" {
+  description = "CIDR for App2 VNet (Windows DC / additional workloads). Default: 10.113.0.0/16"
   type        = string
-  default     = "10.2.0.0/16"
+  default     = "10.113.0.0/16"
 }
 
 variable "hub_subscription_id" {
-  description = "Hub subscription ID (used in remote VNet peering resource IDs)"
+  description = "Hub subscription ID (used for cross-subscription peering remote VNet IDs)"
   type        = string
 }
 
 variable "spoke1_subscription_id" {
-  description = "Spoke 1 subscription ID"
+  description = "Spoke1/App1 subscription ID"
   type        = string
 }
 
 variable "spoke2_subscription_id" {
-  description = "Spoke 2 subscription ID"
+  description = "Spoke2/App2 subscription ID"
   type        = string
 }
 

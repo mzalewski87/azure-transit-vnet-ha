@@ -1,31 +1,47 @@
 ###############################################################################
-# Root Module – Azure Transit VNet (Infrastructure)
-# Palo Alto VM-Series Active/Passive HA Reference Architecture
+# Root Module – Azure Transit VNet HA Reference Architecture
+# Palo Alto VM-Series Active/Passive HA (per PANW Azure Transit VNet Guide)
 #
-# WYMAGANA KOLEJNOŚĆ DEPLOY (patrz README.md):
+# VNet Topology:
+#   Management VNet (10.255.0.0/16)  – Panorama + Azure Bastion Standard
+#   Transit Hub VNet (10.110.0.0/16) – VM-Series FW1 (Active) + FW2 (Passive)
+#   App1 VNet (10.112.0.0/16)        – Application workloads (Apache Hello World)
+#   App2 VNet (10.113.0.0/16)        – Windows Server 2022 DC
 #
-# ──────────────────────────────────────────────────────────────────────────
-# PHASE 1a – Sieć + Bootstrap SA + Panorama + DC/Bastion (BEZ firewalli):
+# WYMAGANA KOLEJNOŚĆ WDROŻENIA:
+#
+# ──────────────────────────────────────────────────────────────────────────────
+# PHASE 1a – Infrastruktura bazowa (Management + Transit + Apps):
 #   terraform apply \
 #     -target=azurerm_resource_group.hub \
-#     -target=azurerm_resource_group.spoke1 \
-#     -target=azurerm_resource_group.spoke2 \
+#     -target=azurerm_resource_group.app1 \
+#     -target=azurerm_resource_group.app2 \
 #     -target=module.networking \
 #     -target=module.bootstrap \
 #     -target=module.panorama \
-#     -target=module.spoke2_dc
-#   → UWAGA: module.bootstrap MUSI być przed module.panorama (zależność jawna)
-#   → Panorama czyta init-cfg z Bootstrap SA (nie z customData bezpośrednio!)
-#   → Poczekaj ~15 min na boot Panoramy, weryfikuj przez GUI przez Bastion tunnel
+#     -target=module.app2_dc
 #
-# PHASE 2 – Konfiguracja Panoramy przez panos provider (PRZED FW!):
+#   → Panorama bootuje ~10-15 min. Aktywacja licencji via init-cfg (auto).
+#   → Jeśli bootstrap nie zadziałał: aktywuj licencję manualnie przez Bastion.
+#
+# PHASE 2 – Konfiguracja Panoramy (Template Stack, Device Group, Security/NAT rules):
 #   cd phase2-panorama-config/
-#   # Uruchom Bastion tunnel w osobnym terminalu (patrz README.md)
+#   # Terminal 1: Bastion tunnel
+#   PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
+#   az network bastion tunnel --name bastion-management \
+#     --resource-group rg-transit-hub \
+#     --target-resource-id "$PANORAMA_ID" \
+#     --resource-port 443 --port 44300
+#   # Terminal 2:
 #   terraform init && terraform apply
-#   → Tworzy Device Group i Template Stack w Panoramie
 #
-# PHASE 1b – Aktualizacja Bootstrap (z vm-auth-key) + Firewalle + reszta:
-#   # 1. Wygeneruj Device Registration Auth Key w Panoramie
+# PHASE 1b – VM-Series FW + Load Balancer + Front Door + App:
+#   # 1. Wygeneruj vm-auth-key przez SSH do Panoramy:
+#   #    az network bastion ssh --name bastion-management \
+#   #      --resource-group rg-transit-hub \
+#   #      --target-ip-address 10.255.0.4 \
+#   #      --auth-type password --username panadmin
+#   #    admin@panorama> request vm-auth-key generate lifetime 168
 #   # 2. Ustaw panorama_vm_auth_key w terraform.tfvars
 #   terraform apply -target=module.bootstrap   # aktualizuje FW init-cfg z vm-auth-key
 #   terraform apply \
@@ -33,21 +49,12 @@
 #     -target=module.firewall \
 #     -target=module.routing \
 #     -target=module.frontdoor \
-#     -target=module.spoke1_app
+#     -target=module.app1_app
 #
-# DLACZEGO Phase 2 PRZED Phase 1b:
-#   FW bootstrap init-cfg zawiera: tplname=Transit-VNet-Stack, dgname=Transit-VNet-DG
-#   Gdy FW startuje, szuka tych obiektów w Panoramie.
-#   Phase 2 tworzy je. Bez Phase 2 FW nie może się zarejestrować w Panoramie.
-# ──────────────────────────────────────────────────────────────────────────
-#
-# UWAGA o adresach IP:
-#   module.bootstrap.panorama_private_ip = "10.0.0.10"
-#     → TO jest IP które FW używa do połączenia z Panoramą (w init-cfg)
-#     → FW łączy się bezpośrednio po sieci prywatnej (snet-mgmt)
-#   phase2-panorama-config/terraform.tfvars: panorama_hostname = "127.0.0.1"
-#     → TO jest IP dla TYLKO panos Terraform provider (przez Bastion tunnel)
-#     → NIE wpływa na konfigurację FW
+# DLACZEGO ta kolejność:
+#   FW init-cfg zawiera tplname= i dgname= które muszą istnieć w Panoramie.
+#   Phase 2 tworzy je. FW próbuje zarejestrować się przy starcie.
+# ──────────────────────────────────────────────────────────────────────────────
 ###############################################################################
 
 #------------------------------------------------------------------------------
@@ -59,24 +66,24 @@ resource "azurerm_resource_group" "hub" {
   tags     = var.tags
 }
 
-resource "azurerm_resource_group" "spoke1" {
+resource "azurerm_resource_group" "app1" {
   provider = azurerm.spoke1
-  name     = var.spoke1_resource_group_name
+  name     = var.app1_resource_group_name
   location = var.location
   tags     = var.tags
 }
 
-resource "azurerm_resource_group" "spoke2" {
+resource "azurerm_resource_group" "app2" {
   provider = azurerm.spoke2
-  name     = var.spoke2_resource_group_name
+  name     = var.app2_resource_group_name
   location = var.location
   tags     = var.tags
 }
 
 #------------------------------------------------------------------------------
 # Networking Module
-# Creates: Transit VNet, Spoke VNets, Subnets, NSGs, VNet Peerings, Public IPs
-#          Spoke workload NSGs, AzureBastionSubnet in Spoke2
+# Creates: Management VNet (Panorama + Bastion), Transit VNet (FW),
+#          App1 + App2 VNets, NSGs, VNet Peerings, NAT Gateways, External LB PIP
 #------------------------------------------------------------------------------
 module "networking" {
   source = "./modules/networking"
@@ -87,26 +94,28 @@ module "networking" {
     azurerm.spoke2 = azurerm.spoke2
   }
 
-  location                   = var.location
-  hub_resource_group_name    = azurerm_resource_group.hub.name
-  spoke1_resource_group_name = azurerm_resource_group.spoke1.name
-  spoke2_resource_group_name = azurerm_resource_group.spoke2.name
+  location                       = var.location
+  hub_resource_group_name        = azurerm_resource_group.hub.name
+  app1_resource_group_name       = azurerm_resource_group.app1.name
+  app2_resource_group_name       = azurerm_resource_group.app2.name
 
-  transit_vnet_address_space = var.transit_vnet_address_space
-  spoke1_vnet_address_space  = var.spoke1_vnet_address_space
-  spoke2_vnet_address_space  = var.spoke2_vnet_address_space
+  management_vnet_address_space  = var.management_vnet_address_space
+  transit_vnet_address_space     = var.transit_vnet_address_space
+  app1_vnet_address_space        = var.app1_vnet_address_space
+  app2_vnet_address_space        = var.app2_vnet_address_space
 
-  hub_subscription_id    = var.hub_subscription_id
-  spoke1_subscription_id = var.spoke1_subscription_id
-  spoke2_subscription_id = var.spoke2_subscription_id
+  hub_subscription_id            = var.hub_subscription_id
+  spoke1_subscription_id         = var.spoke1_subscription_id
+  spoke2_subscription_id         = var.spoke2_subscription_id
 
   tags = var.tags
 }
 
 #------------------------------------------------------------------------------
 # Bootstrap Module
-# Creates: Storage Account, bootstrap blobs (init-cfg.txt, authcodes),
-#          User Assigned Managed Identity for secure FW storage access
+# Creates: Storage Account, FW1+FW2 bootstrap blobs (init-cfg, authcodes),
+#          User Assigned Managed Identity for FW SA access
+# SCOPE: WYŁĄCZNIE dla VM-Series FW. Panorama używa bezpośredniej init-cfg w customData.
 #------------------------------------------------------------------------------
 module "bootstrap" {
   source = "./modules/bootstrap"
@@ -114,29 +123,19 @@ module "bootstrap" {
   location            = var.location
   resource_group_name = azurerm_resource_group.hub.name
 
-  # WAŻNE: To IP (10.0.0.10) trafia do init-cfg.txt jako panorama-server.
-  # FW używa tego IP do połączenia z Panoramą przez sieć prywatną snet-mgmt.
-  # NIE mylić z panorama_hostname="127.0.0.1" w phase2-panorama-config
-  # (to jest tylko dla panos Terraform provider przez Bastion tunnel).
-  panorama_private_ip     = "10.0.0.10"
+  # Panorama IP w Management VNet – trafia do FW init-cfg jako panorama-server=
+  panorama_private_ip     = var.panorama_private_ip
   panorama_template_stack = var.panorama_template_stack
   panorama_device_group   = var.panorama_device_group
   panorama_vm_auth_key    = var.panorama_vm_auth_key
+  fw_auth_code            = var.fw_auth_code
 
-  fw_auth_code = var.fw_auth_code
-
-  # Panorama bootstrap – init-cfg dla Panoramy w SA (panorama/config/init-cfg.txt)
-  # Panorama jest PAN-OS i czyta bootstrap identycznie jak FW (storage pointer w customData)
-  panorama_serial_number = var.panorama_serial_number
-  panorama_auth_code     = var.panorama_auth_code
-
-  # Azure Policy compliance: network_rules default_action=Deny
-  # mgmt subnet has Microsoft.Storage service endpoint (set in networking module)
+  # Azure Policy compliance: SA network_rules.default_action = Deny
+  # Transit FW mgmt subnet ma Microsoft.Storage service endpoint
   allowed_subnet_ids = [
     module.networking.mgmt_subnet_id,
   ]
-  # Public IP(s) of the Terraform operator machine (for blob upload)
-  # Get your IP: curl -s https://api.ipify.org
+
   terraform_operator_ips = var.terraform_operator_ips
 
   tags = var.tags
@@ -146,7 +145,8 @@ module "bootstrap" {
 
 #------------------------------------------------------------------------------
 # Panorama Module
-# Creates: Panorama VM in snet-mgmt (10.0.0.10), public IP, 2TB data disk
+# Creates: Panorama VM w Management VNet (10.255.0.4), 2TB data disk
+# Bootstrap: bezpośrednia treść init-cfg w customData (NIE SA storage pointer)
 #------------------------------------------------------------------------------
 module "panorama" {
   source = "./modules/panorama"
@@ -154,28 +154,27 @@ module "panorama" {
   location            = var.location
   resource_group_name = azurerm_resource_group.hub.name
 
-  mgmt_subnet_id      = module.networking.mgmt_subnet_id
-  panorama_private_ip = "10.0.0.10"
+  # Management VNet subnet (10.255.0.0/24)
+  management_subnet_id = module.networking.management_subnet_id
+  panorama_private_ip  = var.panorama_private_ip
 
   vm_size        = var.panorama_vm_size
   admin_username = var.admin_username
   admin_password = var.admin_password
 
-  # Panorama czyta init-cfg z Bootstrap SA (identycznie jak VM-Series FW).
-  # module.bootstrap MUSI być wdrożony PRZED Panoramą (Phase 1a obejmuje oba).
-  # SA tworzy: bootstrap/<container>/panorama/config/init-cfg.txt z hostname+serial+authcode.
-  bootstrap_custom_data = module.bootstrap.panorama_custom_data
+  # Bootstrap Panoramy: bezpośrednia treść init-cfg przekazywana w customData
+  panorama_hostname      = var.panorama_hostname
+  panorama_serial_number = var.panorama_serial_number
+  panorama_auth_code     = var.panorama_auth_code
 
   log_disk_size_gb = var.panorama_log_disk_size_gb
 
   tags = var.tags
-
-  depends_on = [module.bootstrap]
 }
 
 #------------------------------------------------------------------------------
 # Load Balancer Module
-# Creates: External Standard LB (public) + Internal Standard LB (10.0.2.100)
+# Creates: External Standard LB (Public IP) + Internal Standard LB (10.110.0.21)
 #------------------------------------------------------------------------------
 module "loadbalancer" {
   source = "./modules/loadbalancer"
@@ -192,8 +191,8 @@ module "loadbalancer" {
 
 #------------------------------------------------------------------------------
 # Firewall Module
-# Creates: 2x VM-Series PAN-OS 11.1 (Active/Passive), 4x NICs per VM,
-#          Availability Set, bootstrap via Managed Identity + custom_data
+# Creates: 2x VM-Series PAN-OS (FW1 Active + FW2 Passive), 4x NICs per VM,
+#          Availability Set, bootstrap via SA storage pointer
 #------------------------------------------------------------------------------
 module "firewall" {
   source = "./modules/firewall"
@@ -225,8 +224,8 @@ module "firewall" {
 
 #------------------------------------------------------------------------------
 # Routing Module
-# Creates: UDR Route Tables dla Spoke1 i Spoke2
-#          (domyślna trasa + east-west → Internal LB 10.0.2.100)
+# Creates: UDR Route Tables dla App1 i App2
+#          0.0.0.0/0 → Internal LB (10.110.0.21), east-west również przez FW
 #------------------------------------------------------------------------------
 module "routing" {
   source = "./modules/routing"
@@ -238,23 +237,22 @@ module "routing" {
   }
 
   location                   = var.location
-  spoke1_resource_group_name = azurerm_resource_group.spoke1.name
-  spoke2_resource_group_name = azurerm_resource_group.spoke2.name
+  spoke1_resource_group_name = azurerm_resource_group.app1.name
+  spoke2_resource_group_name = azurerm_resource_group.app2.name
 
   spoke1_workload_subnet_id = module.networking.spoke1_workload_subnet_id
   spoke2_workload_subnet_id = module.networking.spoke2_workload_subnet_id
 
   internal_lb_private_ip    = module.loadbalancer.internal_lb_private_ip
-  spoke1_vnet_address_space = var.spoke1_vnet_address_space
-  spoke2_vnet_address_space = var.spoke2_vnet_address_space
+  spoke1_vnet_address_space = var.app1_vnet_address_space
+  spoke2_vnet_address_space = var.app2_vnet_address_space
 
   tags = var.tags
 }
 
 #------------------------------------------------------------------------------
 # Front Door Module
-# Creates: Azure Front Door Premium, Endpoint, Origin Group, Route
-#          Origin: External LB public IP → VM-Series (DNAT do Apache)
+# Creates: Azure Front Door Premium, Endpoint, Origin Group → External LB
 #------------------------------------------------------------------------------
 module "frontdoor" {
   source = "./modules/frontdoor"
@@ -267,11 +265,10 @@ module "frontdoor" {
 }
 
 #------------------------------------------------------------------------------
-# Spoke1 App Module
-# Creates: Ubuntu 22.04 + Apache2 Hello World (cloud-init), IP 10.1.0.4
-#          Ruch: AFD → External LB → VM-Series DNAT → ten serwer
+# App1 Application Module
+# Creates: Ubuntu 22.04 + Apache2 Hello World (cloud-init), IP 10.112.0.4
 #------------------------------------------------------------------------------
-module "spoke1_app" {
+module "app1_app" {
   source = "./modules/spoke1_app"
 
   providers = {
@@ -279,7 +276,7 @@ module "spoke1_app" {
   }
 
   location            = var.location
-  resource_group_name = azurerm_resource_group.spoke1.name
+  resource_group_name = azurerm_resource_group.app1.name
   subnet_id           = module.networking.spoke1_workload_subnet_id
   admin_username      = var.admin_username
   admin_password      = var.admin_password
@@ -290,11 +287,11 @@ module "spoke1_app" {
 }
 
 #------------------------------------------------------------------------------
-# Spoke2 DC Module
-# Creates: Windows Server 2022 DC (panw.labs, 10.2.0.4)
-#          + Azure Bastion Standard (bezpieczny RDP bez publicznego IP na DC)
+# App2 DC Module
+# Creates: Windows Server 2022 DC (panw.labs, 10.113.0.4)
+# Bastion: W Management VNet (moduł networking) – nie tutaj
 #------------------------------------------------------------------------------
-module "spoke2_dc" {
+module "app2_dc" {
   source = "./modules/spoke2_dc"
 
   providers = {
@@ -302,10 +299,9 @@ module "spoke2_dc" {
   }
 
   location            = var.location
-  resource_group_name = azurerm_resource_group.spoke2.name
+  resource_group_name = azurerm_resource_group.app2.name
 
   workload_subnet_id = module.networking.spoke2_workload_subnet_id
-  bastion_subnet_id  = module.networking.spoke2_bastion_subnet_id
 
   admin_username    = var.dc_admin_username
   admin_password    = var.dc_admin_password

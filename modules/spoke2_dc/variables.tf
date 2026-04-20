@@ -1,6 +1,7 @@
 ###############################################################################
 # Spoke2 DC Module Variables
-# Windows Server 2022 Domain Controller + Azure Bastion
+# Windows Server 2022 Domain Controller
+# Bastion jest w Management VNet (modules/networking) – nie tutaj
 ###############################################################################
 
 variable "location" {
@@ -9,73 +10,47 @@ variable "location" {
 }
 
 variable "resource_group_name" {
-  description = "Resource group for Spoke2 DC resources"
+  description = "Resource group for DC resources (in App2/Spoke2 subscription)"
   type        = string
 }
 
 variable "workload_subnet_id" {
-  description = "Spoke2 workload subnet ID for DC NIC"
+  description = "Workload subnet ID (App2 VNet, snet-workload) where DC VM is placed"
   type        = string
-}
-
-variable "bastion_subnet_id" {
-  description = "AzureBastionSubnet ID in Spoke2 VNet"
-  type        = string
-}
-
-variable "dc_private_ip" {
-  description = "Static private IP for Domain Controller"
-  type        = string
-  default     = "10.2.0.4"
-}
-
-variable "dc_vm_size" {
-  description = "Azure VM size for Windows Server DC"
-  type        = string
-  default     = "Standard_D2s_v3"
 }
 
 variable "admin_username" {
-  description = "Administrator username for Windows Server"
+  description = "Administrator username for DC VM"
   type        = string
   default     = "dcadmin"
 }
 
 variable "admin_password" {
-  description = "Administrator password for Windows Server (must meet complexity requirements)"
+  description = "Administrator password for DC VM"
   type        = string
   sensitive   = true
 }
 
+variable "dc_vm_size" {
+  description = "VM size for Domain Controller"
+  type        = string
+  default     = "Standard_B2ms"
+}
+
 variable "domain_name" {
-  description = "Active Directory domain name (e.g. panw.labs)"
+  description = "Active Directory domain name (FQDN)"
   type        = string
   default     = "panw.labs"
+}
+
+variable "skip_auto_promote" {
+  description = "If true, skip automatic DC promotion (promote manually via optional/dc-promote)"
+  type        = bool
+  default     = false
 }
 
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)
   default     = {}
-}
-
-variable "skip_auto_promote" {
-  description = <<-EOT
-    Pomiń automatyczną promocję DC przez Custom Script Extension.
-
-    Ustaw na TRUE jeśli:
-      - DC był już promowany w poprzednim (przerwanym) apply
-      - Terraform zwraca błąd "already exists" dla extensions/promote-to-dc
-      - Chcesz samodzielnie przeprowadzić promocję przez Azure Bastion
-
-    Gdy true: Terraform nie tworzy ani nie niszczy extension –
-    jeśli extension istnieje w Azure, pozostanie bez zmian.
-    Jeśli extension nie istnieje, DC NIE będzie automatycznie promowany
-    (musisz promować ręcznie przez Bastion).
-
-    UWAGA: Po ustawieniu true i wykonaniu apply możesz przywrócić false
-    dopiero po usunięciu extension z Azure lub zaimportowaniu go do state.
-  EOT
-  type        = bool
-  default     = false
 }

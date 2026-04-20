@@ -1,6 +1,37 @@
 ###############################################################################
 # Networking Module
-# Transit Hub VNet, Spoke VNets, Subnets, NSGs, VNet Peerings, Public IPs
+# Palo Alto Transit VNet – Reference Architecture (PANW Azure Transit VNet Guide)
+#
+# VNet topology (per PANW reference architecture):
+#
+#   Management VNet (10.255.0.0/16)              ← Panorama + Bastion
+#     snet-management:   10.255.0.0/24           ← Panorama: 10.255.0.4/5
+#     AzureBastionSubnet: 10.255.1.0/26          ← Single Bastion for ALL VNets
+#
+#   Transit Hub VNet (10.110.0.0/16)             ← VM-Series HA pair
+#     snet-mgmt:    10.110.255.0/24              ← FW eth0 (management)
+#     snet-public:  10.110.129.0/24              ← FW eth1/1 (untrust, internet)
+#     snet-private: 10.110.0.0/24               ← FW eth1/2 (trust, internal)
+#     snet-ha:      10.110.128.0/24              ← FW eth1/3 (HA2 sync)
+#
+#   App1 VNet (10.112.0.0/16)                   ← Application workloads
+#     snet-workload: 10.112.0.0/24
+#
+#   App2 VNet (10.113.0.0/16)                   ← Windows DC / additional workloads
+#     snet-workload: 10.113.0.0/24
+#
+# VNet Peerings:
+#   Management ↔ Transit Hub  (Panorama → FW management)
+#   Management ↔ App1         (Bastion → App1 VMs)
+#   Management ↔ App2         (Bastion → App2 VMs)
+#   Transit Hub ↔ App1        (UDR traffic)
+#   Transit Hub ↔ App2        (UDR traffic)
+#
+# Key design decisions:
+#   - Panorama in separate Management VNet (as per PANW reference)
+#   - Single Bastion (Standard) in Management VNet reaches ALL peered VNets
+#   - No public IPs on FW/Panorama – Bastion tunnel for HTTPS management
+#   - NAT Gateway in both Management VNet (Panorama license) and Transit mgmt (FW license)
 ###############################################################################
 
 terraform {
@@ -12,187 +43,123 @@ terraform {
   }
 }
 
-#------------------------------------------------------------------------------
-# Locals - compute subnet CIDRs from VNet address space
-# Transit VNet /16 split into /24 subnets:
-#   10.0.0.0/24 - Management
-#   10.0.1.0/24 - Untrust (external)
-#   10.0.2.0/24 - Trust (internal)
-#   10.0.3.0/24 - HA (HA2 data sync)
-#------------------------------------------------------------------------------
+###############################################################################
+# Locals – subnet CIDRs from VNet address spaces
+###############################################################################
 locals {
-  mgmt_subnet_cidr    = cidrsubnet(var.transit_vnet_address_space, 8, 0) # 10.0.0.0/24
-  untrust_subnet_cidr = cidrsubnet(var.transit_vnet_address_space, 8, 1) # 10.0.1.0/24
-  trust_subnet_cidr   = cidrsubnet(var.transit_vnet_address_space, 8, 2) # 10.0.2.0/24
-  ha_subnet_cidr      = cidrsubnet(var.transit_vnet_address_space, 8, 3) # 10.0.3.0/24
+  # Management VNet subnets
+  mgmt_vnet_panorama_cidr = cidrsubnet(var.management_vnet_address_space, 8, 0)  # 10.255.0.0/24
+  mgmt_vnet_bastion_cidr  = cidrsubnet(var.management_vnet_address_space, 10, 4) # 10.255.1.0/26
 
-  spoke1_workload_cidr = cidrsubnet(var.spoke1_vnet_address_space, 8, 0) # 10.1.0.0/24
-  spoke2_workload_cidr = cidrsubnet(var.spoke2_vnet_address_space, 8, 0) # 10.2.0.0/24
+  # Transit Hub VNet subnets (matching PANW reference IP scheme where transit = 10.110.0.0/16)
+  transit_mgmt_cidr    = cidrsubnet(var.transit_vnet_address_space, 8, 255) # x.x.255.0/24 – management
+  transit_public_cidr  = cidrsubnet(var.transit_vnet_address_space, 8, 129) # x.x.129.0/24 – public (untrust)
+  transit_private_cidr = cidrsubnet(var.transit_vnet_address_space, 8, 0)   # x.x.0.0/24   – private (trust)
+  transit_ha_cidr      = cidrsubnet(var.transit_vnet_address_space, 8, 128) # x.x.128.0/24 – HA2
+
+  # App VNet subnets
+  app1_workload_cidr = cidrsubnet(var.app1_vnet_address_space, 8, 0) # 10.112.0.0/24
+  app2_workload_cidr = cidrsubnet(var.app2_vnet_address_space, 8, 0) # 10.113.0.0/24
 }
 
 ###############################################################################
-# Transit (Hub) VNet
+# Management VNet
+# Hosts Panorama (primary + optional secondary) and Azure Bastion
 ###############################################################################
 
-resource "azurerm_virtual_network" "transit" {
-  name                = "vnet-transit-hub"
+resource "azurerm_virtual_network" "management" {
+  name                = "vnet-management"
   location            = var.location
   resource_group_name = var.hub_resource_group_name
-  address_space       = [var.transit_vnet_address_space]
+  address_space       = [var.management_vnet_address_space]
   tags                = var.tags
 }
 
-# Management subnet - PAN-OS management interfaces (eth0)
-# service_endpoints: Microsoft.Storage needed for bootstrap SA network_rules (Azure Policy compliance)
-resource "azurerm_subnet" "mgmt" {
-  name                 = "snet-mgmt"
+# Panorama subnet
+resource "azurerm_subnet" "management_panorama" {
+  name                 = "snet-management"
   resource_group_name  = var.hub_resource_group_name
-  virtual_network_name = azurerm_virtual_network.transit.name
-  address_prefixes     = [local.mgmt_subnet_cidr]
+  virtual_network_name = azurerm_virtual_network.management.name
+  address_prefixes     = [local.mgmt_vnet_panorama_cidr]
   service_endpoints    = ["Microsoft.Storage"]
 }
 
-# Untrust subnet - PAN-OS external interfaces (eth1) - faces Internet
-resource "azurerm_subnet" "untrust" {
-  name                 = "snet-untrust"
+# Azure Bastion subnet (required name: AzureBastionSubnet, min /26)
+resource "azurerm_subnet" "management_bastion" {
+  name                 = "AzureBastionSubnet"
   resource_group_name  = var.hub_resource_group_name
-  virtual_network_name = azurerm_virtual_network.transit.name
-  address_prefixes     = [local.untrust_subnet_cidr]
-}
-
-# Trust subnet - PAN-OS internal interfaces (eth2) - faces internal/spoke networks
-resource "azurerm_subnet" "trust" {
-  name                 = "snet-trust"
-  resource_group_name  = var.hub_resource_group_name
-  virtual_network_name = azurerm_virtual_network.transit.name
-  address_prefixes     = [local.trust_subnet_cidr]
-}
-
-# HA subnet - PAN-OS HA2 data sync link (eth3)
-resource "azurerm_subnet" "ha" {
-  name                 = "snet-ha"
-  resource_group_name  = var.hub_resource_group_name
-  virtual_network_name = azurerm_virtual_network.transit.name
-  address_prefixes     = [local.ha_subnet_cidr]
+  virtual_network_name = azurerm_virtual_network.management.name
+  address_prefixes     = [local.mgmt_vnet_bastion_cidr]
 }
 
 ###############################################################################
-# Network Security Groups
+# Management VNet NSG (for Panorama subnet)
+# Inbound: SSH + HTTPS from Bastion subnet only
+# Outbound: all (license activation, content updates, etc.)
 ###############################################################################
-
-# Management NSG
-# INBOUND: dostęp SSH/HTTPS WYŁĄCZNIE z Spoke2 VNet (10.2.0.0/16) + HA wewnętrznie
-# OUTBOUND: jawne zezwolenie na cały ruch wychodzący do internetu
-#   Wymagane dla: aktywacji licencji, content updates, Panorama ↔ Palo Alto cloud
-#   Transport: TCP, UDP, ICMP – wszystkie protokoły przez NAT Gateway
-#   Brak jawnej reguły outbound → Azure Policy w niektórych tenantach może blokować
-resource "azurerm_network_security_group" "mgmt" {
-  name                = "nsg-mgmt"
+resource "azurerm_network_security_group" "management_panorama" {
+  name                = "nsg-management-panorama"
   location            = var.location
   resource_group_name = var.hub_resource_group_name
   tags                = var.tags
 
-  # ── INBOUND ──────────────────────────────────────────────────────────────
-
-  # SSH z Spoke2 VNet: Spoke2 Bastion IpConnect i DC PuTTY → FW/Panorama CLI
+  # SSH from Bastion
   security_rule {
-    name                       = "Allow-SSH-From-Spoke2"
+    name                       = "Allow-SSH-From-Bastion"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "22"
-    source_address_prefix      = var.spoke2_vnet_address_space # 10.2.0.0/16
+    source_address_prefix      = local.mgmt_vnet_bastion_cidr
     destination_address_prefix = "*"
   }
 
-  # HTTPS z Spoke2 VNet: DC browser → Panorama/FW GUI, Spoke2 Bastion tunnel → Phase 2
+  # HTTPS from Bastion (GUI, panos Terraform provider via Bastion tunnel)
   security_rule {
-    name                       = "Allow-HTTPS-From-Spoke2"
+    name                       = "Allow-HTTPS-From-Bastion"
     priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "443"
-    source_address_prefix      = var.spoke2_vnet_address_space # 10.2.0.0/16
+    source_address_prefix      = local.mgmt_vnet_bastion_cidr
     destination_address_prefix = "*"
   }
 
-  # HA1 heartbeat – ruch między Panoramą i firewallami w tej samej podsieci
+  # Panorama ↔ FW management (3978/TCP, 28443/TCP HA, PAN-OS control plane)
   security_rule {
-    name                       = "Allow-HA1-MgmtSubnet-Internal"
+    name                       = "Allow-PanoramaFW-Peered"
     priority                   = 120
     direction                  = "Inbound"
     access                     = "Allow"
-    protocol                   = "*"
+    protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = local.mgmt_subnet_cidr
-    destination_address_prefix = local.mgmt_subnet_cidr
-  }
-
-  # Odmów całego pozostałego ruchu przychodzącego
-  security_rule {
-    name                       = "Deny-All-Inbound"
-    priority                   = 4096
-    direction                  = "Inbound"
-    access                     = "Deny"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
+    destination_port_ranges    = ["3978", "28443", "443"]
+    source_address_prefix      = var.transit_vnet_address_space
     destination_address_prefix = "*"
   }
 
-  # ── OUTBOUND ─────────────────────────────────────────────────────────────
-
-  # Jawne zezwolenie na cały ruch wychodzący do internetu (TCP, UDP, ICMP)
-  # Wymagane dla: Panorama/FW aktywacja licencji, content/threat updates,
-  #               Cortex Data Lake, AutoFocus, WildFire itp.
-  # NAT Gateway (pip-nat-gateway-mgmt) obsługuje translację adresów.
-  # UWAGA: Azure domyślna reguła 65001 (AllowInternetOutBound) może być
-  #        nadpisana przez Azure Policy w niektórych subskrypcjach.
-  #        Jawna reguła ma priorytet 200 i gwarantuje przepuszczenie ruchu.
+  # Allow all internal within Management VNet (HA between dual Panorama if deployed)
   security_rule {
-    name                       = "Allow-All-Outbound-Internet"
-    priority                   = 200
-    direction                  = "Outbound"
+    name                       = "Allow-VNet-Internal"
+    priority                   = 130
+    direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "*"
     source_port_range          = "*"
     destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "Internet"
-  }
-
-  # Zezwól na ruch wewnątrz VNet (między Panoramą, FW1, FW2 w snet-mgmt)
-  security_rule {
-    name                       = "Allow-VNet-Outbound"
-    priority                   = 100
-    direction                  = "Outbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
+    source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = "VirtualNetwork"
   }
-}
-
-# Untrust NSG - allow all inbound (PAN-OS inspects and controls all traffic)
-resource "azurerm_network_security_group" "untrust" {
-  name                = "nsg-untrust"
-  location            = var.location
-  resource_group_name = var.hub_resource_group_name
-  tags                = var.tags
 
   security_rule {
-    name                       = "Allow-All-Inbound"
-    priority                   = 100
+    name                       = "Deny-All-Inbound"
+    priority                   = 4096
     direction                  = "Inbound"
-    access                     = "Allow"
+    access                     = "Deny"
     protocol                   = "*"
     source_port_range          = "*"
     destination_port_range     = "*"
@@ -200,6 +167,7 @@ resource "azurerm_network_security_group" "untrust" {
     destination_address_prefix = "*"
   }
 
+  # Allow all outbound (license activation, content updates, Palo Alto cloud services)
   security_rule {
     name                       = "Allow-All-Outbound"
     priority                   = 100
@@ -213,351 +181,20 @@ resource "azurerm_network_security_group" "untrust" {
   }
 }
 
-# Trust NSG - allow all (PAN-OS enforces security policy)
-resource "azurerm_network_security_group" "trust" {
-  name                = "nsg-trust"
+resource "azurerm_subnet_network_security_group_association" "management_panorama" {
+  subnet_id                 = azurerm_subnet.management_panorama.id
+  network_security_group_id = azurerm_network_security_group.management_panorama.id
+}
+
+###############################################################################
+# Azure Bastion NSG (required rules for Azure Bastion Standard)
+###############################################################################
+resource "azurerm_network_security_group" "management_bastion" {
+  name                = "nsg-management-bastion"
   location            = var.location
   resource_group_name = var.hub_resource_group_name
   tags                = var.tags
 
-  security_rule {
-    name                       = "Allow-All-Inbound"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "Allow-All-Outbound"
-    priority                   = 100
-    direction                  = "Outbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-}
-
-# HA NSG - allow HA2 data sync between firewall peers
-resource "azurerm_network_security_group" "ha" {
-  name                = "nsg-ha"
-  location            = var.location
-  resource_group_name = var.hub_resource_group_name
-  tags                = var.tags
-
-  security_rule {
-    name                       = "Allow-HA-Inbound"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = local.ha_subnet_cidr
-    destination_address_prefix = local.ha_subnet_cidr
-  }
-
-  security_rule {
-    name                       = "Allow-HA-Outbound"
-    priority                   = 100
-    direction                  = "Outbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = local.ha_subnet_cidr
-    destination_address_prefix = local.ha_subnet_cidr
-  }
-
-  security_rule {
-    name                       = "Deny-All-Inbound"
-    priority                   = 4096
-    direction                  = "Inbound"
-    access                     = "Deny"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-}
-
-###############################################################################
-# NSG → Subnet Associations
-###############################################################################
-
-resource "azurerm_subnet_network_security_group_association" "mgmt" {
-  subnet_id                 = azurerm_subnet.mgmt.id
-  network_security_group_id = azurerm_network_security_group.mgmt.id
-}
-
-resource "azurerm_subnet_network_security_group_association" "untrust" {
-  subnet_id                 = azurerm_subnet.untrust.id
-  network_security_group_id = azurerm_network_security_group.untrust.id
-}
-
-resource "azurerm_subnet_network_security_group_association" "trust" {
-  subnet_id                 = azurerm_subnet.trust.id
-  network_security_group_id = azurerm_network_security_group.trust.id
-}
-
-resource "azurerm_subnet_network_security_group_association" "ha" {
-  subnet_id                 = azurerm_subnet.ha.id
-  network_security_group_id = azurerm_network_security_group.ha.id
-}
-
-###############################################################################
-# Public IP Addresses
-###############################################################################
-
-# External Load Balancer Public IP (inbound traffic – aplikacja przez AFD)
-resource "azurerm_public_ip" "external_lb" {
-  name                = "pip-external-lb"
-  location            = var.location
-  resource_group_name = var.hub_resource_group_name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  zones               = ["1", "2", "3"]
-  tags                = var.tags
-}
-
-# UWAGA: Brak publicznych IP dla Panoramy i firewalli!
-# Zarządzanie odbywa się WYŁĄCZNIE przez Spoke2 Bastion.
-# FW → Panorama komunikacja: prywatne IP (10.0.0.4 → 10.0.0.10)
-
-###############################################################################
-# NAT Gateway dla snet-mgmt
-# Zapewnia wychodzący dostęp do Internetu dla Panoramy i FW (eth0) bez PIP:
-#   - Aktywacja licencji Panoramy (updates.paloaltonetworks.com)
-#   - Pobieranie aktualizacji content/app przez management interface FW
-###############################################################################
-
-# NAT Gateway Public IP – strefowo niezależny (Regional/non-zonal)
-# Spójność: non-zonal PIP + non-zonal NAT Gateway
-# Zapewnia wychodzący dostęp TCP/UDP/ICMP dla snet-mgmt (Panorama, FW eth0)
-resource "azurerm_public_ip" "nat_gateway_mgmt" {
-  name                = "pip-nat-gateway-mgmt"
-  location            = var.location
-  resource_group_name = var.hub_resource_group_name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  # Brak zones → non-zonal (regional) – spójny z non-zonal NAT Gateway
-  tags                = var.tags
-}
-
-resource "azurerm_nat_gateway" "mgmt" {
-  name                    = "natgw-mgmt"
-  location                = var.location
-  resource_group_name     = var.hub_resource_group_name
-  sku_name                = "Standard"
-  idle_timeout_in_minutes = 10
-  # Brak zones → non-zonal (regional) – spójny z non-zonal Public IP
-  tags                    = var.tags
-}
-
-resource "azurerm_nat_gateway_public_ip_association" "mgmt" {
-  nat_gateway_id       = azurerm_nat_gateway.mgmt.id
-  public_ip_address_id = azurerm_public_ip.nat_gateway_mgmt.id
-}
-
-resource "azurerm_subnet_nat_gateway_association" "mgmt" {
-  subnet_id      = azurerm_subnet.mgmt.id
-  nat_gateway_id = azurerm_nat_gateway.mgmt.id
-}
-
-###############################################################################
-# Spoke 1 VNet & Subnets
-###############################################################################
-
-resource "azurerm_virtual_network" "spoke1" {
-  provider            = azurerm.spoke1
-  name                = "vnet-spoke1-app"
-  location            = var.location
-  resource_group_name = var.spoke1_resource_group_name
-  address_space       = [var.spoke1_vnet_address_space]
-  tags                = var.tags
-}
-
-resource "azurerm_subnet" "spoke1_workload" {
-  provider             = azurerm.spoke1
-  name                 = "snet-workload"
-  resource_group_name  = var.spoke1_resource_group_name
-  virtual_network_name = azurerm_virtual_network.spoke1.name
-  address_prefixes     = [local.spoke1_workload_cidr]
-}
-
-###############################################################################
-# Spoke 2 VNet & Subnets
-###############################################################################
-
-resource "azurerm_virtual_network" "spoke2" {
-  provider            = azurerm.spoke2
-  name                = "vnet-spoke2-app"
-  location            = var.location
-  resource_group_name = var.spoke2_resource_group_name
-  address_space       = [var.spoke2_vnet_address_space]
-  tags                = var.tags
-}
-
-resource "azurerm_subnet" "spoke2_workload" {
-  provider             = azurerm.spoke2
-  name                 = "snet-workload"
-  resource_group_name  = var.spoke2_resource_group_name
-  virtual_network_name = azurerm_virtual_network.spoke2.name
-  address_prefixes     = [local.spoke2_workload_cidr]
-}
-
-###############################################################################
-# VNet Peering - Hub ↔ Spoke 1
-# Both sides must be created for cross-subscription peering to work
-###############################################################################
-
-resource "azurerm_virtual_network_peering" "hub_to_spoke1" {
-  name                         = "peer-hub-to-spoke1"
-  resource_group_name          = var.hub_resource_group_name
-  virtual_network_name         = azurerm_virtual_network.transit.name
-  remote_virtual_network_id    = azurerm_virtual_network.spoke1.id
-  allow_virtual_network_access = true
-  allow_forwarded_traffic      = true # Required: FW will forward traffic from spoke
-  allow_gateway_transit        = false
-  use_remote_gateways          = false
-}
-
-resource "azurerm_virtual_network_peering" "spoke1_to_hub" {
-  provider                     = azurerm.spoke1
-  name                         = "peer-spoke1-to-hub"
-  resource_group_name          = var.spoke1_resource_group_name
-  virtual_network_name         = azurerm_virtual_network.spoke1.name
-  remote_virtual_network_id    = azurerm_virtual_network.transit.id
-  allow_virtual_network_access = true
-  allow_forwarded_traffic      = true
-  allow_gateway_transit        = false
-  use_remote_gateways          = false
-}
-
-###############################################################################
-# VNet Peering - Hub ↔ Spoke 2
-###############################################################################
-
-resource "azurerm_virtual_network_peering" "hub_to_spoke2" {
-  name                         = "peer-hub-to-spoke2"
-  resource_group_name          = var.hub_resource_group_name
-  virtual_network_name         = azurerm_virtual_network.transit.name
-  remote_virtual_network_id    = azurerm_virtual_network.spoke2.id
-  allow_virtual_network_access = true
-  allow_forwarded_traffic      = true
-  allow_gateway_transit        = false
-  use_remote_gateways          = false
-}
-
-resource "azurerm_virtual_network_peering" "spoke2_to_hub" {
-  provider                     = azurerm.spoke2
-  name                         = "peer-spoke2-to-hub"
-  resource_group_name          = var.spoke2_resource_group_name
-  virtual_network_name         = azurerm_virtual_network.spoke2.name
-  remote_virtual_network_id    = azurerm_virtual_network.transit.id
-  allow_virtual_network_access = true
-  allow_forwarded_traffic      = true
-  allow_gateway_transit        = false
-  use_remote_gateways          = false
-}
-
-###############################################################################
-# Spoke 1 Workload NSG
-# Allows HTTP/HTTPS from Trust subnet (VM-Series) and management SSH
-###############################################################################
-resource "azurerm_network_security_group" "spoke1_workload" {
-  provider            = azurerm.spoke1
-  name                = "nsg-spoke1-workload"
-  location            = var.location
-  resource_group_name = var.spoke1_resource_group_name
-  tags                = var.tags
-
-  security_rule {
-    name                       = "Allow-HTTP-From-Trust"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "80"
-    source_address_prefix      = local.trust_subnet_cidr
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "Allow-HTTPS-From-Trust"
-    priority                   = 110
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "443"
-    source_address_prefix      = local.trust_subnet_cidr
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "Allow-SSH-From-Mgmt"
-    priority                   = 120
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefix      = local.mgmt_subnet_cidr
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "Deny-All-Inbound"
-    priority                   = 4096
-    direction                  = "Inbound"
-    access                     = "Deny"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-}
-
-resource "azurerm_subnet_network_security_group_association" "spoke1_workload" {
-  provider                  = azurerm.spoke1
-  subnet_id                 = azurerm_subnet.spoke1_workload.id
-  network_security_group_id = azurerm_network_security_group.spoke1_workload.id
-}
-
-###############################################################################
-# Spoke 2 - AzureBastionSubnet
-# Required name is exactly "AzureBastionSubnet", min /26
-###############################################################################
-resource "azurerm_subnet" "spoke2_bastion" {
-  provider             = azurerm.spoke2
-  name                 = "AzureBastionSubnet"
-  resource_group_name  = var.spoke2_resource_group_name
-  virtual_network_name = azurerm_virtual_network.spoke2.name
-  address_prefixes     = [cidrsubnet(var.spoke2_vnet_address_space, 10, 1023)] # 10.2.255.192/26
-}
-
-###############################################################################
-# Spoke 2 Bastion NSG (Azure Bastion requires specific rules)
-###############################################################################
-resource "azurerm_network_security_group" "spoke2_bastion" {
-  provider            = azurerm.spoke2
-  name                = "nsg-spoke2-bastion"
-  location            = var.location
-  resource_group_name = var.spoke2_resource_group_name
-  tags                = var.tags
-
-  # Inbound: HTTPS from internet (user browsers)
   security_rule {
     name                       = "Allow-HTTPS-Inbound-Internet"
     priority                   = 100
@@ -570,7 +207,6 @@ resource "azurerm_network_security_group" "spoke2_bastion" {
     destination_address_prefix = "*"
   }
 
-  # Inbound: Azure control plane from GatewayManager
   security_rule {
     name                       = "Allow-GatewayManager"
     priority                   = 110
@@ -583,7 +219,6 @@ resource "azurerm_network_security_group" "spoke2_bastion" {
     destination_address_prefix = "*"
   }
 
-  # Inbound: Azure Load Balancer health probe
   security_rule {
     name                       = "Allow-AzureLoadBalancer"
     priority                   = 120
@@ -596,7 +231,6 @@ resource "azurerm_network_security_group" "spoke2_bastion" {
     destination_address_prefix = "*"
   }
 
-  # Inbound: Bastion host communication
   security_rule {
     name                       = "Allow-BastionHostCommunication"
     priority                   = 130
@@ -609,8 +243,6 @@ resource "azurerm_network_security_group" "spoke2_bastion" {
     destination_address_prefix = "VirtualNetwork"
   }
 
-  # Outbound: RDP/SSH/HTTPS do VM (SSH/RDP przez IpConnect, HTTPS przez --target-resource-id)
-  # Port 443 wymagany gdy Spoke2 Bastion tuneluje do Panoramy/FW na port 443
   security_rule {
     name                       = "Allow-RDP-SSH-HTTPS-Outbound"
     priority                   = 100
@@ -623,7 +255,6 @@ resource "azurerm_network_security_group" "spoke2_bastion" {
     destination_address_prefix = "VirtualNetwork"
   }
 
-  # Outbound: Azure Cloud (telemetry)
   security_rule {
     name                       = "Allow-AzureCloud-Outbound"
     priority                   = 110
@@ -636,7 +267,6 @@ resource "azurerm_network_security_group" "spoke2_bastion" {
     destination_address_prefix = "AzureCloud"
   }
 
-  # Outbound: Bastion host communication
   security_rule {
     name                       = "Allow-BastionHostCommunication-Outbound"
     priority                   = 120
@@ -649,7 +279,6 @@ resource "azurerm_network_security_group" "spoke2_bastion" {
     destination_address_prefix = "VirtualNetwork"
   }
 
-  # Outbound: Session info to internet (needed for Bastion)
   security_rule {
     name                       = "Allow-HTTP-Outbound"
     priority                   = 130
@@ -663,56 +292,444 @@ resource "azurerm_network_security_group" "spoke2_bastion" {
   }
 }
 
-resource "azurerm_subnet_network_security_group_association" "spoke2_bastion" {
-  provider                  = azurerm.spoke2
-  subnet_id                 = azurerm_subnet.spoke2_bastion.id
-  network_security_group_id = azurerm_network_security_group.spoke2_bastion.id
+resource "azurerm_subnet_network_security_group_association" "management_bastion" {
+  subnet_id                 = azurerm_subnet.management_bastion.id
+  network_security_group_id = azurerm_network_security_group.management_bastion.id
 }
 
 ###############################################################################
-# Spoke 2 Workload NSG
-# DC: allow RDP only from AzureBastionSubnet, deny all other inbound
+# Azure Bastion (Standard – reaches VMs in ALL peered VNets)
+# Standard tier required for: Bastion tunnel (--target-resource-id),
+#   IpConnect (SSH to private IP), cross-VNet access via peering
 ###############################################################################
-resource "azurerm_network_security_group" "spoke2_workload" {
-  provider            = azurerm.spoke2
-  name                = "nsg-spoke2-workload"
+resource "azurerm_public_ip" "bastion" {
+  name                = "pip-bastion-management"
   location            = var.location
-  resource_group_name = var.spoke2_resource_group_name
+  resource_group_name = var.hub_resource_group_name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  zones               = ["1", "2", "3"]
+  tags                = var.tags
+}
+
+resource "azurerm_bastion_host" "management" {
+  name                = "bastion-management"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  sku                 = "Standard"
+  tunneling_enabled   = true  # Required for: az network bastion tunnel --target-resource-id
   tags                = var.tags
 
+  ip_configuration {
+    name                 = "ipconfig-bastion"
+    subnet_id            = azurerm_subnet.management_bastion.id
+    public_ip_address_id = azurerm_public_ip.bastion.id
+  }
+}
+
+###############################################################################
+# NAT Gateway – Management VNet (Panorama outbound: license, updates)
+###############################################################################
+resource "azurerm_public_ip" "nat_gateway_management" {
+  name                = "pip-nat-gateway-management"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = var.tags
+}
+
+resource "azurerm_nat_gateway" "management" {
+  name                    = "natgw-management"
+  location                = var.location
+  resource_group_name     = var.hub_resource_group_name
+  sku_name                = "Standard"
+  idle_timeout_in_minutes = 10
+  tags                    = var.tags
+}
+
+resource "azurerm_nat_gateway_public_ip_association" "management" {
+  nat_gateway_id       = azurerm_nat_gateway.management.id
+  public_ip_address_id = azurerm_public_ip.nat_gateway_management.id
+}
+
+resource "azurerm_subnet_nat_gateway_association" "management_panorama" {
+  subnet_id      = azurerm_subnet.management_panorama.id
+  nat_gateway_id = azurerm_nat_gateway.management.id
+}
+
+###############################################################################
+# Transit (Hub) VNet
+# Hosts VM-Series HA pair (FW1 Active + FW2 Passive)
+###############################################################################
+
+resource "azurerm_virtual_network" "transit" {
+  name                = "vnet-transit-hub"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  address_space       = [var.transit_vnet_address_space]
+  tags                = var.tags
+}
+
+# Management subnet – FW eth0 (mgmt interface)
+# service_endpoints: Microsoft.Storage for bootstrap SA (Azure Policy compliance)
+resource "azurerm_subnet" "transit_mgmt" {
+  name                 = "snet-mgmt"
+  resource_group_name  = var.hub_resource_group_name
+  virtual_network_name = azurerm_virtual_network.transit.name
+  address_prefixes     = [local.transit_mgmt_cidr]
+  service_endpoints    = ["Microsoft.Storage"]
+}
+
+# Public subnet – FW eth1/1 (faces internet, connected to External LB)
+resource "azurerm_subnet" "transit_public" {
+  name                 = "snet-public"
+  resource_group_name  = var.hub_resource_group_name
+  virtual_network_name = azurerm_virtual_network.transit.name
+  address_prefixes     = [local.transit_public_cidr]
+}
+
+# Private subnet – FW eth1/2 (faces internal/spoke networks, Internal LB)
+resource "azurerm_subnet" "transit_private" {
+  name                 = "snet-private"
+  resource_group_name  = var.hub_resource_group_name
+  virtual_network_name = azurerm_virtual_network.transit.name
+  address_prefixes     = [local.transit_private_cidr]
+}
+
+# HA subnet – FW eth1/3 (HA2 data synchronisation link)
+resource "azurerm_subnet" "transit_ha" {
+  name                 = "snet-ha"
+  resource_group_name  = var.hub_resource_group_name
+  virtual_network_name = azurerm_virtual_network.transit.name
+  address_prefixes     = [local.transit_ha_cidr]
+}
+
+###############################################################################
+# Transit VNet NSGs
+###############################################################################
+
+# Management NSG – FW eth0
+resource "azurerm_network_security_group" "transit_mgmt" {
+  name                = "nsg-transit-mgmt"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  tags                = var.tags
+
+  # SSH/HTTPS from Management VNet (Bastion tunnel + direct Panorama)
   security_rule {
-    name                       = "Allow-RDP-From-Bastion"
+    name                       = "Allow-SSH-From-Management-VNet"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "3389"
-    source_address_prefix      = azurerm_subnet.spoke2_bastion.address_prefixes[0]
+    destination_port_range     = "22"
+    source_address_prefix      = var.management_vnet_address_space
     destination_address_prefix = "*"
   }
 
   security_rule {
-    name                       = "Allow-Domain-From-Trust"
+    name                       = "Allow-HTTPS-From-Management-VNet"
     priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
-    protocol                   = "*"
+    protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = local.trust_subnet_cidr
+    destination_port_range     = "443"
+    source_address_prefix      = var.management_vnet_address_space
     destination_address_prefix = "*"
   }
 
+  # HA1 heartbeat between FW peers (within same mgmt subnet)
   security_rule {
-    name                       = "Allow-Domain-From-Spoke1"
+    name                       = "Allow-HA1-Internal"
     priority                   = 120
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "*"
     source_port_range          = "*"
     destination_port_range     = "*"
-    source_address_prefix      = var.spoke1_vnet_address_space
+    source_address_prefix      = local.transit_mgmt_cidr
+    destination_address_prefix = local.transit_mgmt_cidr
+  }
+
+  security_rule {
+    name                       = "Deny-All-Inbound"
+    priority                   = 4096
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  # Allow all outbound (license activation, content/threat updates, WildFire, etc.)
+  security_rule {
+    name                       = "Allow-All-Outbound-Internet"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "Internet"
+  }
+
+  security_rule {
+    name                       = "Allow-VNet-Outbound"
+    priority                   = 110
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "VirtualNetwork"
+  }
+}
+
+# Public (Untrust) NSG – PAN-OS inspects all traffic
+resource "azurerm_network_security_group" "transit_public" {
+  name                = "nsg-transit-public"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  tags                = var.tags
+
+  security_rule {
+    name                       = "Allow-All-Inbound"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Allow-All-Outbound"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+}
+
+# Private (Trust) NSG – PAN-OS enforces security policy
+resource "azurerm_network_security_group" "transit_private" {
+  name                = "nsg-transit-private"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  tags                = var.tags
+
+  security_rule {
+    name                       = "Allow-All-Inbound"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Allow-All-Outbound"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+}
+
+# HA NSG – only HA2 sync between FW peers
+resource "azurerm_network_security_group" "transit_ha" {
+  name                = "nsg-transit-ha"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  tags                = var.tags
+
+  security_rule {
+    name                       = "Allow-HA2-Inbound"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = local.transit_ha_cidr
+    destination_address_prefix = local.transit_ha_cidr
+  }
+
+  security_rule {
+    name                       = "Allow-HA2-Outbound"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = local.transit_ha_cidr
+    destination_address_prefix = local.transit_ha_cidr
+  }
+
+  security_rule {
+    name                       = "Deny-All-Inbound"
+    priority                   = 4096
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+}
+
+###############################################################################
+# NSG → Subnet Associations (Transit VNet)
+###############################################################################
+
+resource "azurerm_subnet_network_security_group_association" "transit_mgmt" {
+  subnet_id                 = azurerm_subnet.transit_mgmt.id
+  network_security_group_id = azurerm_network_security_group.transit_mgmt.id
+}
+
+resource "azurerm_subnet_network_security_group_association" "transit_public" {
+  subnet_id                 = azurerm_subnet.transit_public.id
+  network_security_group_id = azurerm_network_security_group.transit_public.id
+}
+
+resource "azurerm_subnet_network_security_group_association" "transit_private" {
+  subnet_id                 = azurerm_subnet.transit_private.id
+  network_security_group_id = azurerm_network_security_group.transit_private.id
+}
+
+resource "azurerm_subnet_network_security_group_association" "transit_ha" {
+  subnet_id                 = azurerm_subnet.transit_ha.id
+  network_security_group_id = azurerm_network_security_group.transit_ha.id
+}
+
+###############################################################################
+# Public IP – External Load Balancer (inbound application traffic via AFD)
+###############################################################################
+resource "azurerm_public_ip" "external_lb" {
+  name                = "pip-external-lb"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  zones               = ["1", "2", "3"]
+  tags                = var.tags
+}
+
+###############################################################################
+# NAT Gateway – Transit snet-mgmt (FW eth0 outbound: license, updates)
+###############################################################################
+resource "azurerm_public_ip" "nat_gateway_transit_mgmt" {
+  name                = "pip-nat-gateway-transit-mgmt"
+  location            = var.location
+  resource_group_name = var.hub_resource_group_name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = var.tags
+}
+
+resource "azurerm_nat_gateway" "transit_mgmt" {
+  name                    = "natgw-transit-mgmt"
+  location                = var.location
+  resource_group_name     = var.hub_resource_group_name
+  sku_name                = "Standard"
+  idle_timeout_in_minutes = 10
+  tags                    = var.tags
+}
+
+resource "azurerm_nat_gateway_public_ip_association" "transit_mgmt" {
+  nat_gateway_id       = azurerm_nat_gateway.transit_mgmt.id
+  public_ip_address_id = azurerm_public_ip.nat_gateway_transit_mgmt.id
+}
+
+resource "azurerm_subnet_nat_gateway_association" "transit_mgmt" {
+  subnet_id      = azurerm_subnet.transit_mgmt.id
+  nat_gateway_id = azurerm_nat_gateway.transit_mgmt.id
+}
+
+###############################################################################
+# App1 VNet & Subnets (Application workloads)
+###############################################################################
+
+resource "azurerm_virtual_network" "app1" {
+  provider            = azurerm.spoke1
+  name                = "vnet-app1"
+  location            = var.location
+  resource_group_name = var.app1_resource_group_name
+  address_space       = [var.app1_vnet_address_space]
+  tags                = var.tags
+}
+
+resource "azurerm_subnet" "app1_workload" {
+  provider             = azurerm.spoke1
+  name                 = "snet-workload"
+  resource_group_name  = var.app1_resource_group_name
+  virtual_network_name = azurerm_virtual_network.app1.name
+  address_prefixes     = [local.app1_workload_cidr]
+}
+
+# App1 Workload NSG
+resource "azurerm_network_security_group" "app1_workload" {
+  provider            = azurerm.spoke1
+  name                = "nsg-app1-workload"
+  location            = var.location
+  resource_group_name = var.app1_resource_group_name
+  tags                = var.tags
+
+  security_rule {
+    name                       = "Allow-HTTP-From-Trust"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "80"
+    source_address_prefix      = local.transit_private_cidr
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Allow-HTTPS-From-Trust"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = local.transit_private_cidr
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Allow-SSH-From-Management"
+    priority                   = 120
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = var.management_vnet_address_space
     destination_address_prefix = "*"
   }
 
@@ -729,8 +746,220 @@ resource "azurerm_network_security_group" "spoke2_workload" {
   }
 }
 
-resource "azurerm_subnet_network_security_group_association" "spoke2_workload" {
+resource "azurerm_subnet_network_security_group_association" "app1_workload" {
+  provider                  = azurerm.spoke1
+  subnet_id                 = azurerm_subnet.app1_workload.id
+  network_security_group_id = azurerm_network_security_group.app1_workload.id
+}
+
+###############################################################################
+# App2 VNet & Subnets (Windows DC / additional workloads)
+###############################################################################
+
+resource "azurerm_virtual_network" "app2" {
+  provider            = azurerm.spoke2
+  name                = "vnet-app2"
+  location            = var.location
+  resource_group_name = var.app2_resource_group_name
+  address_space       = [var.app2_vnet_address_space]
+  tags                = var.tags
+}
+
+resource "azurerm_subnet" "app2_workload" {
+  provider             = azurerm.spoke2
+  name                 = "snet-workload"
+  resource_group_name  = var.app2_resource_group_name
+  virtual_network_name = azurerm_virtual_network.app2.name
+  address_prefixes     = [local.app2_workload_cidr]
+}
+
+# App2 Workload NSG
+resource "azurerm_network_security_group" "app2_workload" {
+  provider            = azurerm.spoke2
+  name                = "nsg-app2-workload"
+  location            = var.location
+  resource_group_name = var.app2_resource_group_name
+  tags                = var.tags
+
+  security_rule {
+    name                       = "Allow-RDP-From-Management"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "3389"
+    source_address_prefix      = var.management_vnet_address_space
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Allow-Domain-From-Trust"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = local.transit_private_cidr
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Allow-Domain-From-App1"
+    priority                   = 120
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = var.app1_vnet_address_space
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "Deny-All-Inbound"
+    priority                   = 4096
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "app2_workload" {
   provider                  = azurerm.spoke2
-  subnet_id                 = azurerm_subnet.spoke2_workload.id
-  network_security_group_id = azurerm_network_security_group.spoke2_workload.id
+  subnet_id                 = azurerm_subnet.app2_workload.id
+  network_security_group_id = azurerm_network_security_group.app2_workload.id
+}
+
+###############################################################################
+# VNet Peerings
+# Management VNet ↔ Transit Hub  (Panorama → FW communication)
+# Management VNet ↔ App1         (Bastion reaches App1 VMs)
+# Management VNet ↔ App2         (Bastion reaches App2/DC VMs)
+# Transit Hub ↔ App1             (UDR: app traffic through FW)
+# Transit Hub ↔ App2             (UDR: app traffic through FW)
+###############################################################################
+
+# Management ↔ Transit Hub
+resource "azurerm_virtual_network_peering" "management_to_transit" {
+  name                         = "peer-management-to-transit"
+  resource_group_name          = var.hub_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.management.name
+  remote_virtual_network_id    = azurerm_virtual_network.transit.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
+}
+
+resource "azurerm_virtual_network_peering" "transit_to_management" {
+  name                         = "peer-transit-to-management"
+  resource_group_name          = var.hub_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.transit.name
+  remote_virtual_network_id    = azurerm_virtual_network.management.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
+}
+
+# Management ↔ App1
+resource "azurerm_virtual_network_peering" "management_to_app1" {
+  name                         = "peer-management-to-app1"
+  resource_group_name          = var.hub_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.management.name
+  remote_virtual_network_id    = azurerm_virtual_network.app1.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
+}
+
+resource "azurerm_virtual_network_peering" "app1_to_management" {
+  provider                     = azurerm.spoke1
+  name                         = "peer-app1-to-management"
+  resource_group_name          = var.app1_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.app1.name
+  remote_virtual_network_id    = azurerm_virtual_network.management.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
+}
+
+# Management ↔ App2
+resource "azurerm_virtual_network_peering" "management_to_app2" {
+  name                         = "peer-management-to-app2"
+  resource_group_name          = var.hub_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.management.name
+  remote_virtual_network_id    = azurerm_virtual_network.app2.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
+}
+
+resource "azurerm_virtual_network_peering" "app2_to_management" {
+  provider                     = azurerm.spoke2
+  name                         = "peer-app2-to-management"
+  resource_group_name          = var.app2_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.app2.name
+  remote_virtual_network_id    = azurerm_virtual_network.management.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
+}
+
+# Transit Hub ↔ App1
+resource "azurerm_virtual_network_peering" "transit_to_app1" {
+  name                         = "peer-transit-to-app1"
+  resource_group_name          = var.hub_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.transit.name
+  remote_virtual_network_id    = azurerm_virtual_network.app1.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
+}
+
+resource "azurerm_virtual_network_peering" "app1_to_transit" {
+  provider                     = azurerm.spoke1
+  name                         = "peer-app1-to-transit"
+  resource_group_name          = var.app1_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.app1.name
+  remote_virtual_network_id    = azurerm_virtual_network.transit.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
+}
+
+# Transit Hub ↔ App2
+resource "azurerm_virtual_network_peering" "transit_to_app2" {
+  name                         = "peer-transit-to-app2"
+  resource_group_name          = var.hub_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.transit.name
+  remote_virtual_network_id    = azurerm_virtual_network.app2.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
+}
+
+resource "azurerm_virtual_network_peering" "app2_to_transit" {
+  provider                     = azurerm.spoke2
+  name                         = "peer-app2-to-transit"
+  resource_group_name          = var.app2_resource_group_name
+  virtual_network_name         = azurerm_virtual_network.app2.name
+  remote_virtual_network_id    = azurerm_virtual_network.transit.id
+  allow_virtual_network_access = true
+  allow_forwarded_traffic      = true
+  allow_gateway_transit        = false
+  use_remote_gateways          = false
 }

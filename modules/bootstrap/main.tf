@@ -1,142 +1,120 @@
 ###############################################################################
 # Bootstrap Module
-# Azure Storage Account with VM-Series bootstrap package
+# Azure Storage Account + VM-Series FW Bootstrap Package
 #
-# Bootstrap directory structure per firewall:
-#   bootstrap/
-#   ├── fw1/
-#   │   ├── config/init-cfg.txt   (Panorama registration + hostname)
-#   │   └── license/authcodes     (VM-Series BYOL auth code)
-#   └── fw2/
-#       ├── config/init-cfg.txt
-#       └── license/authcodes
+# ZAKRES: Bootstrap SA jest WYŁĄCZNIE dla VM-Series FW (FW1 + FW2).
+#         Panorama używa bezpośredniej treści init-cfg w customData (nie SA pointer).
 #
-# VM-Series reads bootstrap via custom_data pointing to storage account.
-# Managed Identity (User Assigned) is used for secure access (no static keys).
-#
-# Azure Policy compliance:
-#   - cross_tenant_replication_enabled = false
-#   - network_rules: default_action = Deny + service endpoint on mgmt subnet
-#   - terraform_operator_ip: add your public IP to allow blob upload from Terraform
+# Struktura SA:
+#   bootstrap/                     ← container
+#     fw1/
+#       config/init-cfg.txt        ← FW1 bootstrap config
+#       license/authcodes          ← FW1 auth codes
+#       content/                   ← (puste, FW pobiera content z CDN)
+#       software/                  ← (puste)
+#     fw2/
+#       config/init-cfg.txt        ← FW2 bootstrap config
+#       license/authcodes          ← FW2 auth codes
 ###############################################################################
-
-resource "random_string" "sa_suffix" {
-  length  = 6
-  upper   = false
-  special = false
-}
-
-###############################################################################
-# Bootstrap Storage Account
-# Policy-compliant: network restricted, no cross-tenant replication
-###############################################################################
-resource "azurerm_storage_account" "bootstrap" {
-  name                     = "sapanosbstrap${random_string.sa_suffix.result}"
-  resource_group_name      = var.resource_group_name
-  location                 = var.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-
-  # Disable public blob access - Managed Identity is used for authentication
-  allow_nested_items_to_be_public = false
-  https_traffic_only_enabled      = true
-  min_tls_version                 = "TLS1_2"
-
-  # Azure Policy: "Storage accounts should prevent cross tenant object replication"
-  cross_tenant_replication_enabled = false
-
-  # Azure Policy: "Storage accounts should restrict network access" (Deny effect)
-  # Polityka wymaga network_rules z default_action=Deny JUŻ PRZY TWORZENIU konta.
-  # Bez tego bloku Azure Policy odrzuca stworzenie SA z błędem 403 RequestDisallowedByPolicy.
-  #
-  # ip_rules: IP operatora Terraform → umożliwia wgranie blobów (init-cfg, authcodes)
-  # bypass = AzureServices: umożliwia VM-Series (Managed Identity) czytanie blobów
-  # virtual_network_subnet_ids: mgmt subnet z service endpoint Microsoft.Storage
-  network_rules {
-    default_action             = "Deny"
-    bypass                     = ["AzureServices", "Logging", "Metrics"]
-    virtual_network_subnet_ids = var.allowed_subnet_ids
-    ip_rules                   = compact(var.terraform_operator_ips)
-  }
-
-  tags = var.tags
-}
-
-###############################################################################
-# time_sleep: Czeka 60s po stworzeniu SA zanim stworzy kontener/blobs.
-# Wymagane: Azure propaguje network_rules (ip_rules) z opóźnieniem ~15-30s.
-# Bez sleep: natychmiastowa próba stworzenia kontenera kończy się 403.
-###############################################################################
-resource "time_sleep" "wait_for_sa_network_rules" {
-  depends_on      = [azurerm_storage_account.bootstrap]
-  create_duration = "60s"
-}
-
-resource "azurerm_storage_container" "bootstrap" {
-  name                  = "bootstrap"
-  storage_account_name  = azurerm_storage_account.bootstrap.name
-  container_access_type = "private"
-
-  depends_on = [time_sleep.wait_for_sa_network_rules]
-}
 
 ###############################################################################
 # User Assigned Managed Identity
-# VM-Series FW1 and FW2 will be assigned this identity to access bootstrap blobs
+# Przypisywana do FW VM – pozwala na dostęp do SA bez access-key w customData.
+# Alternatywnie FW może używać access-key (mniej bezpieczne, ale prostsze).
+# Tu stosujemy MI dla poprawności security baseline.
 ###############################################################################
-resource "azurerm_user_assigned_identity" "fw_bootstrap" {
-  name                = "id-fw-bootstrap"
+resource "azurerm_user_assigned_identity" "bootstrap" {
+  name                = "id-panos-bootstrap"
   location            = var.location
   resource_group_name = var.resource_group_name
   tags                = var.tags
 }
 
-# Grant the managed identity read access to the bootstrap blobs
-resource "azurerm_role_assignment" "fw_bootstrap_reader" {
+###############################################################################
+# Storage Account
+# Network rules: default_action=Deny (Azure Policy compliance)
+# Dostęp: FW mgmt subnet (service endpoint) + operator IP (dla blob upload)
+###############################################################################
+resource "random_string" "sa_suffix" {
+  length  = 8
+  special = false
+  upper   = false
+}
+
+resource "azurerm_storage_account" "bootstrap" {
+  name                            = "sapanosbstrap${random_string.sa_suffix.result}"
+  resource_group_name             = var.resource_group_name
+  location                        = var.location
+  account_tier                    = "Standard"
+  account_replication_type        = "LRS"
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+  tags                            = var.tags
+
+  network_rules {
+    default_action             = "Deny"
+    bypass                     = ["AzureServices"]
+    virtual_network_subnet_ids = var.allowed_subnet_ids
+    ip_rules                   = var.terraform_operator_ips
+  }
+
+  lifecycle {
+    ignore_changes = [network_rules]
+  }
+}
+
+# Bootstrap container
+resource "azurerm_storage_container" "bootstrap" {
+  name                  = "bootstrap"
+  storage_account_name  = azurerm_storage_account.bootstrap.name
+  container_access_type = "private"
+}
+
+# Storage Blob Data Reader role for MI
+resource "azurerm_role_assignment" "bootstrap_mi_reader" {
   scope                = azurerm_storage_account.bootstrap.id
   role_definition_name = "Storage Blob Data Reader"
-  principal_id         = azurerm_user_assigned_identity.fw_bootstrap.principal_id
+  principal_id         = azurerm_user_assigned_identity.bootstrap.principal_id
 }
 
 ###############################################################################
-# Bootstrap blobs - FW1
+# FW1 Bootstrap Files
 ###############################################################################
 
-# FW1 init-cfg.txt: Panorama registration, hostname, DHCP settings
 resource "azurerm_storage_blob" "fw1_init_cfg" {
   name                   = "fw1/config/init-cfg.txt"
   storage_account_name   = azurerm_storage_account.bootstrap.name
   storage_container_name = azurerm_storage_container.bootstrap.name
   type                   = "Block"
   source_content = templatefile("${path.module}/templates/init-cfg.txt.tpl", {
-    hostname                = var.fw1_hostname
-    panorama_server         = var.panorama_private_ip
-    panorama_vm_auth_key    = var.panorama_vm_auth_key
+    hostname               = "fw1-transit-hub"
+    panorama_server        = var.panorama_private_ip
     panorama_template_stack = var.panorama_template_stack
-    panorama_device_group   = var.panorama_device_group
+    panorama_device_group  = var.panorama_device_group
+    panorama_vm_auth_key   = var.panorama_vm_auth_key
+    authcodes              = var.fw_auth_code
   })
 }
 
-# FW1 authcodes: BYOL license auth code
 resource "azurerm_storage_blob" "fw1_authcodes" {
   name                   = "fw1/license/authcodes"
   storage_account_name   = azurerm_storage_account.bootstrap.name
   storage_container_name = azurerm_storage_container.bootstrap.name
   type                   = "Block"
-  source_content         = var.fw_auth_code
+  source_content         = var.fw_auth_code != "" ? var.fw_auth_code : "# no authcode"
 }
 
-# FW1 empty placeholder files (required by PAN-OS bootstrap process)
-resource "azurerm_storage_blob" "fw1_software_placeholder" {
-  name                   = "fw1/software/.placeholder"
+# Required empty dirs (FW bootstrap expects these paths to exist)
+resource "azurerm_storage_blob" "fw1_content_placeholder" {
+  name                   = "fw1/content/.keep"
   storage_account_name   = azurerm_storage_account.bootstrap.name
   storage_container_name = azurerm_storage_container.bootstrap.name
   type                   = "Block"
   source_content         = ""
 }
 
-resource "azurerm_storage_blob" "fw1_content_placeholder" {
-  name                   = "fw1/content/.placeholder"
+resource "azurerm_storage_blob" "fw1_software_placeholder" {
+  name                   = "fw1/software/.keep"
   storage_account_name   = azurerm_storage_account.bootstrap.name
   storage_container_name = azurerm_storage_container.bootstrap.name
   type                   = "Block"
@@ -144,7 +122,7 @@ resource "azurerm_storage_blob" "fw1_content_placeholder" {
 }
 
 ###############################################################################
-# Bootstrap blobs - FW2
+# FW2 Bootstrap Files
 ###############################################################################
 
 resource "azurerm_storage_blob" "fw2_init_cfg" {
@@ -153,11 +131,12 @@ resource "azurerm_storage_blob" "fw2_init_cfg" {
   storage_container_name = azurerm_storage_container.bootstrap.name
   type                   = "Block"
   source_content = templatefile("${path.module}/templates/init-cfg.txt.tpl", {
-    hostname                = var.fw2_hostname
-    panorama_server         = var.panorama_private_ip
-    panorama_vm_auth_key    = var.panorama_vm_auth_key
+    hostname               = "fw2-transit-hub"
+    panorama_server        = var.panorama_private_ip
     panorama_template_stack = var.panorama_template_stack
-    panorama_device_group   = var.panorama_device_group
+    panorama_device_group  = var.panorama_device_group
+    panorama_vm_auth_key   = var.panorama_vm_auth_key
+    authcodes              = var.fw_auth_code
   })
 }
 
@@ -166,19 +145,19 @@ resource "azurerm_storage_blob" "fw2_authcodes" {
   storage_account_name   = azurerm_storage_account.bootstrap.name
   storage_container_name = azurerm_storage_container.bootstrap.name
   type                   = "Block"
-  source_content         = var.fw_auth_code
-}
-
-resource "azurerm_storage_blob" "fw2_software_placeholder" {
-  name                   = "fw2/software/.placeholder"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content         = ""
+  source_content         = var.fw_auth_code != "" ? var.fw_auth_code : "# no authcode"
 }
 
 resource "azurerm_storage_blob" "fw2_content_placeholder" {
-  name                   = "fw2/content/.placeholder"
+  name                   = "fw2/content/.keep"
+  storage_account_name   = azurerm_storage_account.bootstrap.name
+  storage_container_name = azurerm_storage_container.bootstrap.name
+  type                   = "Block"
+  source_content         = ""
+}
+
+resource "azurerm_storage_blob" "fw2_software_placeholder" {
+  name                   = "fw2/software/.keep"
   storage_account_name   = azurerm_storage_account.bootstrap.name
   storage_container_name = azurerm_storage_container.bootstrap.name
   type                   = "Block"
@@ -186,32 +165,10 @@ resource "azurerm_storage_blob" "fw2_content_placeholder" {
 }
 
 ###############################################################################
-# Bootstrap blobs – Panorama
-#
-# Panorama jest PAN-OS z dodatkowymi modułami. Czyta bootstrap IDENTYCZNIE jak
-# VM-Series: customData zawiera wskaźnik do SA, Panorama pobiera init-cfg z SA.
-#
-# UWAGA: Panorama NIE przyjmuje init-cfg bezpośrednio w customData/userData!
-#   Jedyna niezawodna metoda: storage-account bootstrap (tak samo jak FW).
-#   Bezpośrednie init-cfg w customData/userData jest ignorowane przez PAN-OS.
+# Sleep after SA creation to allow network_rules propagation
+# (Azure may take up to 30s to apply SA network ACLs)
 ###############################################################################
-resource "azurerm_storage_blob" "panorama_init_cfg" {
-  name                   = "panorama/config/init-cfg.txt"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content = templatefile("${path.module}/templates/panorama-init-cfg.txt.tpl", {
-    hostname           = var.panorama_hostname
-    serial_number      = var.panorama_serial_number
-    panorama_auth_code = var.panorama_auth_code
-  })
+resource "time_sleep" "wait_for_sa_network_rules" {
+  depends_on      = [azurerm_storage_account.bootstrap]
+  create_duration = "60s"
 }
-
-resource "azurerm_storage_blob" "panorama_authcodes" {
-  name                   = "panorama/license/authcodes"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content         = var.panorama_auth_code
-}
-
