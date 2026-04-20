@@ -25,7 +25,7 @@ Kompletna infrastruktura IaaC (Terraform) dla architektury referencyjnej **Palo 
   │  │   │   └─────────────────────────┘   │   │                                         │   │ │
   │  │   └─────────────────────────────────┘   └─────────────────────────────────────────┘   │ │
   │  │                         ↑ HA1 + Panorama→FW                      ↑ HTTPS/SSH           │ │
-  │  │            NAT GW       │                                         │ Admin Acces          │ │
+  │  │            NAT GW       │                                         │ Admin Access         │ │
   │  │         (outbound)      │                              Internet browsers/CLI             │ │
   │  └─────────────────────────┼─────────────────────────────────────────────────────────────-┘ │
   │                            │ VNet Peering (all ↔ all)                                        │
@@ -129,7 +129,7 @@ App1 VM
 #### Management (Bastion → FW/Panorama)
 ```
 Operator Browser → Azure Bastion (pip-bastion-management)
-→ IpConnect SSH: FW eth0 (10.110.255.4/5) lub Panorama (10.255.0.4)
+→ SSH (--target-resource-id): FW eth0 (10.110.255.4/5) lub Panorama (10.255.0.4)
 → Bastion Tunnel HTTPS: panos Terraform provider (port 44300 → 443)
 ```
 
@@ -139,13 +139,15 @@ Operator Browser → Azure Bastion (pip-bastion-management)
 
 ### Azure Bastion Standard (Management VNet)
 - Jeden Bastion dla wszystkich VNetów (Standard tier = cross-VNet access via peering)
-- `tunneling_enabled = true` → wymagane dla `az network bastion tunnel --target-resource-id`
+- `tunneling_enabled = true` → wymagane dla `az network bastion tunnel`
+- `ip_connect_enabled = true` → wymagane dla `az network bastion ssh --target-ip-address`
 - Dostęp do: Panorama (10.255.0.4), FW1 (10.110.255.4), FW2 (10.110.255.5), DC (10.113.0.4)
 
 ### Panorama (Management VNet, 10.255.0.4)
 - Standard_D16s_v3 (16 vCPU / 64 GB RAM)
 - 2TB Premium SSD data disk dla logów
-- Bootstrap: **bezpośrednia treść init-cfg w `customData`** (NIE SA storage pointer)
+- **Brak bootstrap (custom_data)** – Panorama startuje z domyślnym hostname `localhost.localdomain`
+- Konfiguracja (hostname, licencja, Template Stack, Device Group, policies) → **Phase 2 (XML API)**
 - Outbound Internet przez NAT Gateway (licencja, content updates)
 
 ### VM-Series FW HA Pair (Transit VNet)
@@ -153,7 +155,7 @@ Operator Browser → Azure Bastion (pip-bastion-management)
 - Active/Passive HA – FW1 Active, FW2 Passive
 - Bootstrap przez Azure Storage Account (SA pointer w `customData`)
 - Managed Identity dla dostępu do Bootstrap SA (bez storage access key)
-- Licencja BYOL – aktivacja przez init-cfg authcodes=
+- Licencja BYOL – aktywacja przez init-cfg `authcodes=` przy starcie
 
 ### Load Balancers
 - **External Standard LB**: Public IP (zonal 1/2/3), frontend inbound z AFD
@@ -186,10 +188,9 @@ curl, git
 - Uprawnienia: `Contributor` + `User Access Administrator` (dla RBAC)
 - Marketplace agreement dla VM-Series i Panorama (auto-accept w module)
 
-### Licencje Palo Alto (z CSP Portal – support.paloaltonetworks.com)
-- 1x Panorama BYOL auth code (`panorama_auth_code`)
+### Licencje Palo Alto (z CSP Portal – my.paloaltonetworks.com)
+- 1x Panorama BYOL auth code → zarejestruj na CSP Portal → uzyskaj **Serial Number**
 - 2x VM-Series BYOL auth codes (lub 1 shared `fw_auth_code`)
-- Serial number Panoramy (`panorama_serial_number`)
 
 ---
 
@@ -202,7 +203,8 @@ git clone <this-repo>
 cd azure_ha_project
 
 cp terraform.tfvars.example terraform.tfvars
-# Edytuj terraform.tfvars – uzupełnij subscription IDs, hasła, auth codes
+# Edytuj terraform.tfvars – uzupełnij subscription IDs, hasła
+# UWAGA: panorama_serial_number jest w phase2-panorama-config/terraform.tfvars
 
 terraform init
 ```
@@ -221,10 +223,19 @@ terraform apply \
   -target=module.app2_dc
 ```
 
-Poczekaj ~15 minut na boot Panoramy. Sprawdź przez Bastion:
+Poczekaj ~15 minut na boot Panoramy. Opcjonalnie sprawdź dostępność przez Bastion:
 
 ```bash
-# Połącz się do Panoramy przez Bastion SSH
+# Metoda A: przez resource ID (zawsze działa)
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
+az network bastion ssh \
+  --name bastion-management \
+  --resource-group rg-transit-hub \
+  --target-resource-id "$PANORAMA_ID" \
+  --auth-type password \
+  --username panadmin
+
+# Metoda B: przez IP (po terraform apply, ip_connect_enabled=true)
 az network bastion ssh \
   --name bastion-management \
   --resource-group rg-transit-hub \
@@ -232,26 +243,27 @@ az network bastion ssh \
   --auth-type password \
   --username panadmin
 
-# Sprawdź status systemu
-admin@panorama> show system info | match serial
-admin@panorama> show system licenses
+# Sprawdź status systemu (tryb operacyjny: prompt = admin@panorama>)
+admin@panorama> show system info
+admin@panorama> show license
 ```
 
-**Jeśli bootstrap nie zadziałał (hostname = vm-panorama):**
-```bash
-# Manualnie ustaw hostname
-admin@panorama# set deviceconfig system hostname panorama-transit-hub
-admin@panorama# commit
+> **Uwaga:** Na tym etapie Panorama nie ma jeszcze licencji ani hostname. Konfiguracja następuje w KROK 2 (Phase 2) automatycznie.
 
-# Aktywuj licencję
-admin@panorama> request license activate auth-code <TWOJ_AUTH_CODE>
+### KROK 2: Aktywacja licencji + konfiguracja Panoramy (Phase 2)
+
+**Przed uruchomieniem Phase 2 – zarejestruj Panoramę na CSP Portal:**
+
 ```
-
-### KROK 2: Konfiguracja Panoramy (Template Stack, Device Group, reguły)
+1. Zaloguj się: my.paloaltonetworks.com
+2. Assets → Add Product → wpisz auth-code Panoramy
+3. Wybierz typ: Panorama → CSP przypisze Serial Number (format: 007300XXXXXXX)
+4. Skopiuj Serial Number
+```
 
 W dwóch terminalach:
 
-**Terminal 1 – Bastion tunnel:**
+**Terminal 1 – Bastion tunnel (zostaw otwarty przez cały czas Phase 2):**
 ```bash
 PANORAMA_ID=$(terraform output -raw panorama_vm_id)
 az network bastion tunnel \
@@ -259,40 +271,48 @@ az network bastion tunnel \
   --resource-group rg-transit-hub \
   --target-resource-id "$PANORAMA_ID" \
   --resource-port 443 --port 44300
-# Zostaw otwarty – tunnel aktywny
+# Terminal BLOKUJĄCY – nie zamykaj!
 ```
 
-**Terminal 2 – Terraform phase2:**
+**Terminal 2 – Terraform Phase 2:**
 ```bash
 cd phase2-panorama-config/
 cp terraform.tfvars.example terraform.tfvars
-# Uzupełnij panorama_url = "https://127.0.0.1:44300"
+
+# Uzupełnij terraform.tfvars:
+#   panorama_password      = "haslo-z-phase1"
+#   panorama_serial_number = "007300XXXXXXX"   ← z CSP Portal
+#   external_lb_public_ip  = "X.X.X.X"         ← terraform output external_lb_public_ip
+
 terraform init && terraform apply
 ```
 
-Phase 2 tworzy w Panoramie:
-- Template Stack: `Transit-VNet-Stack`
-- Device Group: `Transit-VNet-DG`
-- Interface config (eth0/1/2/3, IP addressing)
-- Zone config (mgmt, untrust, trust, ha)
-- Security policies: Inbound, Outbound, East-West
-- NAT policies
+Phase 2 wykonuje automatycznie:
+1. ⏳ Czeka aż Panorama API odpowie (max 20 min)
+2. ✅ Ustawia hostname `panorama-transit-hub` przez XML API + commit
+3. ✅ Ustawia serial number przez XML API + commit
+4. ✅ `request license fetch` – Panorama pobiera licencję z serwera PANW
+5. ✅ Tworzy Template Stack, Device Group, Interface/Zone/Route/Security/NAT config (panos provider)
+6. ✅ Commit końcowy Panoramy
 
 ### KROK 1b: Generowanie VM Auth Key + wdrożenie FW
 
+Po aktywacji licencji Panoramy, wygeneruj klucz rejestracyjny dla VM-Series:
+
 ```bash
-# Zamknij tunnel z KROK 2, otwórz SSH do Panoramy
+# Opcja A: przez Bastion SSH
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
 az network bastion ssh \
   --name bastion-management \
   --resource-group rg-transit-hub \
-  --target-ip-address 10.255.0.4 \
+  --target-resource-id "$PANORAMA_ID" \
   --auth-type password --username panadmin
 
 # Wygeneruj vm-auth-key (ważny 168h = 7 dni)
 admin@panorama> request vm-auth-key generate lifetime 168
-# Skopiuj klucz z outputu
+# Skopiuj klucz z outputu (format: 2:XXXXXXXXX...)
 
-# LUB użyj skryptu (wymaga Bastion tunnel na port 44300):
+# Opcja B: przez skrypt (wymaga Bastion tunnel na port 44300)
 PANORAMA_IP=127.0.0.1 PANORAMA_PORT=44300 ./scripts/generate-vm-auth-key.sh
 ```
 
@@ -323,7 +343,7 @@ terraform output
 # Test inbound przez Front Door
 curl -s "https://$(terraform output -raw frontdoor_endpoint)"
 
-# Test FW rejestracji w Panoramie (przez Bastion SSH do Panoramy):
+# Sprawdź rejestrację FW w Panoramie (przez Bastion SSH do Panoramy)
 admin@panorama> show devices connected
 ```
 
@@ -331,7 +351,37 @@ admin@panorama> show devices connected
 
 ## Dostęp przez Azure Bastion
 
-### SSH do Panoramy lub FW
+```bash
+# Helper script – sprawdza status i pokazuje wszystkie komendy
+./scripts/check-panorama.sh
+
+# HTTPS tunel do Panoramy (dla GUI lub Phase 2)
+./scripts/check-panorama.sh --tunnel
+
+# RDP tunel do DC
+./scripts/check-panorama.sh --rdp
+```
+
+### SSH do Panoramy lub FW (przez resource ID – zawsze działa)
+```bash
+# Panorama
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
+az network bastion ssh \
+  --name bastion-management \
+  --resource-group rg-transit-hub \
+  --target-resource-id "$PANORAMA_ID" \
+  --auth-type password --username panadmin
+
+# FW1
+FW1_ID=$(terraform output -raw fw1_vm_id)
+az network bastion ssh \
+  --name bastion-management \
+  --resource-group rg-transit-hub \
+  --target-resource-id "$FW1_ID" \
+  --auth-type password --username panadmin
+```
+
+### SSH przez IP (po `terraform apply -target=module.networking`)
 ```bash
 # Panorama
 az network bastion ssh \
@@ -348,34 +398,37 @@ az network bastion ssh \
   --auth-type password --username panadmin
 ```
 
-### HTTPS GUI (Bastion tunnel)
+### HTTPS GUI Panoramy (Bastion tunnel)
 ```bash
 # Terminal 1 – otwórz tunnel
-VM_ID=$(az vm show -g rg-transit-hub -n vm-panorama --query id -o tsv)
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
 az network bastion tunnel \
   --name bastion-management \
   --resource-group rg-transit-hub \
-  --target-resource-id "$VM_ID" \
+  --target-resource-id "$PANORAMA_ID" \
   --resource-port 443 --port 44300
 
 # Terminal 2 – otwórz w przeglądarce
 open https://localhost:44300
+# Kliknij: ADVANCED → Proceed (certyfikat self-signed)
 ```
 
 ### RDP do Windows DC
 ```bash
 DC_ID=$(terraform output -raw dc_vm_id)
-az network bastion rdp \
+az network bastion tunnel \
   --name bastion-management \
   --resource-group rg-transit-hub \
-  --target-resource-id "$DC_ID"
+  --target-resource-id "$DC_ID" \
+  --resource-port 3389 --port 33389
+# Następnie: mstsc /v:localhost:33389 (Windows) lub Microsoft Remote Desktop (macOS)
 ```
 
 ---
 
 ## Zmienne konfiguracyjne
 
-### Kluczowe zmienne
+### Phase 1 – root terraform.tfvars
 
 | Zmienna | Domyślna wartość | Opis |
 |---------|-----------------|------|
@@ -383,11 +436,17 @@ az network bastion rdp \
 | `spoke1_subscription_id` | (required) | Subskrypcja App1 |
 | `spoke2_subscription_id` | (required) | Subskrypcja App2 |
 | `admin_password` | (required) | Hasło Panoramy i FW (min 12 znaków) |
-| `panorama_auth_code` | `""` | Auth code BYOL Panoramy z CSP Portal |
-| `panorama_serial_number` | `""` | Serial number Panoramy z CSP Portal |
-| `panorama_vm_auth_key` | `""` | Device Registration Key (wygeneruj po KROK 1a) |
-| `fw_auth_code` | `""` | Auth code VM-Series BYOL |
+| `panorama_vm_auth_key` | `""` | Device Registration Key (wygeneruj po KROK 2) |
+| `fw_auth_code` | `""` | Auth code VM-Series BYOL z CSP Portal |
 | `terraform_operator_ips` | `[]` | Twoje publiczne IP (dla Bootstrap SA access) |
+
+### Phase 2 – phase2-panorama-config/terraform.tfvars
+
+| Zmienna | Opis |
+|---------|------|
+| `panorama_password` | Hasło Panoramy (to samo co `admin_password` w Phase 1) |
+| `panorama_serial_number` | Serial Number Panoramy z CSP Portal (format: `007300XXXXXXX`) |
+| `external_lb_public_ip` | Publiczny IP External LB (`terraform output external_lb_public_ip`) |
 
 ### IP Addressing (domyślne)
 
@@ -422,47 +481,32 @@ azure_ha_project/
 │   │   ├── main.tf                 # VNets, Subnets, NSGs, Peerings, Bastion, NAT GW
 │   │   ├── variables.tf
 │   │   └── outputs.tf
-│   ├── bootstrap/                  # Bootstrap SA dla VM-Series FW
+│   ├── bootstrap/                  # Bootstrap SA dla VM-Series FW (nie dla Panoramy)
 │   │   ├── main.tf                 # SA, kontenery, blobs FW1/FW2
 │   │   ├── variables.tf
 │   │   ├── outputs.tf
 │   │   └── templates/
 │   │       └── init-cfg.txt.tpl    # FW bootstrap config (vm-auth-key opcjonalny)
-│   ├── panorama/                   # Panorama VM (Management VNet)
-│   │   ├── main.tf                 # VM, NIC, disk, direct init-cfg customData
+│   ├── panorama/                   # Panorama VM (Management VNet, bez bootstrap)
+│   │   ├── main.tf                 # VM, NIC, disk – brak custom_data
 │   │   ├── variables.tf
-│   │   ├── outputs.tf
-│   │   └── templates/
-│   │       └── panorama-init-cfg.txt.tpl
+│   │   └── outputs.tf
+│   ├── panorama_config/            # Panorama konfiguracja przez panos provider
+│   │   ├── main.tf                 # Template Stack, DG, policies
+│   │   ├── variables.tf
+│   │   └── outputs.tf
 │   ├── firewall/                   # VM-Series FW HA pair
 │   │   ├── main.tf                 # 2x VMs, 4x NICs each, Availability Set
 │   │   ├── variables.tf
 │   │   └── outputs.tf
 │   ├── loadbalancer/               # External LB + Internal LB
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   └── outputs.tf
 │   ├── routing/                    # UDR Route Tables (App1, App2)
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   └── outputs.tf
 │   ├── frontdoor/                  # Azure Front Door Premium
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   └── outputs.tf
 │   ├── spoke1_app/                 # App1 – Ubuntu + Apache Hello World
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   └── outputs.tf
-│   ├── spoke2_dc/                  # App2 – Windows Server 2022 DC
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   ├── outputs.tf
-│   │   └── dc-setup.ps1.tpl       # PowerShell DC promotion script
-│   └── panorama_config/           # (dodatkowy) Panorama konfiguracja przez panos provider
+│   └── spoke2_dc/                  # App2 – Windows Server 2022 DC
 │
-├── phase2-panorama-config/         # ODRĘBNY workspace Terraform
-│   ├── main.tf                     # panos provider – Template Stack, DG, policies
+├── phase2-panorama-config/         # ODRĘBNY workspace Terraform – konfiguracja Panoramy
+│   ├── main.tf                     # XML API: hostname, serial, licencja + panos provider
 │   ├── variables.tf
 │   ├── providers.tf
 │   ├── outputs.tf
@@ -472,8 +516,8 @@ azure_ha_project/
 │   └── dc-promote/                 # Opcjonalna ręczna promocja DC (DSC)
 │
 └── scripts/
-    ├── generate-vm-auth-key.sh     # Automatyczne generowanie vm-auth-key z Panoramy
-    ├── check-panorama.sh           # Weryfikacja statusu Panoramy
+    ├── generate-vm-auth-key.sh     # Automatyczne generowanie vm-auth-key z Panoramy API
+    ├── check-panorama.sh           # Dostęp przez Bastion (SSH, tunnel, RDP)
     └── fix-drift.sh                # Naprawa driftu konfiguracji
 ```
 
@@ -481,25 +525,62 @@ azure_ha_project/
 
 ## Ważne uwagi techniczne
 
-### Bootstrap Panoramy vs VM-Series FW
+### Panorama – brak bootstrap, konfiguracja przez Phase 2
 
-| | Panorama | VM-Series FW |
-|---|----------|-------------|
-| `customData` format | Bezpośrednia treść init-cfg (base64) | SA storage pointer |
-| Przykład | `type=dhcp-client\nhostname=...` | `storage-account=sa...\nfile-share=bootstrap\n...` |
-| Źródło | `templatefile("panorama-init-cfg.txt.tpl")` | `module.bootstrap.fw1_custom_data` |
+Panorama BYOL na Azure **nie korzysta z customData/bootstrap**. Cały proces konfiguracji odbywa się przez Phase 2 (XML API + panos Terraform provider):
+
+| Krok | Mechanizm | Co robi |
+|------|-----------|---------|
+| Phase 1a | Terraform (azurerm) | Tworzy VM Panoramy – startuje z domyślnym hostname |
+| Phase 2 – Step 1 | `curl` XML API | Czeka aż Panorama odpowie (max 20 min) |
+| Phase 2 – Step 2 | `curl` XML API | Ustawia hostname + commit |
+| Phase 2 – Step 3 | `curl` XML API | Ustawia serial number + commit + `request license fetch` |
+| Phase 2 – Step 4 | panos provider | Template Stack, Device Group, interfaces, zones, routes, policies |
+| Phase 2 – Step 5 | `curl` XML API | Commit końcowy |
+
+### Aktywacja licencji Panoramy BYOL
+
+**Wymagana kolejność:**
+1. CSP Portal: zarejestruj auth-code → otrzymaj **Serial Number** (`007300XXXXXXX`)
+2. Phase 2 ustawia serial number w Panoramie (XML API config)
+3. Phase 2 wykonuje `commit`
+4. Phase 2 wywołuje `request license fetch` (BEZ auth-code)
+5. Panorama łączy się z serwerem PANW i pobiera licencję
+
+> ⚠️ Komenda `request license fetch auth-code XXXX` **nie działa** dla Panoramy BYOL na Azure. Auth-code musi być najpierw powiązany z serial number na CSP Portal.
 
 ### vm-auth-key (Device Registration Auth Key)
 
 - **Wymagany** dla automatycznej rejestracji FW w Panoramie przy starcie
-- Generowany w Panoramie AFTER aktywacji licencji
+- Generuj w Panoramie **po** aktywacji licencji (Phase 2)
 - Wbudowany w FW init-cfg (`vm-auth-key=`)
 - Ważny 168h (7 dni) domyślnie – ustaw przed wdrożeniem FW
-- PAN-OS 12.x: alternatywnie Device Certificate (bez vm-auth-key)
+- Tryb operacyjny Panoramy: `admin@panorama> request vm-auth-key generate lifetime 168`
+
+### PAN-OS CLI – tryby pracy
+
+| Tryb | Prompt | Komendy |
+|------|--------|---------|
+| Operacyjny | `admin@panorama>` | `show`, `request`, `debug` |
+| Konfiguracyjny | `admin@panorama#` | `set`, `delete`, `commit` |
+
+```bash
+# Wejście w tryb konfiguracyjny
+admin@panorama> configure
+
+# Powrót do operacyjnego
+admin@panorama# exit
+
+# Sprawdzenie licencji (tryb operacyjny)
+admin@panorama> show license
+
+# Sprawdzenie info systemowego
+admin@panorama> show system info
+```
 
 ### NSG reguły
 
-- **snet-mgmt (Transit)**: SSH/HTTPS tylko z Management VNet (Bastion range 10.255.0.0/16)
+- **snet-mgmt (Transit)**: SSH/HTTPS tylko z Management VNet (10.255.0.0/16)
 - **snet-public (Transit)**: Allow All (PAN-OS inspektuje ruch)
 - **snet-private (Transit)**: Allow All (PAN-OS enforces policy)
 - **snet-management (Management VNet)**: SSH/HTTPS z AzureBastionSubnet, Panorama↔FW na 3978/28443
@@ -515,59 +596,94 @@ azure_ha_project/
 
 ## Troubleshooting
 
-### Panorama hostname = vm-panorama (bootstrap nie zadziałał)
+### Panorama nie odpowiada po ~20 min
 
 ```bash
-# 1. Sprawdź co jest w customData VM
-az vm show -g rg-transit-hub -n vm-panorama \
-  --query 'osProfile.customData' -o tsv | base64 -d
+# Sprawdź status VM
+az vm show --show-details \
+  -g rg-transit-hub -n vm-panorama \
+  --query "{state:powerState, ip:privateIps}" -o table
 
-# 2. Jeśli puste → problem z Terraform provider (znany bug azurerm < 3.85)
-# Rozwiązanie: ustaw ręcznie przez Bastion SSH
-az network bastion ssh --name bastion-management \
+# Sprawdź czy Bastion tunnel działa
+curl -sk --max-time 10 -o /dev/null -w "%{http_code}" https://127.0.0.1:44300/php/login.php
+# Oczekiwany wynik: 200 lub 302
+
+# Sprawdź logi Panoramy przez SSH
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
+az network bastion ssh \
+  --name bastion-management \
   --resource-group rg-transit-hub \
-  --target-ip-address 10.255.0.4 \
+  --target-resource-id "$PANORAMA_ID" \
   --auth-type password --username panadmin
 
-admin@panorama# set deviceconfig system hostname panorama-transit-hub
-admin@panorama# commit
+admin@panorama> show system info
+```
 
-# 3. Aktywacja licencji
-admin@panorama> request license activate auth-code XXXX-XXXX-XXXX-XXXX
+### Phase 2 – błąd aktywacji licencji
+
+```bash
+# Sprawdź czy serial number jest poprawny
+admin@panorama> show system info | match serial
+
+# Sprawdź dostęp do internetu (NAT Gateway w Management VNet)
+admin@panorama> ping host 8.8.8.8 source 10.255.0.4
+
+# Sprawdź status licencji
+admin@panorama> show license
+
+# Jeśli serial number nie zgadza się z CSP – ustaw ręcznie (tryb konfiguracyjny)
+admin@panorama> configure
+admin@panorama# set deviceconfig system serial 007300XXXXXXX
+admin@panorama# commit
+admin@panorama# exit
+
+# Pobierz licencję ręcznie (tryb operacyjny)
+admin@panorama> request license fetch
 ```
 
 ### FW nie rejestruje się w Panoramie
 
 ```bash
-# SSH do FW przez Bastion
-az network bastion ssh --name bastion-management \
+# SSH do FW przez Bastion (resource ID)
+FW1_ID=$(terraform output -raw fw1_vm_id)
+az network bastion ssh \
+  --name bastion-management \
   --resource-group rg-transit-hub \
-  --target-ip-address 10.110.255.4 \
+  --target-resource-id "$FW1_ID" \
   --auth-type password --username panadmin
 
-# Sprawdź status Panoramy
+# Sprawdź status Panoramy z FW
 admin@fw1> show panorama-status
 
 # Sprawdź bootstrap log
 admin@fw1> debug bootstrap detail
 
-# Manualnie połącz z Panoramą
+# Ustaw Panoramę ręcznie jeśli init-cfg nie zadziałał
+admin@fw1> configure
 admin@fw1# set deviceconfig system panorama-server 10.255.0.4
 admin@fw1# commit
+admin@fw1# exit
 ```
 
 ### vm-auth-key expired
 
 ```bash
-# Wygeneruj nowy klucz
-az network bastion ssh --name bastion-management \
+# Wygeneruj nowy klucz przez SSH do Panoramy
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
+az network bastion ssh \
+  --name bastion-management \
   --resource-group rg-transit-hub \
-  --target-ip-address 10.255.0.4 \
+  --target-resource-id "$PANORAMA_ID" \
   --auth-type password --username panadmin
 
 admin@panorama> request vm-auth-key generate lifetime 168
 
+# Lub przez skrypt (wymaga Bastion tunnel na port 44300)
+./scripts/check-panorama.sh --tunnel   # Terminal 1
+PANORAMA_IP=127.0.0.1 PANORAMA_PORT=44300 ./scripts/generate-vm-auth-key.sh  # Terminal 2
+
 # Zaktualizuj terraform.tfvars i odśwież bootstrap SA
+# panorama_vm_auth_key = "2:NOWY_KLUCZ"
 terraform apply -target=module.bootstrap
 ```
 
