@@ -34,7 +34,7 @@ variable "admin_password" {
 variable "dc_vm_size" {
   description = "VM size for Domain Controller"
   type        = string
-  default     = "Standard_B2ms"
+  default     = "Standard_B2s_v2"
 }
 
 variable "domain_name" {

@@ -88,7 +88,7 @@ fw_auth_code = ""   # Format: XXXX-XXXX-XXXX-XXXX
 #------------------------------------------------------------------------------
 dc_admin_username    = "dcadmin"
 dc_admin_password    = "REPLACE_ME_DcAdmin@Password1!"
-dc_vm_size           = "Standard_B2ms"
+dc_vm_size           = "Standard_B2s_v2"
 dc_domain_name       = "panw.labs"
 dc_skip_auto_promote = false   # true = pomiń automatyczną promocję DC
 
