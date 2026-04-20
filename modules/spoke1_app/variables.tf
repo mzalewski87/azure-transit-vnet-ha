@@ -19,9 +19,8 @@ variable "subnet_id" {
 }
 
 variable "private_ip" {
-  description = "Static private IP for Apache server"
+  description = "Static private IP for Apache server (computed by root: cidrhost(app1_workload_subnet_cidr, 4))"
   type        = string
-  default     = "10.1.0.4"
 }
 
 variable "vm_size" {

@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 ###############################################################################
 # generate-vm-auth-key.sh
-# Generuje Device Registration Auth Key z Panoramy
+# Generuje Device Registration Auth Key z Panoramy przez XML API
 #
 # Wymagania:
-#   - Panorama uruchomiona i z aktywną licencją
-#   - Dostęp do Panoramy przez Bastion (tunnel lub IpConnect)
+#   - Panorama uruchomiona (licencja NIE jest wymagana do wygenerowania klucza)
+#   - Dostep do Panoramy przez Bastion (tunnel lub IpConnect)
 #
-# Użycie:
+# Uzycie:
 #   ./scripts/generate-vm-auth-key.sh [--panorama-ip <IP>] [--username <user>]
 #
-# Wynik: klucz zapisywany do panorama_vm_auth_key.txt i wyświetlany na ekranie
+# Wynik: klucz wyswietlany na ekranie i zapisywany do panorama_vm_auth_key.txt
 #
-# ALTERNATYWA – ręcznie przez Bastion SSH do Panoramy:
+# ALTERNATYWA – recznie przez Bastion SSH do Panoramy:
 #
-#   Metoda A (po terraform apply -target=module.networking, wymaga ip_connect_enabled=true):
+#   Metoda A (wymaga ip_connect_enabled=true):
 #     az network bastion ssh \
 #       --name bastion-management \
 #       --resource-group rg-transit-hub \
 #       --target-ip-address 10.255.0.4 \
 #       --auth-type password --username panadmin
 #
-#   Metoda B (zawsze działa, pobiera VM resource ID):
+#   Metoda B (zawsze dziala, pobiera VM resource ID):
 #     PANORAMA_ID=$(terraform output -raw panorama_vm_id)
 #     az network bastion ssh \
 #       --name bastion-management \
@@ -30,7 +30,8 @@
 #       --auth-type password --username panadmin
 #
 #   Po zalogowaniu do Panoramy:
-#     admin@panorama> request vm-auth-key generate lifetime 168
+#     admin@panorama> request authkey add name authkey1 lifetime 60 count 2
+#     (lifetime w minutach; count = liczba FW ktore moga uzyc tego klucza)
 ###############################################################################
 
 set -euo pipefail
@@ -38,16 +39,16 @@ set -euo pipefail
 PANORAMA_IP="${PANORAMA_IP:-10.255.0.4}"
 PANORAMA_USER="${PANORAMA_USER:-panadmin}"
 PANORAMA_PORT="${PANORAMA_PORT:-443}"
-LIFETIME="${LIFETIME:-168}"
+LIFETIME="${LIFETIME:-60}"
 
 usage() {
-  echo "Usage: $0 [--panorama-ip <IP>] [--username <user>] [--password <pass>] [--lifetime <hours>]"
+  echo "Usage: $0 [--panorama-ip <IP>] [--username <user>] [--password <pass>] [--lifetime <minutes>]"
   echo ""
   echo "Environment variables (alternative to flags):"
   echo "  PANORAMA_IP       Panorama private IP (default: 10.255.0.4)"
   echo "  PANORAMA_USER     Username (default: panadmin)"
   echo "  PANORAMA_PASSWORD Password"
-  echo "  LIFETIME          Key validity in hours (default: 168 = 7 days)"
+  echo "  LIFETIME          Key validity in minutes (default: 60 = 1h)"
   echo ""
   echo "Requires: curl, python3"
   exit 1
@@ -59,7 +60,7 @@ while [[ $# -gt 0 ]]; do
     --panorama-ip)   PANORAMA_IP="$2"; shift 2;;
     --username)      PANORAMA_USER="$2"; shift 2;;
     --password)      PANORAMA_PASSWORD="$2"; shift 2;;
-    --lifetime)      LIFETIME="$2"; shift 2;;
+    --lifetime)      LIFETIME="$2"; shift 2;;    # w minutach
     -h|--help)       usage;;
     *)               echo "Unknown arg: $1"; usage;;
   esac
@@ -75,10 +76,10 @@ fi
 BASE_URL="https://${PANORAMA_IP}:${PANORAMA_PORT}/api"
 
 echo ""
-echo "=== Panorama VM Auth Key Generator ==="
+echo "=== Panorama Device Registration Auth Key Generator ==="
 echo "  Panorama:  ${PANORAMA_IP}:${PANORAMA_PORT}"
 echo "  User:      ${PANORAMA_USER}"
-echo "  Lifetime:  ${LIFETIME}h"
+echo "  Lifetime:  ${LIFETIME} min"
 echo ""
 
 ###############################################################################
@@ -137,17 +138,16 @@ fi
 echo "      Login: OK"
 
 ###############################################################################
-# STEP 2: Check license status
+# STEP 2: Show system info (informacyjnie – nie blokuje generowania klucza)
 ###############################################################################
-echo "[2/3] Checking Panorama license..."
+echo "[2/3] Checking Panorama system info..."
 
-LICENSE_RESPONSE=$(curl -sk --max-time 30 \
+INFO_RESPONSE=$(curl -sk --max-time 30 \
   -X GET \
   "${BASE_URL}/?type=op&cmd=<show><system><info></info></system></show>&key=${API_KEY}" \
   2>/dev/null)
 
-# Check if Panorama is licensed (has serial number)
-SERIAL=$(echo "$LICENSE_RESPONSE" | python3 -c "
+SYSINFO=$(echo "$INFO_RESPONSE" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
@@ -159,30 +159,24 @@ except:
     print('unknown|unknown|unknown')
 " 2>/dev/null)
 
-SERIAL_NUM=$(echo "$SERIAL" | cut -d'|' -f1)
-SW_VER=$(echo "$SERIAL" | cut -d'|' -f2)
-MODEL=$(echo "$SERIAL" | cut -d'|' -f3)
+SERIAL_NUM=$(echo "$SYSINFO" | cut -d'|' -f1)
+SW_VER=$(echo "$SYSINFO" | cut -d'|' -f2)
+MODEL=$(echo "$SYSINFO" | cut -d'|' -f3)
 
 echo "      Model:   ${MODEL}"
 echo "      Version: ${SW_VER}"
 echo "      Serial:  ${SERIAL_NUM}"
-
-if [[ "$SERIAL_NUM" == "unknown" || "$SERIAL_NUM" == "0000000000000" ]]; then
-  echo ""
-  echo "WARNING: Panorama may not be licensed yet (serial: ${SERIAL_NUM})"
-  echo "         vm-auth-key generation requires an active Panorama license."
-  echo "         Activate license first, then re-run this script."
-  exit 1
-fi
+echo "      (licencja nie jest wymagana do wygenerowania klucza)"
 
 ###############################################################################
-# STEP 3: Generate VM Auth Key
+# STEP 3: Generate Device Registration Auth Key
+# Komenda CLI: request authkey add name authkey1 lifetime 60 count 2
 ###############################################################################
-echo "[3/3] Generating VM Auth Key (lifetime: ${LIFETIME}h)..."
+echo "[3/3] Generating Device Registration Auth Key (lifetime: ${LIFETIME} min)..."
 
 KEY_RESPONSE=$(curl -sk --max-time 30 \
   -X GET \
-  "${BASE_URL}/?type=op&cmd=<request><vm-auth-key><generate><lifetime>${LIFETIME}</lifetime></generate></vm-auth-key></request>&key=${API_KEY}" \
+  "${BASE_URL}/?type=op&cmd=<request><authkey><add><name>authkey1</name><lifetime>${LIFETIME}</lifetime><count>10</count></add></authkey></request>&key=${API_KEY}" \
   2>/dev/null)
 
 VM_AUTH_KEY=$(echo "$KEY_RESPONSE" | python3 -c "
@@ -201,7 +195,7 @@ try:
         print(key_elem.text.strip())
         sys.exit(0)
 
-    # Try msg text (some PAN-OS versions embed key in message)
+    # Try any element text matching key pattern
     for elem in root.iter():
         if elem.text:
             m = re.search(r'([\w:]+\w{32,})', elem.text)
@@ -219,13 +213,13 @@ except ET.ParseError as e:
 
 if echo "$VM_AUTH_KEY" | grep -q "^ERROR:"; then
   echo ""
-  echo "FAILED to generate vm-auth-key: $VM_AUTH_KEY"
+  echo "FAILED to generate auth key: $VM_AUTH_KEY"
   echo ""
   echo "Raw response:"
   echo "$KEY_RESPONSE"
   echo ""
   echo "ALTERNATIVE: Use SSH CLI directly:"
-  echo "  admin@panorama> request vm-auth-key generate lifetime ${LIFETIME}"
+  echo "  admin@panorama> request authkey add name authkey1 lifetime ${LIFETIME} count 2"
   exit 1
 fi
 
@@ -234,7 +228,7 @@ if echo "$VM_AUTH_KEY" | grep -q "MANUAL_EXTRACT_NEEDED"; then
   echo "Key generated but automatic extraction failed. Raw response:"
   echo "$KEY_RESPONSE"
   echo ""
-  echo "Copy the key manually and add to terraform.tfvars:"
+  echo "Copy the key manually and add to ROOT terraform.tfvars:"
   echo "  panorama_vm_auth_key = \"<key>\""
   exit 1
 fi
@@ -244,7 +238,7 @@ fi
 ###############################################################################
 echo ""
 echo "======================================================================"
-echo "  VM Auth Key generated successfully!"
+echo "  Device Registration Auth Key generated successfully!"
 echo "======================================================================"
 echo ""
 echo "  Key: ${VM_AUTH_KEY}"
@@ -256,12 +250,12 @@ echo "$VM_AUTH_KEY" > "$OUTPUT_FILE"
 echo "  Saved to: ${OUTPUT_FILE}"
 echo ""
 
-echo "  Add to terraform.tfvars:"
+echo "  Add to ROOT terraform.tfvars (w glownym katalogu projektu!):"
 echo "  panorama_vm_auth_key = \"${VM_AUTH_KEY}\""
 echo ""
 echo "  Then re-run bootstrap module to update FW init-cfg:"
 echo "  terraform apply -target=module.bootstrap"
 echo "  terraform apply -target=module.firewall"
 echo ""
-echo "  Expires in: ${LIFETIME} hours"
+echo "  Expires in: ${LIFETIME} minutes"
 echo "======================================================================"

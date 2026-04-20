@@ -226,7 +226,7 @@ terraform apply \
 Poczekaj ~15 minut na boot Panoramy. Opcjonalnie sprawdź dostępność przez Bastion:
 
 ```bash
-# Metoda A: przez resource ID (zawsze działa)
+# Opcja A: przez Bastion SSH
 PANORAMA_ID=$(terraform output -raw panorama_vm_id)
 az network bastion ssh \
   --name bastion-management \
@@ -235,17 +235,18 @@ az network bastion ssh \
   --auth-type password \
   --username panadmin
 
-# Metoda B: przez IP (po terraform apply, ip_connect_enabled=true)
-az network bastion ssh \
-  --name bastion-management \
-  --resource-group rg-transit-hub \
-  --target-ip-address 10.255.0.4 \
-  --auth-type password \
-  --username panadmin
+# Wygeneruj Device Registration Auth Key
+# lifetime = minuty (60 = 1h), count = ile FW moze uzyc tego klucza
+admin@panorama> request authkey add name authkey1 lifetime 60 count 2
+# Skopiuj klucz z outputu
 
-# Sprawdź status systemu (tryb operacyjny: prompt = admin@panorama>)
-admin@panorama> show system info
-admin@panorama> show license
+# Opcja B: przez skrypt (wymaga Bastion tunnel na port 44300)
+PANORAMA_IP=127.0.0.1 PANORAMA_PORT=44300 ./scripts/generate-vm-auth-key.sh
+```
+
+Dodaj klucz do **ROOT** `terraform.tfvars` (w głównym katalogu projektu, NIE w phase2-panorama-config/!):
+```hcl
+panorama_vm_auth_key = "2:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 ```
 
 > **Uwaga:** Na tym etapie Panorama nie ma jeszcze licencji ani hostname. Konfiguracja następuje w KROK 2 (Phase 2) automatycznie.
@@ -295,34 +296,12 @@ Phase 2 wykonuje automatycznie:
 5. ✅ Tworzy Template Stack, Device Group, Interface/Zone/Route/Security/NAT config (panos provider)
 6. ✅ Commit końcowy Panoramy
 
-### KROK 1b: Generowanie VM Auth Key + wdrożenie FW
+### KROK 1b: Wdrożenie FW + LB + Front Door + App
 
-Po aktywacji licencji Panoramy, wygeneruj klucz rejestracyjny dla VM-Series:
-
-```bash
-# Opcja A: przez Bastion SSH
-PANORAMA_ID=$(terraform output -raw panorama_vm_id)
-az network bastion ssh \
-  --name bastion-management \
-  --resource-group rg-transit-hub \
-  --target-resource-id "$PANORAMA_ID" \
-  --auth-type password --username panadmin
-
-# Wygeneruj vm-auth-key (ważny 168h = 7 dni)
-admin@panorama> request vm-auth-key generate lifetime 168
-# Skopiuj klucz z outputu (format: 2:XXXXXXXXX...)
-
-# Opcja B: przez skrypt (wymaga Bastion tunnel na port 44300)
-PANORAMA_IP=127.0.0.1 PANORAMA_PORT=44300 ./scripts/generate-vm-auth-key.sh
-```
-
-Dodaj klucz do terraform.tfvars:
-```hcl
-panorama_vm_auth_key = "2:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-```
+> Upewnij się że `panorama_vm_auth_key` jest ustawiony w ROOT `terraform.tfvars` (generowanie w KROK 1a).
 
 ```bash
-# Zaktualizuj bootstrap SA z nowym vm-auth-key w FW init-cfg
+# Zaktualizuj bootstrap SA z vm-auth-key w FW init-cfg
 terraform apply -target=module.bootstrap
 
 # Wdróż FW, LB, routing, Front Door, App
@@ -552,10 +531,10 @@ Panorama BYOL na Azure **nie korzysta z customData/bootstrap**. Cały proces kon
 ### vm-auth-key (Device Registration Auth Key)
 
 - **Wymagany** dla automatycznej rejestracji FW w Panoramie przy starcie
-- Generuj w Panoramie **po** aktywacji licencji (Phase 2)
+- Generuj zaraz po starcie Panoramy – **licencja nie jest wymagana** do wygenerowania klucza
 - Wbudowany w FW init-cfg (`vm-auth-key=`)
-- Ważny 168h (7 dni) domyślnie – ustaw przed wdrożeniem FW
-- Tryb operacyjny Panoramy: `admin@panorama> request vm-auth-key generate lifetime 168`
+- Komenda: `admin@panorama> request authkey add name authkey1 lifetime 60 count 2`
+  - `lifetime` – w minutach (60 = 1h); `count` – ile FW może użyć klucza
 
 ### PAN-OS CLI – tryby pracy
 
@@ -571,11 +550,11 @@ admin@panorama> configure
 # Powrót do operacyjnego
 admin@panorama# exit
 
-# Sprawdzenie licencji (tryb operacyjny)
-admin@panorama> show license
-
-# Sprawdzenie info systemowego
+# Sprawdzenie info systemowego (serial, wersja, hostname)
 admin@panorama> show system info
+
+# Pobranie/weryfikacja licencji (wyświetla też aktywne licencje)
+admin@panorama> request license fetch
 ```
 
 ### NSG reguły
@@ -628,12 +607,9 @@ admin@panorama> show system info | match serial
 # Sprawdź dostęp do internetu (NAT Gateway w Management VNet)
 admin@panorama> ping host 8.8.8.8 source 10.255.0.4
 
-# Sprawdź status licencji
-admin@panorama> show license
-
 # Jeśli serial number nie zgadza się z CSP – ustaw ręcznie (tryb konfiguracyjny)
 admin@panorama> configure
-admin@panorama# set deviceconfig system serial 007300XXXXXXX
+admin@panorama# set serial-number 007300XXXXXXX
 admin@panorama# commit
 admin@panorama# exit
 
@@ -676,13 +652,14 @@ az network bastion ssh \
   --target-resource-id "$PANORAMA_ID" \
   --auth-type password --username panadmin
 
-admin@panorama> request vm-auth-key generate lifetime 168
+admin@panorama> request authkey add name authkey1 lifetime 60 count 2
+# lifetime w minutach, count = ile FW moze uzyc klucza
 
 # Lub przez skrypt (wymaga Bastion tunnel na port 44300)
 ./scripts/check-panorama.sh --tunnel   # Terminal 1
 PANORAMA_IP=127.0.0.1 PANORAMA_PORT=44300 ./scripts/generate-vm-auth-key.sh  # Terminal 2
 
-# Zaktualizuj terraform.tfvars i odśwież bootstrap SA
+# Zaktualizuj ROOT terraform.tfvars i odśwież bootstrap SA
 # panorama_vm_auth_key = "2:NOWY_KLUCZ"
 terraform apply -target=module.bootstrap
 ```

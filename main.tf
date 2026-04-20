@@ -41,7 +41,7 @@
 #   #      --resource-group rg-transit-hub \
 #   #      --target-ip-address 10.255.0.4 \
 #   #      --auth-type password --username panadmin
-#   #    admin@panorama> request vm-auth-key generate lifetime 168
+#   #    admin@panorama> request authkey add name authkey1 lifetime 60 count 2
 #   # 2. Ustaw panorama_vm_auth_key w terraform.tfvars
 #   terraform apply -target=module.bootstrap   # aktualizuje FW init-cfg z vm-auth-key
 #   terraform apply \
@@ -216,6 +216,11 @@ module "firewall" {
   trust_subnet_id   = module.networking.trust_subnet_id
   ha_subnet_id      = module.networking.ha_subnet_id
 
+  mgmt_subnet_cidr    = module.networking.mgmt_subnet_cidr
+  untrust_subnet_cidr = module.networking.untrust_subnet_cidr
+  trust_subnet_cidr   = module.networking.trust_subnet_cidr
+  ha_subnet_cidr      = module.networking.ha_subnet_cidr
+
   external_lb_backend_pool_id = module.loadbalancer.external_lb_backend_pool_id
   internal_lb_backend_pool_id = module.loadbalancer.internal_lb_backend_pool_id
 
@@ -284,6 +289,7 @@ module "app1_app" {
   location            = var.location
   resource_group_name = azurerm_resource_group.app1.name
   subnet_id           = module.networking.spoke1_workload_subnet_id
+  private_ip          = cidrhost(module.networking.app1_workload_subnet_cidr, 4)
   admin_username      = var.admin_username
   admin_password      = var.admin_password
 

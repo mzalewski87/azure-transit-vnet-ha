@@ -39,9 +39,19 @@ output "mgmt_subnet_id" {
   value       = azurerm_subnet.transit_mgmt.id
 }
 
+output "mgmt_subnet_cidr" {
+  description = "Transit FW management subnet CIDR (snet-mgmt)"
+  value       = azurerm_subnet.transit_mgmt.address_prefixes[0]
+}
+
 output "untrust_subnet_id" {
   description = "Transit public/untrust subnet ID (snet-public) – FW eth1/1"
   value       = azurerm_subnet.transit_public.id
+}
+
+output "untrust_subnet_cidr" {
+  description = "Transit public/untrust subnet CIDR (snet-public)"
+  value       = azurerm_subnet.transit_public.address_prefixes[0]
 }
 
 output "trust_subnet_id" {
@@ -49,9 +59,19 @@ output "trust_subnet_id" {
   value       = azurerm_subnet.transit_private.id
 }
 
+output "trust_subnet_cidr" {
+  description = "Transit private/trust subnet CIDR (snet-private)"
+  value       = azurerm_subnet.transit_private.address_prefixes[0]
+}
+
 output "ha_subnet_id" {
   description = "Transit HA subnet ID (snet-ha) – FW eth1/3 HA2"
   value       = azurerm_subnet.transit_ha.id
+}
+
+output "ha_subnet_cidr" {
+  description = "Transit HA subnet CIDR (snet-ha)"
+  value       = azurerm_subnet.transit_ha.address_prefixes[0]
 }
 
 # Public IPs
@@ -69,6 +89,11 @@ output "external_lb_public_ip_address" {
 output "app1_workload_subnet_id" {
   description = "App1 workload subnet ID"
   value       = azurerm_subnet.app1_workload.id
+}
+
+output "app1_workload_subnet_cidr" {
+  description = "App1 workload subnet CIDR"
+  value       = azurerm_subnet.app1_workload.address_prefixes[0]
 }
 
 output "app2_workload_subnet_id" {

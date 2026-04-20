@@ -14,6 +14,21 @@
 ###############################################################################
 
 ###############################################################################
+# Computed IPs (cidrhost from subnet CIDRs)
+# FW1 = host .4, FW2 = host .5 in each subnet
+###############################################################################
+locals {
+  fw1_mgmt_ip    = cidrhost(var.mgmt_subnet_cidr,    4)
+  fw1_untrust_ip = cidrhost(var.untrust_subnet_cidr, 4)
+  fw1_trust_ip   = cidrhost(var.trust_subnet_cidr,   4)
+  fw1_ha_ip      = cidrhost(var.ha_subnet_cidr,      4)
+  fw2_mgmt_ip    = cidrhost(var.mgmt_subnet_cidr,    5)
+  fw2_untrust_ip = cidrhost(var.untrust_subnet_cidr, 5)
+  fw2_trust_ip   = cidrhost(var.trust_subnet_cidr,   5)
+  fw2_ha_ip      = cidrhost(var.ha_subnet_cidr,      5)
+}
+
+###############################################################################
 # Marketplace Terms Acceptance (idempotent via az CLI)
 #
 # Dlaczego null_resource zamiast azurerm_marketplace_agreement:
@@ -67,7 +82,7 @@ resource "azurerm_network_interface" "fw1_mgmt" {
     name                          = "ipconfig-fw1-mgmt"
     subnet_id                     = var.mgmt_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = var.fw1_mgmt_ip
+    private_ip_address            = local.fw1_mgmt_ip
     primary                       = true
   }
 }
@@ -86,7 +101,7 @@ resource "azurerm_network_interface" "fw1_untrust" {
     name                          = "ipconfig-fw1-untrust"
     subnet_id                     = var.untrust_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = var.fw1_untrust_ip
+    private_ip_address            = local.fw1_untrust_ip
     primary                       = true
   }
 }
@@ -104,7 +119,7 @@ resource "azurerm_network_interface" "fw1_trust" {
     name                          = "ipconfig-fw1-trust"
     subnet_id                     = var.trust_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = var.fw1_trust_ip
+    private_ip_address            = local.fw1_trust_ip
     primary                       = true
   }
 }
@@ -120,7 +135,7 @@ resource "azurerm_network_interface" "fw1_ha" {
     name                          = "ipconfig-fw1-ha"
     subnet_id                     = var.ha_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = var.fw1_ha_ip
+    private_ip_address            = local.fw1_ha_ip
     primary                       = true
   }
 }
@@ -140,7 +155,7 @@ resource "azurerm_network_interface" "fw2_mgmt" {
     name                          = "ipconfig-fw2-mgmt"
     subnet_id                     = var.mgmt_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = var.fw2_mgmt_ip
+    private_ip_address            = local.fw2_mgmt_ip
     primary                       = true
   }
 }
@@ -158,7 +173,7 @@ resource "azurerm_network_interface" "fw2_untrust" {
     name                          = "ipconfig-fw2-untrust"
     subnet_id                     = var.untrust_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = var.fw2_untrust_ip
+    private_ip_address            = local.fw2_untrust_ip
     primary                       = true
   }
 }
@@ -176,7 +191,7 @@ resource "azurerm_network_interface" "fw2_trust" {
     name                          = "ipconfig-fw2-trust"
     subnet_id                     = var.trust_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = var.fw2_trust_ip
+    private_ip_address            = local.fw2_trust_ip
     primary                       = true
   }
 }
@@ -192,7 +207,7 @@ resource "azurerm_network_interface" "fw2_ha" {
     name                          = "ipconfig-fw2-ha"
     subnet_id                     = var.ha_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = var.fw2_ha_ip
+    private_ip_address            = local.fw2_ha_ip
     primary                       = true
   }
 }

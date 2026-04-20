@@ -82,55 +82,27 @@ variable "internal_lb_backend_pool_id" {
 }
 
 #------------------------------------------------------------------------------
-# Static IP configuration
-# These IPs must fall within their respective subnet ranges
+# Subnet CIDRs (used to auto-compute static IPs via cidrhost())
+# FW1 gets host .4, FW2 gets host .5 in each subnet
 #------------------------------------------------------------------------------
-variable "fw1_mgmt_ip" {
-  description = "Static private IP for FW1 management interface (snet-mgmt)"
+variable "mgmt_subnet_cidr" {
+  description = "CIDR of FW management subnet (snet-mgmt) – used to compute FW1/FW2 mgmt IPs"
   type        = string
-  default     = "10.0.0.4"
 }
 
-variable "fw2_mgmt_ip" {
-  description = "Static private IP for FW2 management interface (snet-mgmt)"
+variable "untrust_subnet_cidr" {
+  description = "CIDR of FW untrust subnet (snet-public) – used to compute FW1/FW2 untrust IPs"
   type        = string
-  default     = "10.0.0.5"
 }
 
-variable "fw1_untrust_ip" {
-  description = "Static private IP for FW1 untrust interface (snet-untrust)"
+variable "trust_subnet_cidr" {
+  description = "CIDR of FW trust subnet (snet-private) – used to compute FW1/FW2 trust IPs"
   type        = string
-  default     = "10.0.1.4"
 }
 
-variable "fw2_untrust_ip" {
-  description = "Static private IP for FW2 untrust interface (snet-untrust)"
+variable "ha_subnet_cidr" {
+  description = "CIDR of FW HA2 subnet (snet-ha) – used to compute FW1/FW2 HA IPs"
   type        = string
-  default     = "10.0.1.5"
-}
-
-variable "fw1_trust_ip" {
-  description = "Static private IP for FW1 trust interface (snet-trust)"
-  type        = string
-  default     = "10.0.2.4"
-}
-
-variable "fw2_trust_ip" {
-  description = "Static private IP for FW2 trust interface (snet-trust)"
-  type        = string
-  default     = "10.0.2.5"
-}
-
-variable "fw1_ha_ip" {
-  description = "Static private IP for FW1 HA2 interface (snet-ha)"
-  type        = string
-  default     = "10.0.3.4"
-}
-
-variable "fw2_ha_ip" {
-  description = "Static private IP for FW2 HA2 interface (snet-ha)"
-  type        = string
-  default     = "10.0.3.5"
 }
 
 #------------------------------------------------------------------------------

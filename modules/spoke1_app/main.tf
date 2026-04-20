@@ -124,14 +124,14 @@ resource "azurerm_linux_virtual_machine" "apache" {
                   <strong>Azure Front Door Premium</strong> (global anycast) →
                   <strong>External LB</strong> (pip-external-lb) →
                   <strong>VM-Series FW</strong> (PAN-OS inspection + DNAT) →
-                  <strong>This server</strong> (10.1.0.4, Spoke1 VNet)
+                  <strong>This server</strong> (${var.private_ip}, Spoke1 VNet)
                 </p>
               </div>
               <div class="info-box">
                 <h3>Architecture Details</h3>
                 <ul>
                   <li>VM: <code>vm-spoke1-apache</code> (Ubuntu 22.04 LTS)</li>
-                  <li>IP: <code>10.1.0.4</code> (snet-workload, Spoke1)</li>
+                  <li>IP: <code>${var.private_ip}</code> (snet-workload, Spoke1)</li>
                   <li>Firewall: <code>2x VM-Series 11.1 HA Active/Passive</code></li>
                   <li>Managed by: <code>Panorama</code></li>
                   <li>Domain: <code>panw.labs</code> (DC in Spoke2)</li>
