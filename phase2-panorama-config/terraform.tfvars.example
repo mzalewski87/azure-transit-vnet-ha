@@ -33,11 +33,20 @@ panorama_target_hostname = "panorama-transit-hub"
 
 #------------------------------------------------------------------------------
 # Licencja Panoramy (aktywacja przez XML API)
-# CSP Portal → Assets → Auth Codes → Panorama BYOL
-# Format: XXXX-XXXX-XXXX-XXXX
-# Jeśli puste – krok aktywacji jest pomijany (możesz aktywować ręcznie przez SSH)
+#
+# PROCES:
+#   1. CSP Portal (my.paloaltonetworks.com):
+#      Assets → Add Product → wpisz auth-code → wybierz Panorama
+#      CSP przypisze Serial Number (format: 007300XXXXXXX)
+#   2. Skopiuj Serial Number i wpisz poniżej
+#   3. Phase 2 wykona automatycznie:
+#      a. Ustaw serial number w Panoramie (config set)
+#      b. Commit
+#      c. request license fetch  ← Panorama pobiera licencję z serwera PANW
+#
+# Jeśli puste ("") – krok aktywacji jest pomijany
 #------------------------------------------------------------------------------
-panorama_auth_code = ""   # np. "A123-B456-C789-D012"
+panorama_serial_number = ""   # np. "007300202012345"
 
 #------------------------------------------------------------------------------
 # Panorama Template & Device Group

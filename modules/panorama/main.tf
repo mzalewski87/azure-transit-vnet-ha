@@ -4,12 +4,12 @@
 #
 # Placement: snet-management (Management VNet), static IP 10.255.0.4
 # Access:    BRAK publicznego IP – wyłącznie przez Bastion (Management VNet)
-#            SSH:  az network bastion ssh --target-ip-address 10.255.0.4
+#            SSH:  az network bastion ssh --target-resource-id <vm-id>
+#                  lub (po re-apply z ip_connect_enabled=true): --target-ip-address 10.255.0.4
 #            HTTPS: az network bastion tunnel --target-resource-id <vm-id>
-# Bootstrap: customData z bezpośrednią treścią init-cfg (base64)
-#            Format: type=dhcp-client\nhostname=...\nauthcodes=...\n...
-#            UWAGA: Panorama NIE używa SA storage pointer (to mechanizm VM-Series FW)
-# License:   BYOL – auth code z init-cfg przy starcie (auto-aktywacja)
+# Bootstrap: BRAK – Panorama startuje bez custom_data (domyślny hostname: localhost.localdomain)
+#            Konfiguracja hostname, licencja, Template Stack, Device Group → Phase 2 (XML API)
+# License:   BYOL – aktywacja przez Phase 2: serial number → commit → request license fetch
 # Internet:  Outbound przez NAT Gateway (natgw-management) w Management VNet
 ###############################################################################
 
@@ -81,13 +81,9 @@ resource "azurerm_linux_virtual_machine" "panorama" {
     product   = "panorama"
   }
 
-  # Bootstrap Panoramy: minimalna init-cfg (hostname, DNS, NTP).
-  # Licencja i szczegółowa konfiguracja następują w Phase 2 przez Panorama XML API.
-  # UWAGA: Panorama BYOL na Azure nie przetwarza authcodes= przez customData.
-  #        Aktywacja licencji: null_resource w phase2-panorama-config (XML API).
-  custom_data = base64encode(templatefile("${path.module}/templates/panorama-init-cfg.txt.tpl", {
-    hostname = var.panorama_hostname
-  }))
+  # Panorama startuje bez custom_data (brak bootstrap).
+  # Konfiguracja: hostname, licencja, Template Stack, Device Group → Phase 2 (XML API).
+  # Uruchom: cd phase2-panorama-config && terraform apply
 
   depends_on = [null_resource.accept_panorama_terms]
 }

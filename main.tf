@@ -21,8 +21,8 @@
 #     -target=module.panorama \
 #     -target=module.app2_dc
 #
-#   → Panorama bootuje ~10-15 min. Aktywacja licencji via init-cfg (auto).
-#   → Jeśli bootstrap nie zadziałał: aktywuj licencję manualnie przez Bastion.
+#   → Panorama bootuje ~10-15 min. Brak bootstrap – startuje z domyślnym hostname.
+#   → Aktywacja licencji i konfiguracja: Phase 2 (XML API).
 #
 # PHASE 2 – Konfiguracja Panoramy (Template Stack, Device Group, Security/NAT rules):
 #   cd phase2-panorama-config/
@@ -156,7 +156,8 @@ module "bootstrap" {
 #------------------------------------------------------------------------------
 # Panorama Module
 # Creates: Panorama VM w Management VNet (10.255.0.4), 2TB data disk
-# Bootstrap: bezpośrednia treść init-cfg w customData (NIE SA storage pointer)
+# Bootstrap: BRAK – Panorama startuje bez custom_data
+#            Hostname, licencja, Template Stack, Device Group → Phase 2 (XML API)
 #------------------------------------------------------------------------------
 module "panorama" {
   source = "./modules/panorama"
@@ -171,9 +172,6 @@ module "panorama" {
   vm_size        = var.panorama_vm_size
   admin_username = var.admin_username
   admin_password = var.admin_password
-
-  # Minimalna init-cfg (hostname, DNS, NTP) – licencja przez Phase 2 XML API
-  panorama_hostname = var.panorama_hostname
 
   log_disk_size_gb = var.panorama_log_disk_size_gb
 

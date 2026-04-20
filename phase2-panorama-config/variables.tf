@@ -24,15 +24,21 @@ variable "panorama_target_hostname" {
   default = "panorama-transit-hub"
 }
 
-variable "panorama_auth_code" {
+variable "panorama_serial_number" {
   description = <<-EOT
-    Auth code BYOL licencji Panoramy z CSP Portal (Assets → Auth Codes).
-    Format: XXXX-XXXX-XXXX-XXXX
-    Jeśli pusty, krok aktywacji licencji jest pomijany.
+    Numer seryjny Panoramy z CSP Portal (my.paloaltonetworks.com).
+    WYMAGANY do aktywacji licencji BYOL.
+
+    Jak uzyskać:
+      1. Zaloguj się na CSP Portal: my.paloaltonetworks.com
+      2. Assets → Add Product → wpisz auth-code → wybierz Panorama
+      3. CSP przypisze Serial Number (format: 007300XXXXXXX)
+      4. Skopiuj go tutaj.
+
+    Jeśli pusty (""), krok aktywacji licencji jest pomijany.
   EOT
-  type      = string
-  default   = ""
-  sensitive = true
+  type    = string
+  default = ""
 }
 
 variable "panorama_port" {

@@ -111,12 +111,6 @@ variable "panorama_private_ip" {
   default     = "10.255.0.4"
 }
 
-variable "panorama_hostname" {
-  description = "Hostname for Panorama (set via init-cfg bootstrap)"
-  type        = string
-  default     = "panorama-transit-hub"
-}
-
 # panorama_serial_number i panorama_auth_code USUNIĘTE z Phase 1
 # Aktywacja licencji następuje przez XML API w Phase 2 (phase2-panorama-config/)
 # Podaj auth_code jako panorama_auth_code w phase2-panorama-config/terraform.tfvars

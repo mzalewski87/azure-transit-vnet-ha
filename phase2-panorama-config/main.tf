@@ -131,11 +131,11 @@ except Exception as e:
 # ktory jest ignorowany.
 ###############################################################################
 resource "null_resource" "panorama_activate_license" {
-  count = var.panorama_auth_code != "" ? 1 : 0
+  count = var.panorama_serial_number != "" ? 1 : 0
 
   triggers = {
-    auth_code    = var.panorama_auth_code
-    panorama_url = "https://${var.panorama_hostname}:${var.panorama_port}"
+    serial_number = var.panorama_serial_number
+    panorama_url  = "https://${var.panorama_hostname}:${var.panorama_port}"
   }
 
   provisioner "local-exec" {
@@ -143,9 +143,12 @@ resource "null_resource" "panorama_activate_license" {
       set -e
       PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       PAN_USER="${var.panorama_username}"
-      AUTH_CODE="${var.panorama_auth_code}"
+      SERIAL_NUM="${var.panorama_serial_number}"
 
-      echo "=== [Step 3] Aktywacja licencji Panoramy (auth_code: $AUTH_CODE) ==="
+      echo "=== [Step 3] Ustawianie numeru seryjnego + aktywacja licencji ==="
+      echo "    Serial Number: $SERIAL_NUM"
+      echo "    UWAGA: Przed uruchomieniem upewnij sie, ze serial jest zarejestrowany"
+      echo "    na CSP Portal: my.paloaltonetworks.com → Assets → Add Product"
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
 
@@ -168,10 +171,31 @@ except Exception as e:
         echo "[BLAD] Nie mozna pobrac API key: $API_KEY"
         exit 1
       fi
+      echo "  API key: OK"
 
+      # Krok 3a: Ustaw numer seryjny przez XML API (tryb config)
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system" \
+        --data-urlencode "element=<serial>$SERIAL_NUM</serial>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Numer seryjny $SERIAL_NUM ustawiony w konfiguracji."
+
+      # Krok 3b: Commit (wymagany zanim serial number zadziala z serwerem licencji)
+      curl -sk --max-time 90 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=commit" \
+        --data-urlencode "cmd=<commit></commit>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Commit: OK. Czekam 30s na przetworzenie..."
+      sleep 30
+
+      # Krok 3c: Pobierz licencje z serwera PANW (BEZ auth-code, na podstawie serial number)
+      # Panorama musi miec dostep do internetu przez NAT Gateway (natgw-management)
+      echo "  Pobieranie licencji z serwera PANW (request license fetch)..."
       LIC_RESP=$(curl -sk --max-time 120 "$PANORAMA_URL/api/" \
         --data-urlencode "type=op" \
-        --data-urlencode "cmd=<request><license><activate><auth-code>$AUTH_CODE</auth-code></activate></license></request>" \
+        --data-urlencode "cmd=<request><license><fetch></fetch></license></request>" \
         --data-urlencode "key=$API_KEY" 2>/dev/null)
 
       echo "$LIC_RESP" | python3 -c "
@@ -181,18 +205,21 @@ try:
     status = root.get('status','')
     msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'brak informacji'
     if status == 'success':
-        print('[OK] Licencja aktywowana pomyslnie!')
-    elif 'already' in msg.lower() or 'registered' in msg.lower():
-        print('[OK] Licencja juz aktywowana (already registered).')
+        print('[OK] Licencja pobrana pomyslnie!')
     else:
-        print('[WARN] Odpowiedz aktywacji: status=' + status + ' msg=' + msg)
-        print('       Jesli blad: aktywuj recznie przez SSH do Panoramy.')
+        print('[WARN] Odpowiedz license fetch: status=' + status + ' msg=' + msg)
+        print('       Sprawdz:')
+        print('       1. CSP Portal: czy serial ' + '$SERIAL_NUM' + ' ma przypisana licencje')
+        print('       2. Panorama → internetu: NAT Gateway w Management VNet aktywny?')
+        print('       3. Siec: curl z VM do internetu dziala?')
 except Exception as e:
-    print('[WARN] Nie mozna przetworzyc odpowiedzi: ' + str(e))
+    print('[WARN] Blad parsowania odpowiedzi: ' + str(e))
 " 2>/dev/null
 
-      echo "    Poczekaj 2-3 minuty na zakonczenie aktywacji licencji..."
-      sleep 30
+      echo "  Czekam 60s na zakonczenie aktywacji..."
+      sleep 60
+      echo "  [Step 3] Gotowe. Sprawdz status licencji w Panorama GUI:"
+      echo "  https://127.0.0.1:44300 → Panorama → Licenses"
     SCRIPT
   }
 

@@ -57,7 +57,6 @@ admin_password = "REPLACE_ME_Admin@Password1!"
 #            panorama_vm_auth_key → po aktywacji licencji Panoramy → KROK 1b
 #------------------------------------------------------------------------------
 panorama_private_ip    = "10.255.0.4"
-panorama_hostname      = "panorama-transit-hub"
 
 # panorama_serial_number i panorama_auth_code PRZENIESIONE do:
 #   phase2-panorama-config/terraform.tfvars (panorama_auth_code)

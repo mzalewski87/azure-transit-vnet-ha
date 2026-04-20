@@ -23,12 +23,6 @@ variable "panorama_private_ip" {
   default     = "10.255.0.4"
 }
 
-variable "panorama_hostname" {
-  description = "Hostname for Panorama (set via init-cfg bootstrap)"
-  type        = string
-  default     = "panorama-transit-hub"
-}
-
 variable "vm_size" {
   description = <<-EOT
     Azure VM size for Panorama.
