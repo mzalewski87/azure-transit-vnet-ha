@@ -58,6 +58,16 @@
 ###############################################################################
 
 #------------------------------------------------------------------------------
+# Locals
+# internal_lb_private_ip obliczany automatycznie z transit_vnet_address_space
+# snet-private = cidrsubnet(transit, 8, 0) → host #21 (np. 10.110.0.21)
+# Można nadpisać zmienną internal_lb_private_ip jeśli wymagana inna wartość
+#------------------------------------------------------------------------------
+locals {
+  internal_lb_private_ip = var.internal_lb_private_ip != "" ? var.internal_lb_private_ip : cidrhost(cidrsubnet(var.transit_vnet_address_space, 8, 0), 21)
+}
+
+#------------------------------------------------------------------------------
 # Resource Groups
 #------------------------------------------------------------------------------
 resource "azurerm_resource_group" "hub" {
@@ -184,7 +194,7 @@ module "loadbalancer" {
   untrust_subnet_id        = module.networking.untrust_subnet_id
   trust_subnet_id          = module.networking.trust_subnet_id
   external_lb_public_ip_id = module.networking.external_lb_public_ip_id
-  internal_lb_private_ip   = var.internal_lb_private_ip
+  internal_lb_private_ip   = local.internal_lb_private_ip
 
   tags = var.tags
 }

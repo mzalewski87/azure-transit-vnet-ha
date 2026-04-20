@@ -49,6 +49,9 @@ resource "azurerm_storage_account" "bootstrap" {
   account_replication_type        = "LRS"
   min_tls_version                 = "TLS1_2"
   allow_nested_items_to_be_public = false
+  # Azure Policy: "Storage accounts should prevent cross tenant object replication"
+  # policyDefinition/92a89a79-6c52-4a7e-a03f-61306fc49312
+  cross_tenant_replication_enabled = false
   tags                            = var.tags
 
   network_rules {

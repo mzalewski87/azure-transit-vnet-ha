@@ -32,8 +32,11 @@ transit_vnet_address_space    = "10.110.0.0/16"
 app1_vnet_address_space       = "10.112.0.0/16"
 app2_vnet_address_space       = "10.113.0.0/16"
 
-# Internal LB IP (musi być w snet-private 10.110.0.0/24)
-internal_lb_private_ip = "10.110.0.21"
+# internal_lb_private_ip – NIE USTAWIAJ (auto-compute z transit CIDR)
+# Terraform oblicza automatycznie: cidrhost(cidrsubnet(transit_vnet_address_space, 8, 0), 21)
+# Przykład: transit=10.110.0.0/16 → snet-private=10.110.0.0/24 → ILB=10.110.0.21
+# Ustaw TYLKO jeśli chcesz nadpisać wartość (musi być w snet-private!)
+# internal_lb_private_ip = ""
 
 #------------------------------------------------------------------------------
 # VM-Series Firewall + Panorama – hasła i rozmiary

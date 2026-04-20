@@ -200,9 +200,14 @@ variable "pan_os_version" {
 # Load Balancer
 #------------------------------------------------------------------------------
 variable "internal_lb_private_ip" {
-  description = "Private IP for Internal Load Balancer (in snet-private/trust, per PANW reference)"
-  type        = string
-  default     = "10.110.0.21"
+  description = <<-EOT
+    Static private IP for Internal LB frontend (must be in snet-private = cidrsubnet(transit,8,0)).
+    Leave empty (default) to auto-compute: host #21 in trust subnet.
+    Example: transit=10.110.0.0/16 → snet-private=10.110.0.0/24 → auto IP=10.110.0.21
+    Example: transit=10.0.0.0/16   → snet-private=10.0.0.0/24   → auto IP=10.0.0.21
+  EOT
+  type    = string
+  default = ""
 }
 
 #------------------------------------------------------------------------------
