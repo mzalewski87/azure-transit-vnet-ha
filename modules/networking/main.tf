@@ -317,7 +317,8 @@ resource "azurerm_bastion_host" "management" {
   location            = var.location
   resource_group_name = var.hub_resource_group_name
   sku                 = "Standard"
-  tunneling_enabled   = true  # Required for: az network bastion tunnel --target-resource-id
+  tunneling_enabled   = true   # Required for: az network bastion tunnel --target-resource-id
+  ip_connect_enabled  = true   # Required for: az network bastion ssh --target-ip-address
   tags                = var.tags
 
   ip_configuration {

@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
 ###############################################################################
 # scripts/check-panorama.sh
-# Sprawdza status Panoramy i otwiera RDP tunnel do DC (jump host dla GUI)
+# Helper skryptu do zarządzania dostępem do Panoramy i VM przez Azure Bastion
 #
-# ARCHITEKTURA DOSTEPU:
-#   Jeden Bastion (Spoke2) obsluguje wszystko:
-#   - RDP do DC (IpConnect, port 3389) → DC jest jump hostem dla GUI
-#   - SSH do FW/Panoramy (IpConnect, port 22) przez Hub-Spoke2 VNet peering
-#   - HTTPS tunnel do Panoramy (--target-resource-id, port 443) → Phase 2
+# ARCHITEKTURA DOSTĘPU (nowa – Management VNet):
+#   Jeden Bastion Standard w Management VNet:
+#     bastion-management  /  rg-transit-hub  /  10.255.1.0/26
 #
-# PRZEPŁYW GUI PANORAMY / FW:
-#   1. Ten skrypt → Spoke2 Bastion → RDP tunnel → localhost:33389 → DC
-#   2. RDP do localhost:33389 → DC (vm-spoke2-dc, 10.2.0.4)
-#   3. Na DC: Chrome → https://10.0.0.10 (Panorama), https://10.0.0.4 (FW1)
+#   Dostępne VMs przez peering:
+#     Panorama:     10.255.0.4  (Management VNet – snet-management)
+#     FW1 (mgmt):   10.110.255.4 (Transit Hub – snet-mgmt)
+#     FW2 (mgmt):   10.110.255.5 (Transit Hub – snet-mgmt)
+#     DC (App2):    10.113.0.4  (App2 VNet – snet-workload)
 #
-# WYMÓG: az CLI zalogowany, terraform apply zakonczone (DC musi istniec)
+# METODY DOSTĘPU:
+#   SSH  → --target-resource-id  (zawsze działa)
+#   SSH  → --target-ip-address   (wymaga ip_connect_enabled=true + terraform apply)
+#   Tunel → --target-resource-id (dla Phase 2 / GUI przez przeglądarkę)
+#   RDP  → az network bastion tunnel (DC)
+#
+# UŻYCIE:
+#   ./scripts/check-panorama.sh           → sprawdza status + pokazuje komendy
+#   ./scripts/check-panorama.sh --tunnel  → otwiera HTTPS tunel do Panoramy (port 44300)
+#   ./scripts/check-panorama.sh --rdp     → otwiera RDP tunel do DC (port 33389)
 ###############################################################################
 
 set -euo pipefail
@@ -24,143 +32,248 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 
-BASTION_NAME="bastion-spoke2"
-BASTION_RG="rg-spoke2-dc"
+BASTION_NAME="bastion-management"
+BASTION_RG="rg-transit-hub"
 PANORAMA_VM="vm-panorama"
 PANORAMA_RG="rg-transit-hub"
-PANORAMA_IP="10.0.0.10"
-DC_IP="10.2.0.4"
-RDP_LOCAL_PORT="33389"
+PANORAMA_IP="10.255.0.4"
+DC_IP="10.113.0.4"
+HTTPS_TUNNEL_PORT="44300"
+RDP_TUNNEL_PORT="33389"
+MODE="${1:-}"
 
-MAX_WAIT_MIN=20
-INTERVAL_SEC=60
-
-echo -e "${BLUE}══════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}  Azure Transit VNet – Panorama Access Helper             ${NC}"
-echo -e "${BLUE}  Spoke2 Bastion (bastion-spoke2) → DC → GUI             ${NC}"
-echo -e "${BLUE}══════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}${BOLD}══════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}${BOLD}  Azure Transit VNet – Access Helper                      ${NC}"
+echo -e "${BLUE}${BOLD}  Bastion: ${BASTION_NAME} (${BASTION_RG})        ${NC}"
+echo -e "${BLUE}${BOLD}══════════════════════════════════════════════════════════${NC}"
 echo ""
 
+# Sprawdź az login
 if ! az account show &>/dev/null; then
-  echo -e "${RED}Nie jestes zalogowany do Azure CLI! Uruchom: az login${NC}"
+  echo -e "${RED}Nie jesteś zalogowany do Azure CLI! Uruchom: az login${NC}"
   exit 1
 fi
 
-# Pobierz opcjonalnie z terraform output
-if terraform output -raw spoke2_bastion_name &>/dev/null 2>/dev/null; then
-  BASTION_NAME=$(terraform output -raw spoke2_bastion_name 2>/dev/null) || BASTION_NAME="bastion-spoke2"
-  BASTION_RG=$(terraform output -raw spoke2_bastion_rg 2>/dev/null) || BASTION_RG="rg-spoke2-dc"
+###############################################################################
+# Pobierz VM resource IDs z terraform output
+###############################################################################
+echo -e "${YELLOW}[INFO]${NC} Pobieranie informacji o zasobach (terraform output)..."
+
+PANORAMA_ID=""
+DC_ID=""
+FW1_ID=""
+FW2_ID=""
+
+if terraform output -raw panorama_vm_id &>/dev/null 2>/dev/null; then
+  PANORAMA_ID=$(terraform output -raw panorama_vm_id 2>/dev/null || echo "")
+fi
+if terraform output -raw dc_vm_id &>/dev/null 2>/dev/null; then
+  DC_ID=$(terraform output -raw dc_vm_id 2>/dev/null || echo "")
+fi
+if terraform output -raw fw1_vm_id &>/dev/null 2>/dev/null; then
+  FW1_ID=$(terraform output -raw fw1_vm_id 2>/dev/null || echo "")
+fi
+if terraform output -raw fw2_vm_id &>/dev/null 2>/dev/null; then
+  FW2_ID=$(terraform output -raw fw2_vm_id 2>/dev/null || echo "")
 fi
 
-# Krok 1: Czekaj na Panorame
+###############################################################################
+# Sprawdź status Panoramy
+###############################################################################
 echo -e "${YELLOW}[INFO]${NC} Sprawdzam status VM Panoramy ($PANORAMA_VM w $PANORAMA_RG)..."
 echo ""
 
-attempt=0
-MAX_ATTEMPTS=$((MAX_WAIT_MIN * 60 / INTERVAL_SEC))
-VM_STATE="unknown"
+VM_STATE=$(az vm get-instance-view \
+  --resource-group "$PANORAMA_RG" \
+  --name "$PANORAMA_VM" \
+  --query "instanceView.statuses[?starts_with(code,'PowerState/')].displayStatus" \
+  --output tsv 2>/dev/null || echo "unknown")
 
-while [ $attempt -lt $MAX_ATTEMPTS ]; do
-  attempt=$((attempt + 1))
-  elapsed_min=$(( (attempt - 1) * INTERVAL_SEC / 60 ))
+if [[ "$VM_STATE" == "VM running" ]]; then
+  echo -e "${GREEN}[OK] Panorama: VM Running${NC}"
+else
+  echo -e "${YELLOW}[WARN] Panorama: $VM_STATE${NC}"
+  echo -e "       Uruchom Phase 1a lub sprawdź Portal Azure."
+fi
+echo ""
 
-  VM_STATE=$(az vm get-instance-view \
-    --resource-group "$PANORAMA_RG" \
-    --name "$PANORAMA_VM" \
-    --query "instanceView.statuses[?starts_with(code,'PowerState/')].displayStatus" \
-    --output tsv 2>/dev/null) || VM_STATE="unknown"
-
-  if [[ "$VM_STATE" == "VM running" ]]; then
-    echo -e "${GREEN}Panorama VM Running! (po ~${elapsed_min} min)${NC}"
-    echo ""
-    break
+###############################################################################
+# TRYB: --tunnel → otwiera HTTPS tunel do Panoramy (Phase 2 / panos provider)
+###############################################################################
+if [[ "$MODE" == "--tunnel" ]]; then
+  if [[ -z "$PANORAMA_ID" ]]; then
+    echo -e "${RED}Brak panorama_vm_id w terraform output. Uruchom Phase 1a najpierw.${NC}"
+    exit 1
   fi
 
-  echo -e "${YELLOW}[${elapsed_min} min]${NC} Panorama: '$VM_STATE'. Czekam ${INTERVAL_SEC}s..."
-  sleep $INTERVAL_SEC
-done
+  echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+  echo -e "${CYAN}  HTTPS Tunel do Panoramy (port ${HTTPS_TUNNEL_PORT})               ${NC}"
+  echo -e "${CYAN}  Używaj: panos provider lub curl https://127.0.0.1:${HTTPS_TUNNEL_PORT}${NC}"
+  echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "${YELLOW}Terminal BLOKUJĄCY – nie zamykaj! Otwórz NOWY terminal.${NC}"
+  echo ""
+  echo "  W NOWYM terminalu uruchom Phase 2:"
+  echo "    cd phase2-panorama-config/"
+  echo "    terraform apply"
+  echo ""
+  echo "  Lub generuj vm-auth-key:"
+  echo "    PANORAMA_IP=127.0.0.1 PANORAMA_PORT=${HTTPS_TUNNEL_PORT} \\"
+  echo "    ./scripts/generate-vm-auth-key.sh"
+  echo ""
 
-if [[ "$VM_STATE" != "VM running" ]]; then
-  echo -e "${RED}Panorama nie uruchomiona po ${MAX_WAIT_MIN} min. Sprawdz Azure Portal.${NC}"
-  exit 1
+  az network bastion tunnel \
+    --name "$BASTION_NAME" \
+    --resource-group "$BASTION_RG" \
+    --target-resource-id "$PANORAMA_ID" \
+    --resource-port 443 \
+    --port "$HTTPS_TUNNEL_PORT"
+  exit 0
 fi
 
-# Krok 2: Pokaz wszystkie metody dostepu
+###############################################################################
+# TRYB: --rdp → otwiera RDP tunel do DC
+###############################################################################
+if [[ "$MODE" == "--rdp" ]]; then
+  if [[ -z "$DC_ID" ]]; then
+    echo -e "${RED}Brak dc_vm_id w terraform output. Uruchom Phase 1a (module.app2_dc) najpierw.${NC}"
+    exit 1
+  fi
+
+  echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+  echo -e "${CYAN}  RDP Tunel do DC (${DC_IP}:3389 → localhost:${RDP_TUNNEL_PORT}) ${NC}"
+  echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "${YELLOW}Terminal BLOKUJĄCY – nie zamykaj! Otwórz NOWY terminal.${NC}"
+  echo ""
+  echo "  DALSZE KROKI (NOWY terminal):"
+  echo "    Windows: mstsc /v:localhost:${RDP_TUNNEL_PORT}"
+  echo "    macOS:   Microsoft Remote Desktop → Add PC → localhost:${RDP_TUNNEL_PORT}"
+  echo "    Login:   dcadmin | Hasło: dc_admin_password z terraform.tfvars"
+  echo ""
+  echo "  Na DC (Chrome/Edge) → Panorama GUI:"
+  echo "    https://${PANORAMA_IP}     ← Panorama"
+  echo "    https://10.110.255.4      ← FW1 (mgmt)"
+  echo "    https://10.110.255.5      ← FW2 (mgmt)"
+  echo "    Kliknij: ADVANCED → Proceed (certyfikat self-signed)"
+  echo ""
+
+  az network bastion tunnel \
+    --name "$BASTION_NAME" \
+    --resource-group "$BASTION_RG" \
+    --target-resource-id "$DC_ID" \
+    --resource-port 3389 \
+    --port "$RDP_TUNNEL_PORT"
+  exit 0
+fi
+
+###############################################################################
+# TRYB domyślny: pokaż status i komendy dostępu
+###############################################################################
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}  METODY DOSTEPU – Spoke2 Bastion (bastion-spoke2)       ${NC}"
+echo -e "${CYAN}  METODY DOSTĘPU przez Bastion: ${BASTION_NAME}          ${NC}"
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
 echo ""
-echo -e "${GREEN}[SSH] FW1 (Active, 10.0.0.4):${NC}"
-echo "  az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
-echo "    --target-ip-address 10.0.0.4 --auth-type password --username panadmin"
+
+# Panorama SSH
+echo -e "${GREEN}${BOLD}[SSH] Panorama (${PANORAMA_IP}):${NC}"
+echo -e "  ${YELLOW}Metoda A – zawsze działa:${NC}"
+if [[ -n "$PANORAMA_ID" ]]; then
+  echo "    az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
+  echo "      --target-resource-id \"$PANORAMA_ID\" \\"
+  echo "      --auth-type password --username panadmin"
+else
+  echo '    PANORAMA_ID=$(terraform output -raw panorama_vm_id)'
+  echo "    az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
+  echo '      --target-resource-id "$PANORAMA_ID" --auth-type password --username panadmin'
+fi
 echo ""
-echo -e "${GREEN}[SSH] FW2 (Passive, 10.0.0.5):${NC}"
-echo "  az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
-echo "    --target-ip-address 10.0.0.5 --auth-type password --username panadmin"
-echo ""
-echo -e "${GREEN}[SSH] Panorama (10.0.0.10):${NC}"
-echo "  az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
-echo "    --target-ip-address $PANORAMA_IP --auth-type password --username panadmin"
-echo ""
-echo -e "${YELLOW}[GUI - HTTPS] Panorama / FW1 / FW2:${NC}"
-echo "  Workflow: RDP na DC (ten skrypt) → przeglądarka na DC:"
-echo "    https://${PANORAMA_IP}   (Panorama GUI)"
-echo "    https://10.0.0.4        (FW1 GUI)"
-echo "    https://10.0.0.5        (FW2 GUI)"
-echo "    Zaakceptuj certyfikat self-signed: ADVANCED → Proceed to ..."
-echo ""
-echo -e "${YELLOW}[Phase 2 panos provider] Tunel HTTPS do Panoramy port 443:${NC}"
-echo "  PANORAMA_ID=\$(terraform output -raw panorama_vm_id)"
-echo "  az network bastion tunnel --name $BASTION_NAME --resource-group $BASTION_RG \\"
-echo "    --target-resource-id \"\$PANORAMA_ID\" --resource-port 443 --port 44300"
+echo -e "  ${YELLOW}Metoda B – po 'terraform apply -target=module.networking' (ip_connect_enabled=true):${NC}"
+echo "    az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
+echo "      --target-ip-address $PANORAMA_IP --auth-type password --username panadmin"
 echo ""
 
-# Krok 3: Otwórz RDP tunnel do DC
-echo -e "${BLUE}══════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}  OTWIERANIE RDP TUNNEL → DC (${DC_IP}:3389)             ${NC}"
-echo -e "${BLUE}  localhost:${RDP_LOCAL_PORT} → DC → przegladarka → Panorama/FW GUI ${NC}"
-echo -e "${BLUE}══════════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "${YELLOW}Terminal BLOKUJACY – nie zamykaj! Otwórz NOWY terminal.${NC}"
-echo ""
-echo "  DALSZE KROKI (w NOWYM terminalu):"
-echo ""
-echo "  1. RDP do DC:"
-echo "     Windows: mstsc /v:localhost:${RDP_LOCAL_PORT}"
-echo "     macOS:   Microsoft Remote Desktop → Add PC → localhost:${RDP_LOCAL_PORT}"
-echo "     Login: dcadmin | Haslo: dc_admin_password z terraform.tfvars"
-echo ""
-echo "  2. Na DC – Chrome/Edge:"
-echo "     https://${PANORAMA_IP}   Panorama GUI"
-echo "     https://10.0.0.4        FW1 GUI"
-echo "     https://10.0.0.5        FW2 GUI"
-echo "     Kliknij ADVANCED → Proceed to ... (certyfikat self-signed)"
-echo ""
-echo "  3. W Panoramie:"
-echo "     a) Aktywuj licencje: Panorama → Licenses → Activate"
-echo "     b) Wygeneruj VM Auth Key: Device Registration Auth Key → Generate"
-echo "        Waznosc: 8760 hours → KOPIUJ klucz"
-echo ""
-echo "  4. Wklej do terraform.tfvars:"
-echo "     panorama_vm_auth_key = \"KLUCZ\""
-echo ""
-echo "  5. Uruchom pozostale moduły:"
-echo "     terraform apply -target=module.bootstrap"
-echo "     terraform apply -target=module.loadbalancer -target=module.firewall \\"
-echo "       -target=module.routing -target=module.frontdoor -target=module.spoke1_app"
-echo ""
-echo "════════════════════════════════════════════════════════════"
+# FW SSH
+echo -e "${GREEN}${BOLD}[SSH] FW1 mgmt (10.110.255.4):${NC}"
+if [[ -n "$FW1_ID" ]]; then
+  echo "    az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
+  echo "      --target-resource-id \"$FW1_ID\" --auth-type password --username panadmin"
+else
+  echo '    FW1_ID=$(terraform output -raw fw1_vm_id)'
+  echo "    az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
+  echo '      --target-resource-id "$FW1_ID" --auth-type password --username panadmin'
+fi
 echo ""
 
-echo -e "${GREEN}Uruchamiam RDP tunnel: $BASTION_NAME → DC (${DC_IP}:3389) → localhost:${RDP_LOCAL_PORT}${NC}"
-echo "(Zatrzymaj: Ctrl+C)"
+echo -e "${GREEN}${BOLD}[SSH] FW2 mgmt (10.110.255.5):${NC}"
+if [[ -n "$FW2_ID" ]]; then
+  echo "    az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
+  echo "      --target-resource-id \"$FW2_ID\" --auth-type password --username panadmin"
+else
+  echo '    FW2_ID=$(terraform output -raw fw2_vm_id)'
+  echo "    az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
+  echo '      --target-resource-id "$FW2_ID" --auth-type password --username panadmin'
+fi
 echo ""
 
-az network bastion tunnel \
-  --name "$BASTION_NAME" \
-  --resource-group "$BASTION_RG" \
-  --target-ip-address "$DC_IP" \
-  --resource-port 3389 \
-  --port "$RDP_LOCAL_PORT"
+# HTTPS tunnel
+echo -e "${GREEN}${BOLD}[HTTPS Tunel] Panorama GUI / Phase 2 panos provider (port ${HTTPS_TUNNEL_PORT}):${NC}"
+echo "    ./scripts/check-panorama.sh --tunnel"
+echo ""
+echo "  Lub ręcznie:"
+if [[ -n "$PANORAMA_ID" ]]; then
+  echo "    az network bastion tunnel --name $BASTION_NAME --resource-group $BASTION_RG \\"
+  echo "      --target-resource-id \"$PANORAMA_ID\" --resource-port 443 --port $HTTPS_TUNNEL_PORT"
+else
+  echo '    PANORAMA_ID=$(terraform output -raw panorama_vm_id)'
+  echo "    az network bastion tunnel --name $BASTION_NAME --resource-group $BASTION_RG \\"
+  echo '      --target-resource-id "$PANORAMA_ID" --resource-port 443 --port '"$HTTPS_TUNNEL_PORT"
+fi
+echo ""
+
+# RDP do DC
+echo -e "${GREEN}${BOLD}[RDP] DC (${DC_IP}:3389 → localhost:${RDP_TUNNEL_PORT}):${NC}"
+echo "    ./scripts/check-panorama.sh --rdp"
+echo ""
+
+# Phase 2
+echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  PHASE 2 – Konfiguracja Panoramy przez XML API          ${NC}"
+echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+echo ""
+echo "  Terminal 1 (HTTPS tunel – zostaw otwarty):"
+echo "    ./scripts/check-panorama.sh --tunnel"
+echo ""
+echo "  Terminal 2 (Phase 2 apply):"
+echo "    cd phase2-panorama-config/"
+echo "    # Uzupełnij terraform.tfvars (hasło, auth_code, CIDRy)"
+echo "    terraform apply"
+echo "    # Terraform automatycznie:"
+echo "    #   1. Czeka na Panorama API (max 20 min)"
+echo "    #   2. Ustawia hostname przez XML API"
+echo "    #   3. Aktywuje licencję przez XML API (jeśli podano auth_code)"
+echo "    #   4. Konfiguruje Template Stack, Device Group, policies (panos provider)"
+echo "    #   5. Commituje Panoramę"
+echo ""
+
+# VM Auth Key
+echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  VM AUTH KEY – po aktywacji licencji Panoramy            ${NC}"
+echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
+echo ""
+echo "  Automatycznie (przez HTTPS tunel, port $HTTPS_TUNNEL_PORT):"
+echo "    PANORAMA_IP=127.0.0.1 PANORAMA_PORT=$HTTPS_TUNNEL_PORT \\"
+echo "    ./scripts/generate-vm-auth-key.sh"
+echo ""
+echo "  Lub w Panoramie przez GUI:"
+echo "    https://127.0.0.1:$HTTPS_TUNNEL_PORT → Panorama → Devices → VM Auth Key → Generate"
+echo ""
+echo "  Po uzyskaniu klucza → terraform.tfvars:"
+echo "    panorama_vm_auth_key = \"2:XXXXXX...\""
+echo "  Następnie:"
+echo "    terraform apply -target=module.bootstrap  # aktualizuje FW init-cfg"
+echo "    terraform apply  # wdraża FW, LB, routing, frontdoor"
+echo ""

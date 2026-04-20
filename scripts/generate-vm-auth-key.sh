@@ -12,14 +12,25 @@
 #
 # Wynik: klucz zapisywany do panorama_vm_auth_key.txt i wyświetlany na ekranie
 #
-# ALTERNATYWA (ręcznie przez Bastion SSH):
-#   az network bastion ssh \
-#     --name bastion-management \
-#     --resource-group rg-transit-hub \
-#     --target-ip-address 10.255.0.4 \
-#     --auth-type password \
-#     --username panadmin
-#   admin@panorama> request vm-auth-key generate lifetime 168
+# ALTERNATYWA – ręcznie przez Bastion SSH do Panoramy:
+#
+#   Metoda A (po terraform apply -target=module.networking, wymaga ip_connect_enabled=true):
+#     az network bastion ssh \
+#       --name bastion-management \
+#       --resource-group rg-transit-hub \
+#       --target-ip-address 10.255.0.4 \
+#       --auth-type password --username panadmin
+#
+#   Metoda B (zawsze działa, pobiera VM resource ID):
+#     PANORAMA_ID=$(terraform output -raw panorama_vm_id)
+#     az network bastion ssh \
+#       --name bastion-management \
+#       --resource-group rg-transit-hub \
+#       --target-resource-id "$PANORAMA_ID" \
+#       --auth-type password --username panadmin
+#
+#   Po zalogowaniu do Panoramy:
+#     admin@panorama> request vm-auth-key generate lifetime 168
 ###############################################################################
 
 set -euo pipefail
