@@ -29,27 +29,6 @@ variable "panorama_hostname" {
   default     = "panorama-transit-hub"
 }
 
-variable "panorama_serial_number" {
-  description = <<-EOT
-    Serial number of Panorama from Palo Alto CSP Portal (Assets → Devices).
-    Required for automatic license activation. If empty, manual activation needed.
-    Format: 007300XXXXXXX (13 digits)
-  EOT
-  type        = string
-  default     = ""
-}
-
-variable "panorama_auth_code" {
-  description = <<-EOT
-    Authorization code for Panorama BYOL license from CSP Portal.
-    Format: XXXX-XXXX-XXXX-XXXX
-    Used in init-cfg authcodes= for automatic license activation.
-  EOT
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
 variable "vm_size" {
   description = <<-EOT
     Azure VM size for Panorama.

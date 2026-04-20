@@ -7,12 +7,32 @@
 #------------------------------------------------------------------------------
 variable "panorama_hostname" {
   description = <<-EOT
-    Hostname/IP do połączenia z Panoramą przez provider panos.
+    Hostname/IP do połączenia z Panoramą (panos provider + curl API calls).
     Gdy używasz az network bastion tunnel: ustaw "127.0.0.1"
-    Gdy używasz innego tunelu VPN/jump-host: ustaw prywatne IP Panoramy "10.0.0.10"
+    Gdy używasz VPN/jump-host: ustaw prywatne IP Panoramy "10.255.0.4"
   EOT
   type    = string
   default = "127.0.0.1"
+}
+
+variable "panorama_target_hostname" {
+  description = <<-EOT
+    Docelowy hostname Panoramy (ustawiany przez XML API).
+    Musi zgadzać się z panorama_hostname w terraform.tfvars Phase 1.
+  EOT
+  type    = string
+  default = "panorama-transit-hub"
+}
+
+variable "panorama_auth_code" {
+  description = <<-EOT
+    Auth code BYOL licencji Panoramy z CSP Portal (Assets → Auth Codes).
+    Format: XXXX-XXXX-XXXX-XXXX
+    Jeśli pusty, krok aktywacji licencji jest pomijany.
+  EOT
+  type      = string
+  default   = ""
+  sensitive = true
 }
 
 variable "panorama_port" {

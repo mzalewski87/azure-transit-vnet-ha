@@ -59,11 +59,9 @@ admin_password = "REPLACE_ME_Admin@Password1!"
 panorama_private_ip    = "10.255.0.4"
 panorama_hostname      = "panorama-transit-hub"
 
-# CSP Portal → Assets → Devices → wybierz Panorama → Serial Number
-panorama_serial_number = ""   # Format: 007300XXXXXXX
-
-# CSP Portal → Assets → Auth Codes → Panorama BYOL
-panorama_auth_code = ""   # Format: XXXX-XXXX-XXXX-XXXX
+# panorama_serial_number i panorama_auth_code PRZENIESIONE do:
+#   phase2-panorama-config/terraform.tfvars (panorama_auth_code)
+# Nie ma ich w Phase 1 – aktywacja licencji przez XML API w Phase 2.
 
 panorama_log_disk_size_gb = 2048   # 2TB Premium SSD
 

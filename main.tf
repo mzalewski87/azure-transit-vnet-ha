@@ -172,10 +172,8 @@ module "panorama" {
   admin_username = var.admin_username
   admin_password = var.admin_password
 
-  # Bootstrap Panoramy: bezpośrednia treść init-cfg przekazywana w customData
-  panorama_hostname      = var.panorama_hostname
-  panorama_serial_number = var.panorama_serial_number
-  panorama_auth_code     = var.panorama_auth_code
+  # Minimalna init-cfg (hostname, DNS, NTP) – licencja przez Phase 2 XML API
+  panorama_hostname = var.panorama_hostname
 
   log_disk_size_gb = var.panorama_log_disk_size_gb
 

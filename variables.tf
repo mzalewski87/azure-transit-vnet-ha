@@ -117,22 +117,9 @@ variable "panorama_hostname" {
   default     = "panorama-transit-hub"
 }
 
-variable "panorama_serial_number" {
-  description = <<-EOT
-    Panorama serial number from CSP Portal (Assets → Devices).
-    Required for automatic license activation via init-cfg.
-    Format: 007300XXXXXXX
-  EOT
-  type        = string
-  default     = ""
-}
-
-variable "panorama_auth_code" {
-  description = "Panorama BYOL license auth code from CSP Portal. Format: XXXX-XXXX-XXXX-XXXX"
-  type        = string
-  default     = ""
-  sensitive   = true
-}
+# panorama_serial_number i panorama_auth_code USUNIĘTE z Phase 1
+# Aktywacja licencji następuje przez XML API w Phase 2 (phase2-panorama-config/)
+# Podaj auth_code jako panorama_auth_code w phase2-panorama-config/terraform.tfvars
 
 variable "panorama_vm_size" {
   description = "VM size for Panorama (min Standard_D8s_v3, recommended Standard_D16s_v3)"

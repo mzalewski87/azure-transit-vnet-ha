@@ -313,12 +313,12 @@ resource "panos_panorama_security_rule_group" "transit" {
     type        = "universal"
 
     source_zones     = [panos_panorama_zone.trust.name]
-    source_addresses = ["10.1.0.0/16"]
+    source_addresses = [var.spoke1_vnet_cidr]
     source_users     = ["any"]
     hip_profiles     = ["any"]
 
     destination_zones     = [panos_panorama_zone.trust.name]
-    destination_addresses = ["10.2.0.0/16"]
+    destination_addresses = [var.spoke2_vnet_cidr]
 
     applications = ["any"]
     services     = ["any"]
@@ -335,12 +335,12 @@ resource "panos_panorama_security_rule_group" "transit" {
     type        = "universal"
 
     source_zones     = [panos_panorama_zone.trust.name]
-    source_addresses = ["10.2.0.0/16"]
+    source_addresses = [var.spoke2_vnet_cidr]
     source_users     = ["any"]
     hip_profiles     = ["any"]
 
     destination_zones     = [panos_panorama_zone.trust.name]
-    destination_addresses = ["10.1.0.0/16"]
+    destination_addresses = [var.spoke1_vnet_cidr]
 
     applications = ["any"]
     services     = ["any"]

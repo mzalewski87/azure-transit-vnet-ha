@@ -81,26 +81,12 @@ resource "azurerm_linux_virtual_machine" "panorama" {
     product   = "panorama"
   }
 
-  # Bootstrap Panoramy przez BEZPOŚREDNIĄ treść init-cfg w customData (base64).
-  #
-  # WAŻNA RÓŻNICA między Panoramą a VM-Series FW:
-  #   VM-Series FW: customData = WSKAŹNIK do Storage Account (storage-account=...\nfile-share=...)
-  #   Panorama:     customData = BEZPOŚREDNIA treść init-cfg (type=dhcp-client\nhostname=...)
-  #
-  # Panorama na Azure czyta customData z Azure IMDS, base64-dekoduje i parsuje jako init-cfg.
-  # Nie używa mechanizmu SA storage pointer – to jest mechanizm specyficzny dla FW bootstrapu.
-  #
-  # Format init-cfg dla Panoramy:
-  #   type=dhcp-client
-  #   hostname=panorama-transit-hub
-  #   authcodes=<panorama_auth_code>
-  #   dns-primary=168.63.129.16
-  #   ntp-server-1=0.europe.pool.ntp.org
-  #   timezone=Europe/Warsaw
+  # Bootstrap Panoramy: minimalna init-cfg (hostname, DNS, NTP).
+  # Licencja i szczegółowa konfiguracja następują w Phase 2 przez Panorama XML API.
+  # UWAGA: Panorama BYOL na Azure nie przetwarza authcodes= przez customData.
+  #        Aktywacja licencji: null_resource w phase2-panorama-config (XML API).
   custom_data = base64encode(templatefile("${path.module}/templates/panorama-init-cfg.txt.tpl", {
-    hostname         = var.panorama_hostname
-    serial_number    = var.panorama_serial_number
-    panorama_auth_code = var.panorama_auth_code
+    hostname = var.panorama_hostname
   }))
 
   depends_on = [null_resource.accept_panorama_terms]
