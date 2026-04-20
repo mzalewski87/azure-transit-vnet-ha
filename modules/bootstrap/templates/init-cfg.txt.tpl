@@ -1,4 +1,7 @@
 type=dhcp-client
+ip-address=
+netmask=
+default-gateway=
 hostname=${hostname}
 %{~ if panorama_vm_auth_key != "" ~}
 vm-auth-key=${panorama_vm_auth_key}
