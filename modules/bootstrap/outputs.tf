@@ -22,34 +22,26 @@ output "managed_identity_principal_id" {
   value       = azurerm_user_assigned_identity.bootstrap.principal_id
 }
 
-# FW bootstrap storage pointers (base64-encoded, used as customData/userData for VM-Series FW)
+# FW bootstrap custom_data (base64-encoded init-cfg, used as customData/userData)
 #
-# Format per dokumentacja PAN-OS bootstrap na Azure:
-#   storage-account  = SA name
-#   access-key       = SA primary access key (poprawna nazwa pola per PANW docs)
-#   file-share       = Azure File Share name
-#   share-directory  = subfolder per FW (fw1 / fw2)
+# APPROACH: Direct init-cfg in custom_data (no file share upload needed)
+# PAN-OS 10.0+ reads init-cfg parameters directly from custom_data/userData.
+# This eliminates the need to upload files to Azure File Share data plane,
+# which is blocked by corporate SSL proxy.
+#
+# All bootstrap parameters (Panorama, licensing, DNS, NTP) are embedded
+# directly. PAN-OS reads them from Azure IMDS on first boot.
 #
 # Ref: https://docs.paloaltonetworks.com/vm-series/11-1/vm-series-deployment/bootstrap-the-vm-series-firewall/bootstrap-the-vm-series-firewall-in-azure
 
 output "fw1_custom_data" {
-  description = "FW1 bootstrap custom_data (storage pointer, base64-encoded)"
-  value       = base64encode(join("\n", [
-    "storage-account=${azurerm_storage_account.bootstrap.name}",
-    "access-key=${azurerm_storage_account.bootstrap.primary_access_key}",
-    "file-share=${azurerm_storage_share.bootstrap.name}",
-    "share-directory=fw1",
-  ]))
-  sensitive = true
+  description = "FW1 bootstrap custom_data (init-cfg params, base64-encoded)"
+  value       = base64encode(local_file.fw1_init_cfg.content)
+  sensitive   = true
 }
 
 output "fw2_custom_data" {
-  description = "FW2 bootstrap custom_data (storage pointer, base64-encoded)"
-  value       = base64encode(join("\n", [
-    "storage-account=${azurerm_storage_account.bootstrap.name}",
-    "access-key=${azurerm_storage_account.bootstrap.primary_access_key}",
-    "file-share=${azurerm_storage_share.bootstrap.name}",
-    "share-directory=fw2",
-  ]))
-  sensitive = true
+  description = "FW2 bootstrap custom_data (init-cfg params, base64-encoded)"
+  value       = base64encode(local_file.fw2_init_cfg.content)
+  sensitive   = true
 }

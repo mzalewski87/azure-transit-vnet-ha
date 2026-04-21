@@ -158,63 +158,16 @@ resource "azurerm_storage_share_directory" "fw1_software" {
   depends_on       = [azurerm_storage_share_directory.fw1]
 }
 
-# Pre-cleanup: delete existing files before azurerm_storage_share_file create
-# (prevents "already exists" error after partial failures)
-# Uses curl DELETE (empty body) — works through corporate SSL proxy
-resource "null_resource" "cleanup_existing_files" {
-  # Always run when file content changes
-  triggers = {
-    fw1_cfg_hash  = local_file.fw1_init_cfg.content_md5
-    fw1_auth_hash = local_file.fw1_authcodes.content_md5
-    fw2_cfg_hash  = local_file.fw2_init_cfg.content_md5
-    fw2_auth_hash = local_file.fw2_authcodes.content_md5
-  }
-
-  provisioner "local-exec" {
-    command = "bash ${path.root}/scripts/cleanup-bootstrap-files.sh"
-    environment = {
-      SA_NAME    = azurerm_storage_account.bootstrap.name
-      SA_KEY     = azurerm_storage_account.bootstrap.primary_access_key
-      SHARE      = "bootstrap"
-      FILE_PATHS = "fw1/config/init-cfg.txt,fw1/license/authcodes,fw2/config/init-cfg.txt,fw2/license/authcodes"
-    }
-  }
-
-  depends_on = [
-    azurerm_storage_share_directory.fw1_config,
-    azurerm_storage_share_directory.fw1_license,
-    azurerm_storage_share_directory.fw2_config,
-    azurerm_storage_share_directory.fw2_license,
-    time_sleep.wait_for_sa_network_rules,
-  ]
-}
-
-# Upload via AzureRM provider (Go HTTP client – works through corporate proxy)
-resource "azurerm_storage_share_file" "fw1_init_cfg" {
-  name             = "init-cfg.txt"
-  storage_share_id = azurerm_storage_share.bootstrap.id
-  path             = "fw1/config"
-  source           = local_file.fw1_init_cfg.filename
-
-  depends_on = [
-    azurerm_storage_share_directory.fw1_config,
-    time_sleep.wait_for_sa_network_rules,
-    null_resource.cleanup_existing_files,
-  ]
-}
-
-resource "azurerm_storage_share_file" "fw1_authcodes" {
-  name             = "authcodes"
-  storage_share_id = azurerm_storage_share.bootstrap.id
-  path             = "fw1/license"
-  source           = local_file.fw1_authcodes.filename
-
-  depends_on = [
-    azurerm_storage_share_directory.fw1_license,
-    time_sleep.wait_for_sa_network_rules,
-    null_resource.cleanup_existing_files,
-  ]
-}
+# NOTE: File upload to Azure File Share is NOT done here.
+# Corporate SSL proxy blocks ALL PUT-with-body requests to *.file.core.windows.net
+# (both curl and Terraform Go client return "connection reset").
+#
+# Instead, init-cfg parameters are embedded directly in custom_data/userData
+# (see outputs.tf). PAN-OS 10.0+ reads init-cfg from Azure IMDS on first boot.
+# This completely eliminates the need for file share file uploads.
+#
+# The SA, File Share, and directory structure are kept for optional future use
+# (e.g., uploading bootstrap.xml, content packages from Azure Cloud Shell).
 
 ###############################################################################
 # FW2 Bootstrap – directory structure + files
@@ -249,31 +202,6 @@ resource "azurerm_storage_share_directory" "fw2_software" {
   depends_on       = [azurerm_storage_share_directory.fw2]
 }
 
-resource "azurerm_storage_share_file" "fw2_init_cfg" {
-  name             = "init-cfg.txt"
-  storage_share_id = azurerm_storage_share.bootstrap.id
-  path             = "fw2/config"
-  source           = local_file.fw2_init_cfg.filename
-
-  depends_on = [
-    azurerm_storage_share_directory.fw2_config,
-    time_sleep.wait_for_sa_network_rules,
-    null_resource.cleanup_existing_files,
-  ]
-}
-
-resource "azurerm_storage_share_file" "fw2_authcodes" {
-  name             = "authcodes"
-  storage_share_id = azurerm_storage_share.bootstrap.id
-  path             = "fw2/license"
-  source           = local_file.fw2_authcodes.filename
-
-  depends_on = [
-    azurerm_storage_share_directory.fw2_license,
-    time_sleep.wait_for_sa_network_rules,
-    null_resource.cleanup_existing_files,
-  ]
-}
 
 ###############################################################################
 # Sleep after SA creation to allow network_rules propagation
