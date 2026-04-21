@@ -164,7 +164,10 @@ resource "azurerm_storage_share_file" "fw1_init_cfg" {
   path                 = "fw1/config"
   source               = local_file.fw1_init_cfg.filename
 
-  depends_on = [azurerm_storage_share_directory.fw1_config]
+  depends_on = [
+    azurerm_storage_share_directory.fw1_config,
+    time_sleep.wait_for_sa_network_rules,
+  ]
 }
 
 resource "azurerm_storage_share_file" "fw1_authcodes" {
@@ -173,7 +176,10 @@ resource "azurerm_storage_share_file" "fw1_authcodes" {
   path                 = "fw1/license"
   source               = local_file.fw1_authcodes.filename
 
-  depends_on = [azurerm_storage_share_directory.fw1_license]
+  depends_on = [
+    azurerm_storage_share_directory.fw1_license,
+    time_sleep.wait_for_sa_network_rules,
+  ]
 }
 
 ###############################################################################
@@ -215,7 +221,10 @@ resource "azurerm_storage_share_file" "fw2_init_cfg" {
   path                 = "fw2/config"
   source               = local_file.fw2_init_cfg.filename
 
-  depends_on = [azurerm_storage_share_directory.fw2_config]
+  depends_on = [
+    azurerm_storage_share_directory.fw2_config,
+    time_sleep.wait_for_sa_network_rules,
+  ]
 }
 
 resource "azurerm_storage_share_file" "fw2_authcodes" {
@@ -224,7 +233,10 @@ resource "azurerm_storage_share_file" "fw2_authcodes" {
   path                 = "fw2/license"
   source               = local_file.fw2_authcodes.filename
 
-  depends_on = [azurerm_storage_share_directory.fw2_license]
+  depends_on = [
+    azurerm_storage_share_directory.fw2_license,
+    time_sleep.wait_for_sa_network_rules,
+  ]
 }
 
 ###############################################################################
