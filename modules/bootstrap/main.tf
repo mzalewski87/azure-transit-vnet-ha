@@ -158,30 +158,30 @@ resource "azurerm_storage_share_directory" "fw1_software" {
   depends_on       = [azurerm_storage_share_directory.fw1]
 }
 
-# Upload plików via external script (curl + SAS, omija SSL proxy issues)
-# Zmienne przekazywane przez environment (nie heredoc) — bezpieczne dla znaków specjalnych w SA_KEY
-resource "null_resource" "fw1_upload_files" {
-  triggers = {
-    init_cfg_hash  = local_file.fw1_init_cfg.content_md5
-    authcodes_hash = local_file.fw1_authcodes.content_md5
-  }
-
-  provisioner "local-exec" {
-    command = "bash ${path.root}/scripts/upload-bootstrap.sh"
-    environment = {
-      SA_NAME   = azurerm_storage_account.bootstrap.name
-      SA_KEY    = azurerm_storage_account.bootstrap.primary_access_key
-      SHARE     = "bootstrap"
-      SRC_CFG   = local_file.fw1_init_cfg.filename
-      DEST_CFG  = "fw1/config/init-cfg.txt"
-      SRC_AUTH  = local_file.fw1_authcodes.filename
-      DEST_AUTH = "fw1/license/authcodes"
-      FW_NAME   = "FW1"
-    }
-  }
+# Upload via AzureRM provider (Go HTTP client – works through corporate proxy)
+# NOTE: If "already exists" error occurs after partial failure, run:
+#   terraform state rm 'module.bootstrap.azurerm_storage_share_file.fw1_init_cfg'
+#   terraform import 'module.bootstrap.azurerm_storage_share_file.fw1_init_cfg' \
+#     'https://<SA_NAME>.file.core.windows.net/bootstrap/fw1/config/init-cfg.txt'
+resource "azurerm_storage_share_file" "fw1_init_cfg" {
+  name             = "init-cfg.txt"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  path             = "fw1/config"
+  source           = local_file.fw1_init_cfg.filename
 
   depends_on = [
     azurerm_storage_share_directory.fw1_config,
+    time_sleep.wait_for_sa_network_rules,
+  ]
+}
+
+resource "azurerm_storage_share_file" "fw1_authcodes" {
+  name             = "authcodes"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  path             = "fw1/license"
+  source           = local_file.fw1_authcodes.filename
+
+  depends_on = [
     azurerm_storage_share_directory.fw1_license,
     time_sleep.wait_for_sa_network_rules,
   ]
@@ -220,29 +220,25 @@ resource "azurerm_storage_share_directory" "fw2_software" {
   depends_on       = [azurerm_storage_share_directory.fw2]
 }
 
-# Upload plików via external script (curl + SAS, omija SSL proxy issues)
-resource "null_resource" "fw2_upload_files" {
-  triggers = {
-    init_cfg_hash  = local_file.fw2_init_cfg.content_md5
-    authcodes_hash = local_file.fw2_authcodes.content_md5
-  }
-
-  provisioner "local-exec" {
-    command = "bash ${path.root}/scripts/upload-bootstrap.sh"
-    environment = {
-      SA_NAME   = azurerm_storage_account.bootstrap.name
-      SA_KEY    = azurerm_storage_account.bootstrap.primary_access_key
-      SHARE     = "bootstrap"
-      SRC_CFG   = local_file.fw2_init_cfg.filename
-      DEST_CFG  = "fw2/config/init-cfg.txt"
-      SRC_AUTH  = local_file.fw2_authcodes.filename
-      DEST_AUTH = "fw2/license/authcodes"
-      FW_NAME   = "FW2"
-    }
-  }
+resource "azurerm_storage_share_file" "fw2_init_cfg" {
+  name             = "init-cfg.txt"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  path             = "fw2/config"
+  source           = local_file.fw2_init_cfg.filename
 
   depends_on = [
     azurerm_storage_share_directory.fw2_config,
+    time_sleep.wait_for_sa_network_rules,
+  ]
+}
+
+resource "azurerm_storage_share_file" "fw2_authcodes" {
+  name             = "authcodes"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  path             = "fw2/license"
+  source           = local_file.fw2_authcodes.filename
+
+  depends_on = [
     azurerm_storage_share_directory.fw2_license,
     time_sleep.wait_for_sa_network_rules,
   ]
