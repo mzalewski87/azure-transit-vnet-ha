@@ -158,7 +158,9 @@ resource "azurerm_storage_share_directory" "fw1_software" {
   depends_on       = [azurerm_storage_share_directory.fw1]
 }
 
-# Upload plików via az CLI (nadpisuje istniejące, retry na network rules)
+# Upload plików via curl + SAS token (omija SSL proxy issues z az CLI/Python)
+# SAS token generowany lokalnie przez Python (brak wywołań sieciowych)
+# curl -sk omija corporate SSL interception
 resource "null_resource" "fw1_upload_files" {
   triggers = {
     init_cfg_hash  = local_file.fw1_init_cfg.content_md5
@@ -172,18 +174,62 @@ resource "null_resource" "fw1_upload_files" {
       SA_KEY="${azurerm_storage_account.bootstrap.primary_access_key}"
       SHARE="bootstrap"
       MAX_RETRIES=5
+      API_VERSION="2022-11-02"
+
+      # Generate Account SAS token locally via Python (no network calls)
+      SAS=$(python3 -c "
+import hmac, hashlib, base64, datetime, urllib.parse, sys
+key = base64.b64decode('${azurerm_storage_account.bootstrap.primary_access_key}')
+name = '${azurerm_storage_account.bootstrap.name}'
+ver = '2022-11-02'
+start = (datetime.datetime.utcnow() - datetime.timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%MZ')
+expiry = (datetime.datetime.utcnow() + datetime.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%MZ')
+perms = 'rwdlc'
+svc = 'f'
+rt = 'sco'
+sts = '\n'.join([name, perms, svc, rt, start, expiry, '', 'https', ver, '']) + '\n'
+sig = base64.b64encode(hmac.new(key, sts.encode('utf-8'), hashlib.sha256).digest()).decode()
+print(urllib.parse.urlencode({'sv':ver,'ss':svc,'srt':rt,'sp':perms,'se':expiry,'st':start,'spr':'https','sig':sig}))
+")
+
+      BASE_URL="https://$SA_NAME.file.core.windows.net/$SHARE"
 
       upload_file() {
         local SRC="$1" DEST="$2"
+        local FILE_SIZE=$(wc -c < "$SRC" | tr -d ' ')
+
         for i in $(seq 1 $MAX_RETRIES); do
-          if az storage file upload \
-            --account-name "$SA_NAME" --account-key "$SA_KEY" \
-            --share-name "$SHARE" --path "$DEST" \
-            --source "$SRC" --no-progress 2>/dev/null; then
-            echo "  [OK] Uploaded $DEST"
+          # Step 1: Create file (set size, overwrite if exists)
+          HTTP1=$(curl -sk -X PUT \
+            "$BASE_URL/$DEST?$SAS" \
+            -H "x-ms-version: $API_VERSION" \
+            -H "x-ms-type: file" \
+            -H "x-ms-content-length: $FILE_SIZE" \
+            -H "Content-Length: 0" \
+            -o /dev/null -w "%%{http_code}" 2>/dev/null)
+
+          if [ "$HTTP1" != "201" ]; then
+            echo "  [RETRY $i/$MAX_RETRIES] Create $DEST: HTTP $HTTP1, waiting 30s..."
+            sleep 30
+            continue
+          fi
+
+          # Step 2: Upload content (Put Range)
+          HTTP2=$(curl -sk -X PUT \
+            "$BASE_URL/$DEST?comp=range&$SAS" \
+            -H "x-ms-version: $API_VERSION" \
+            -H "x-ms-range: bytes=0-$((FILE_SIZE - 1))" \
+            -H "x-ms-write: update" \
+            -H "Content-Length: $FILE_SIZE" \
+            --data-binary "@$SRC" \
+            -o /dev/null -w "%%{http_code}" 2>/dev/null)
+
+          if [ "$HTTP2" = "201" ]; then
+            echo "  [OK] Uploaded $DEST ($FILE_SIZE bytes)"
             return 0
           fi
-          echo "  [RETRY $i/$MAX_RETRIES] Upload $DEST failed, waiting 30s..."
+
+          echo "  [RETRY $i/$MAX_RETRIES] PutRange $DEST: HTTP $HTTP2, waiting 30s..."
           sleep 30
         done
         echo "  [ERROR] Failed to upload $DEST after $MAX_RETRIES retries"
@@ -236,7 +282,7 @@ resource "azurerm_storage_share_directory" "fw2_software" {
   depends_on       = [azurerm_storage_share_directory.fw2]
 }
 
-# Upload plików via az CLI (nadpisuje istniejące, retry na network rules)
+# Upload plików via curl + SAS token (omija SSL proxy issues z az CLI/Python)
 resource "null_resource" "fw2_upload_files" {
   triggers = {
     init_cfg_hash  = local_file.fw2_init_cfg.content_md5
@@ -250,18 +296,62 @@ resource "null_resource" "fw2_upload_files" {
       SA_KEY="${azurerm_storage_account.bootstrap.primary_access_key}"
       SHARE="bootstrap"
       MAX_RETRIES=5
+      API_VERSION="2022-11-02"
+
+      # Generate Account SAS token locally via Python (no network calls)
+      SAS=$(python3 -c "
+import hmac, hashlib, base64, datetime, urllib.parse, sys
+key = base64.b64decode('${azurerm_storage_account.bootstrap.primary_access_key}')
+name = '${azurerm_storage_account.bootstrap.name}'
+ver = '2022-11-02'
+start = (datetime.datetime.utcnow() - datetime.timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%MZ')
+expiry = (datetime.datetime.utcnow() + datetime.timedelta(hours=2)).strftime('%Y-%m-%dT%H:%MZ')
+perms = 'rwdlc'
+svc = 'f'
+rt = 'sco'
+sts = '\n'.join([name, perms, svc, rt, start, expiry, '', 'https', ver, '']) + '\n'
+sig = base64.b64encode(hmac.new(key, sts.encode('utf-8'), hashlib.sha256).digest()).decode()
+print(urllib.parse.urlencode({'sv':ver,'ss':svc,'srt':rt,'sp':perms,'se':expiry,'st':start,'spr':'https','sig':sig}))
+")
+
+      BASE_URL="https://$SA_NAME.file.core.windows.net/$SHARE"
 
       upload_file() {
         local SRC="$1" DEST="$2"
+        local FILE_SIZE=$(wc -c < "$SRC" | tr -d ' ')
+
         for i in $(seq 1 $MAX_RETRIES); do
-          if az storage file upload \
-            --account-name "$SA_NAME" --account-key "$SA_KEY" \
-            --share-name "$SHARE" --path "$DEST" \
-            --source "$SRC" --no-progress 2>/dev/null; then
-            echo "  [OK] Uploaded $DEST"
+          # Step 1: Create file (set size, overwrite if exists)
+          HTTP1=$(curl -sk -X PUT \
+            "$BASE_URL/$DEST?$SAS" \
+            -H "x-ms-version: $API_VERSION" \
+            -H "x-ms-type: file" \
+            -H "x-ms-content-length: $FILE_SIZE" \
+            -H "Content-Length: 0" \
+            -o /dev/null -w "%%{http_code}" 2>/dev/null)
+
+          if [ "$HTTP1" != "201" ]; then
+            echo "  [RETRY $i/$MAX_RETRIES] Create $DEST: HTTP $HTTP1, waiting 30s..."
+            sleep 30
+            continue
+          fi
+
+          # Step 2: Upload content (Put Range)
+          HTTP2=$(curl -sk -X PUT \
+            "$BASE_URL/$DEST?comp=range&$SAS" \
+            -H "x-ms-version: $API_VERSION" \
+            -H "x-ms-range: bytes=0-$((FILE_SIZE - 1))" \
+            -H "x-ms-write: update" \
+            -H "Content-Length: $FILE_SIZE" \
+            --data-binary "@$SRC" \
+            -o /dev/null -w "%%{http_code}" 2>/dev/null)
+
+          if [ "$HTTP2" = "201" ]; then
+            echo "  [OK] Uploaded $DEST ($FILE_SIZE bytes)"
             return 0
           fi
-          echo "  [RETRY $i/$MAX_RETRIES] Upload $DEST failed, waiting 30s..."
+
+          echo "  [RETRY $i/$MAX_RETRIES] PutRange $DEST: HTTP $HTTP2, waiting 30s..."
           sleep 30
         done
         echo "  [ERROR] Failed to upload $DEST after $MAX_RETRIES retries"
