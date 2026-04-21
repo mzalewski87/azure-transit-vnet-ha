@@ -173,23 +173,16 @@ except Exception as e:
       fi
       echo "  API key: OK"
 
-      # Krok 3a: Ustaw numer seryjny przez XML API (tryb config)
-      # UWAGA: element PAN-OS XML to <serial-number>, NIE <serial>
+      # Krok 3a: Ustaw numer seryjny przez XML API (tryb OPERACYJNY – request, NIE configure!)
+      # Poprawna komenda PAN-OS CLI (operational mode): request serial-number set <SERIAL>
+      # Komendy "request" nie wymagaja commit – dzialaja natychmiast
       SET_RESP=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=config" \
-        --data-urlencode "action=set" \
-        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system" \
-        --data-urlencode "element=<serial-number>$SERIAL_NUM</serial-number>" \
+        --data-urlencode "type=op" \
+        --data-urlencode "cmd=<request><serial-number><set>$SERIAL_NUM</set></serial-number></request>" \
         --data-urlencode "key=$API_KEY" 2>/dev/null)
-      echo "  Numer seryjny $SERIAL_NUM ustawiony w konfiguracji. Odpowiedz API: $SET_RESP"
-
-      # Krok 3b: Commit (wymagany zanim serial number zadziala z serwerem licencji)
-      curl -sk --max-time 90 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=commit" \
-        --data-urlencode "cmd=<commit></commit>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  Commit: OK. Czekam 30s na przetworzenie..."
-      sleep 30
+      echo "  Odpowiedz set serial-number: $SET_RESP"
+      echo "  Czekam 15s na przetworzenie..."
+      sleep 15
 
       # Krok 3c: Pobierz licencje z serwera PANW (BEZ auth-code, na podstawie serial number)
       # Panorama musi miec dostep do internetu przez NAT Gateway (natgw-management)

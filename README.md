@@ -236,11 +236,12 @@ az network bastion ssh \
   --username panadmin
 
 # Wygeneruj Device Registration Auth Key
-# lifetime = minuty (60 = 1h), count = ile FW moze uzyc tego klucza
-admin@panorama> request authkey add name authkey1 lifetime 60 count 2
-# Skopiuj klucz z outputu
+# lifetime = minuty (1440 = 24h = max dopuszczalny), count = ile FW moze uzyc tego klucza
+admin@panorama> request authkey add name authkey1 lifetime 1440 count 2
+# Skopiuj klucz z outputu (format: 2:XXXXXXXXXXXXXXXX...)
 
 # Opcja B: przez skrypt (wymaga Bastion tunnel na port 44300)
+# Skrypt domyslnie uzywa lifetime=1440 (24h)
 PANORAMA_IP=127.0.0.1 PANORAMA_PORT=44300 ./scripts/generate-vm-auth-key.sh
 ```
 
@@ -533,8 +534,8 @@ Panorama BYOL na Azure **nie korzysta z customData/bootstrap**. Cały proces kon
 - **Wymagany** dla automatycznej rejestracji FW w Panoramie przy starcie
 - Generuj zaraz po starcie Panoramy – **licencja nie jest wymagana** do wygenerowania klucza
 - Wbudowany w FW init-cfg (`vm-auth-key=`)
-- Komenda: `admin@panorama> request authkey add name authkey1 lifetime 60 count 2`
-  - `lifetime` – w minutach (60 = 1h); `count` – ile FW może użyć klucza
+- Komenda: `admin@panorama> request authkey add name authkey1 lifetime 1440 count 2`
+  - `lifetime` – w minutach (1440 = 24h = max dopuszczalny przez PAN-OS); `count` – ile FW może użyć klucza
 
 ### PAN-OS CLI – tryby pracy
 
@@ -617,6 +618,56 @@ admin@panorama# exit
 admin@panorama> request license fetch
 ```
 
+### Bootstrap FW nie działa (Media Detection Failed)
+
+Bootstrap wymaga **dwóch warunków jednocześnie**:
+1. FW VM musi mieć `customData`/`userData` z wskaźnikiem na SA
+2. SA musi być dostępne z FW przez sieć
+
+**Diagnoza krok po kroku:**
+
+```bash
+# 1. Sprawdź czy FW VM ma customData (MUSI BYC NIEPUSTE)
+az vm show -g rg-transit-hub -n vm-panos-fw1 --query "customData" -o tsv | base64 -d 2>/dev/null || echo "[PUSTE - BLAD!]"
+az vm show -g rg-transit-hub -n vm-panos-fw1 --query "userData" -o tsv | base64 -d 2>/dev/null || echo "[PUSTE - BLAD!]"
+
+# 2. Sprawdź zawartość init-cfg w SA (użyj storage key, nie --auth-mode login)
+SA=$(terraform output -raw bootstrap_storage_account)
+SA_KEY=$(az storage account keys list --account-name "$SA" -g rg-transit-hub --query "[0].value" -o tsv)
+az storage blob download --account-name "$SA" --container-name bootstrap \
+  --name fw1/config/init-cfg.txt --account-key "$SA_KEY" --file /tmp/init-cfg.txt && cat /tmp/init-cfg.txt
+
+# 3. Na FW – sprawdź bootstrap log
+admin@fw1> less mp-log bootstrap.log
+admin@fw1> show system bootstrap status
+```
+
+**Jeśli customData/userData jest PUSTE** – FW nie wie gdzie szukać SA. Wymagany destroy + recreate:
+
+```bash
+# KRYTYCZNE: customData jest immutable po create VM – wymaga destroy + recreate FW
+terraform destroy -target=module.firewall
+
+# Upewnij się że bootstrap SA jest gotowy PRZED FW
+terraform apply -target=module.bootstrap
+
+# Teraz stwórz FW z poprawnym customData (bootstrap is a depends_on)
+terraform apply -target=module.loadbalancer -target=module.firewall
+```
+
+**Jeśli SA niedostępne z FW (sprawdź reguły sieci):**
+
+```bash
+# Sprawdź reguły sieciowe SA
+az storage account show --name "$SA" -g rg-transit-hub --query "networkRuleSet" -o json
+
+# Dodaj NAT GW IP ręcznie jeśli brakuje (Terraform powinien to robić automatycznie)
+NAT_IP=$(az network public-ip show -g rg-transit-hub -n pip-nat-gateway-transit-mgmt --query "ipAddress" -o tsv)
+az storage account network-rule add --account-name "$SA" -g rg-transit-hub --ip-address "$NAT_IP"
+```
+
+> ⚠️ **Uwaga**: ICMP (ping) do `blob.core.windows.net` zawsze zawodzi (Azure blokuje ICMP na endpointach Storage). To normalne – nie jest wskaźnikiem problemu z siecią.
+
 ### FW nie rejestruje się w Panoramie
 
 ```bash
@@ -631,8 +682,8 @@ az network bastion ssh \
 # Sprawdź status Panoramy z FW
 admin@fw1> show panorama-status
 
-# Sprawdź bootstrap log
-admin@fw1> debug bootstrap detail
+# Sprawdź bootstrap log (pełny, wszystkie błędy)
+admin@fw1> less mp-log bootstrap.log
 
 # Ustaw Panoramę ręcznie jeśli init-cfg nie zadziałał
 admin@fw1> configure
@@ -652,8 +703,8 @@ az network bastion ssh \
   --target-resource-id "$PANORAMA_ID" \
   --auth-type password --username panadmin
 
-admin@panorama> request authkey add name authkey1 lifetime 60 count 2
-# lifetime w minutach, count = ile FW moze uzyc klucza
+admin@panorama> request authkey add name authkey1 lifetime 1440 count 2
+# lifetime w minutach (1440 = 24h = max), count = ile FW moze uzyc klucza
 
 # Lub przez skrypt (wymaga Bastion tunnel na port 44300)
 ./scripts/check-panorama.sh --tunnel   # Terminal 1

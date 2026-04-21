@@ -39,7 +39,7 @@ set -euo pipefail
 PANORAMA_IP="${PANORAMA_IP:-10.255.0.4}"
 PANORAMA_USER="${PANORAMA_USER:-panadmin}"
 PANORAMA_PORT="${PANORAMA_PORT:-443}"
-LIFETIME="${LIFETIME:-60}"
+LIFETIME="${LIFETIME:-1440}"   # 1440 min = 24h (max dopuszczalny przez PAN-OS)
 
 usage() {
   echo "Usage: $0 [--panorama-ip <IP>] [--username <user>] [--password <pass>] [--lifetime <minutes>]"

@@ -146,6 +146,9 @@ module "bootstrap" {
     module.networking.mgmt_subnet_id,
   ]
 
+  # NAT GW IP wymagany w SA ip_rules – FW wychodzi przez NAT GW podczas bootstrapu
+  # zanim service endpoint jest gotowy. Bez tego SA odrzuca połączenia FW.
+  nat_gateway_ips        = [module.networking.nat_gateway_transit_mgmt_public_ip]
   terraform_operator_ips = var.terraform_operator_ips
 
   tags = var.tags
@@ -230,6 +233,8 @@ module "firewall" {
 
   tags = var.tags
 
+  # Explicit dependency – bootstrap musi być gotowy (SA + blobs + ip_rules)
+  # ZANIM FW zostanie stworzony. customData/userData jest immutable po create.
   depends_on = [module.bootstrap]
 }
 

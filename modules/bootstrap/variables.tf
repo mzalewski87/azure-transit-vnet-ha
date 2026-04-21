@@ -79,6 +79,19 @@ variable "terraform_operator_ips" {
   default     = []
 }
 
+variable "nat_gateway_ips" {
+  description = <<-EOT
+    Public IP(s) of NAT Gateways used by FW management subnet (snet-mgmt) for outbound traffic.
+    Added to bootstrap SA ip_rules as a reliable fallback when Azure service endpoint routing
+    is not ready at FW boot time (service endpoint propagation can take several minutes).
+    FW management traffic exits via NAT Gateway with a static public IP. Without this rule,
+    the SA's default_action=Deny would block bootstrap SA access during FW first boot.
+    Pass: [module.networking.nat_gateway_transit_mgmt_public_ip]
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

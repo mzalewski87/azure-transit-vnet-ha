@@ -58,12 +58,13 @@ resource "azurerm_storage_account" "bootstrap" {
     default_action             = "Deny"
     bypass                     = ["AzureServices"]
     virtual_network_subnet_ids = var.allowed_subnet_ids
-    ip_rules                   = var.terraform_operator_ips
+    # concat: operator IP + NAT GW public IP (FW management outbound)
+    # NAT GW IP jest WYMAGANY – FW próbuje dostać się do SA przez publiczny IP
+    # (NAT GW) podczas bootowania, zanim service endpoint jest gotowy.
+    ip_rules = concat(var.terraform_operator_ips, var.nat_gateway_ips)
   }
-
-  lifecycle {
-    ignore_changes = [network_rules]
-  }
+  # UWAGA: Brak ignore_changes na network_rules – Terraform zarządza regułami.
+  # Manualne zmiany (np. dodane przez az CLI) będą usunięte przy następnym apply.
 }
 
 # Bootstrap container
