@@ -8,52 +8,56 @@
 #   App1 VNet (10.112.0.0/16)        – Application workloads (Apache Hello World)
 #   App2 VNet (10.113.0.0/16)        – Windows Server 2022 DC
 #
-# WYMAGANA KOLEJNOŚĆ WDROŻENIA:
+# WYMAGANA KOLEJNOŚĆ WDROŻENIA (5 faz):
 #
 # ──────────────────────────────────────────────────────────────────────────────
-# PHASE 1a – Infrastruktura bazowa (Management + Transit + Apps):
+# PHASE 1a – Infrastruktura bazowa (bez DC, bez FW):
 #   terraform apply \
 #     -target=azurerm_resource_group.hub \
 #     -target=azurerm_resource_group.app1 \
 #     -target=azurerm_resource_group.app2 \
 #     -target=module.networking \
 #     -target=module.bootstrap \
-#     -target=module.panorama \
-#     -target=module.app2_dc
+#     -target=module.panorama
 #
-#   → Panorama bootuje ~10-15 min. Brak bootstrap – startuje z domyślnym hostname.
-#   → Aktywacja licencji i konfiguracja: Phase 2 (XML API).
+#   → Panorama bootuje ~10-15 min. Bez bootstrap – startuje z domyślnym hostname.
+#   → Aktywacja licencji i konfiguracja: Phase 2a (skrypt).
 #
-# PHASE 2 – Konfiguracja Panoramy (Template Stack, Device Group, Security/NAT rules):
-#   cd phase2-panorama-config/
-#   # Terminal 1: Bastion tunnel
-#   PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
-#   az network bastion tunnel --name bastion-management \
-#     --resource-group rg-transit-hub \
-#     --target-resource-id "$PANORAMA_ID" \
-#     --resource-port 443 --port 44300
-#   # Terminal 2:
-#   terraform init && terraform apply
+# PHASE 2a – Konfiguracja Panoramy (automatycznie — jeden skrypt):
+#   bash scripts/configure-panorama.sh
 #
-# PHASE 1b – VM-Series FW + Load Balancer + Front Door + App:
-#   # 1. Wygeneruj vm-auth-key przez SSH do Panoramy:
-#   #    az network bastion ssh --name bastion-management \
-#   #      --resource-group rg-transit-hub \
-#   #      --target-ip-address 10.255.0.4 \
-#   #      --auth-type password --username panadmin
-#   #    admin@panorama> request authkey add name authkey1 lifetime 60 count 2
-#   # 2. Ustaw panorama_vm_auth_key w terraform.tfvars
-#   terraform apply -target=module.bootstrap   # aktualizuje FW init-cfg z vm-auth-key
+#   → Zarządza Bastion tunnel automatycznie
+#   → Ustawia: hostname, serial number (licencja), vm-auth-key,
+#     Template Stack, Device Group, interfejsy (DHCP), zony, trasy, NAT, security
+#   → Generuje panorama_vm_auth_key.auto.tfvars (auto-wczytywany w Phase 1b)
+#
+# PHASE 1b – VM-Series FW + Load Balancer + Routing + Front Door + App1:
 #   terraform apply \
+#     -target=module.bootstrap \
 #     -target=module.loadbalancer \
 #     -target=module.firewall \
 #     -target=module.routing \
 #     -target=module.frontdoor \
 #     -target=module.app1_app
 #
+#   → vm-auth-key automatycznie wczytany z .auto.tfvars (zero ręcznej edycji!)
+#   → FW bootuje → aktywuje licencję auth codem → łączy się z Panoramą
+#
+# PHASE 2b – Rejestracja FW na Panoramie (automatycznie — jeden skrypt):
+#   bash scripts/register-fw-panorama.sh
+#
+#   → Otwiera Bastion tunnele do FW1, FW2, Panoramy
+#   → Odczytuje seriale FW (generowane dynamicznie przy aktywacji)
+#   → Ustawia auth-key na FW, dodaje seriale do Panoramy (mgt-config + DG + TS)
+#   → Commit na Panoramie → FW connected + in sync
+#
+# PHASE 3 – DC (opcjonalnie, niezależnie):
+#   terraform apply -target=module.app2_dc
+#
 # DLACZEGO ta kolejność:
 #   FW init-cfg zawiera tplname= i dgname= które muszą istnieć w Panoramie.
-#   Phase 2 tworzy je. FW próbuje zarejestrować się przy starcie.
+#   Phase 2a tworzy je. FW próbuje zarejestrować się przy starcie.
+#   Phase 2b dodaje dynamiczne seriale FW do Panoramy po ich aktywacji.
 # ──────────────────────────────────────────────────────────────────────────────
 ###############################################################################
 

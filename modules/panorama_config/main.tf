@@ -58,24 +58,30 @@ resource "panos_panorama_device_group" "transit" {
 ###############################################################################
 
 # ethernet1/1 - Untrust (external, faces internet/External LB)
-# DHCP IP assignment configured on device after bootstrap (typical for Azure)
+# Azure VM NIC has static IP (set in Terraform). PAN-OS uses DHCP client to
+# obtain that exact IP from Azure fabric — deterministic, always matches NIC config.
+# Required: NAT rules with interface_address need an IP on the interface.
 resource "panos_panorama_ethernet_interface" "untrust" {
-  name     = "ethernet1/1"
-  template = panos_panorama_template.transit.name
-  vsys     = "vsys1"
-  mode     = "layer3"
-  comment  = "Untrust interface - External LB / Internet"
+  name                      = "ethernet1/1"
+  template                  = panos_panorama_template.transit.name
+  vsys                      = "vsys1"
+  mode                      = "layer3"
+  enable_dhcp               = true
+  create_dhcp_default_route = false   # static routes in VR handle routing
+  comment                   = "Untrust interface - External LB / Internet (DHCP from Azure)"
 
   depends_on = [panos_panorama_template.transit]
 }
 
 # ethernet1/2 - Trust (internal, faces Spoke VNets via Internal LB)
 resource "panos_panorama_ethernet_interface" "trust" {
-  name     = "ethernet1/2"
-  template = panos_panorama_template.transit.name
-  vsys     = "vsys1"
-  mode     = "layer3"
-  comment  = "Trust interface - Internal LB / Spoke VNets"
+  name                      = "ethernet1/2"
+  template                  = panos_panorama_template.transit.name
+  vsys                      = "vsys1"
+  mode                      = "layer3"
+  enable_dhcp               = true
+  create_dhcp_default_route = false
+  comment                   = "Trust interface - Internal LB / Spoke VNets (DHCP from Azure)"
 
   depends_on = [panos_panorama_template.transit]
 }
