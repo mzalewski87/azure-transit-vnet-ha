@@ -17,21 +17,31 @@
 #   DEST_AUTH  - Remote path (e.g., "fw1/license/authcodes")
 #   FW_NAME    - FW identifier for logging (e.g., "FW1")
 ###############################################################################
-set -euo pipefail
+# NOTE: intentionally NO 'set -e' — we handle curl errors in retry loop
+set -uo pipefail
 
 MAX_RETRIES=5
 RETRY_DELAY=30
 API_VERSION="2022-11-02"
 
 # Validate required env vars
+missing=""
 for var in SA_NAME SA_KEY SHARE SRC_CFG DEST_CFG SRC_AUTH DEST_AUTH; do
   if [ -z "${!var:-}" ]; then
-    echo "[ERROR] Missing required env var: $var" >&2
-    exit 1
+    missing="$missing $var"
   fi
 done
+if [ -n "$missing" ]; then
+  echo "[ERROR] Missing required env vars:$missing" >&2
+  exit 1
+fi
 
 FW_NAME="${FW_NAME:-FW}"
+
+echo "  [DEBUG] SA_NAME=${SA_NAME}"
+echo "  [DEBUG] SHARE=${SHARE}"
+echo "  [DEBUG] SRC_CFG=${SRC_CFG} exists=$(test -f "${SRC_CFG}" && echo YES || echo NO)"
+echo "  [DEBUG] SRC_AUTH=${SRC_AUTH} exists=$(test -f "${SRC_AUTH}" && echo YES || echo NO)"
 
 # Generate Account SAS token locally via Python (zero network calls)
 SAS=$(python3 -c "
@@ -53,6 +63,7 @@ if [ -z "$SAS" ]; then
   echo "[ERROR] Failed to generate SAS token" >&2
   exit 1
 fi
+echo "  [DEBUG] SAS token generated (length=${#SAS})"
 
 BASE_URL="https://${SA_NAME}.file.core.windows.net/${SHARE}"
 
@@ -60,45 +71,61 @@ upload_file() {
   local SRC="$1" DEST="$2"
 
   if [ ! -f "$SRC" ]; then
-    echo "  [ERROR] Source file not found: $SRC" >&2
+    echo "  [ERROR] Source file not found: $SRC (pwd=$(pwd))" >&2
     return 1
   fi
 
   local FILE_SIZE
   FILE_SIZE=$(wc -c < "$SRC" | tr -d ' ')
+  echo "  [INFO] Uploading $SRC -> $DEST ($FILE_SIZE bytes)"
 
   for i in $(seq 1 $MAX_RETRIES); do
     # Step 1: Create file (set size, overwrites existing)
-    HTTP1=$(curl -sk -X PUT \
+    # || true prevents set -e from killing on curl connection errors
+    local RESP1
+    RESP1=$(curl -sk -X PUT \
       "${BASE_URL}/${DEST}?${SAS}" \
       -H "x-ms-version: ${API_VERSION}" \
       -H "x-ms-type: file" \
       -H "x-ms-content-length: ${FILE_SIZE}" \
       -H "Content-Length: 0" \
-      -o /dev/null -w "%{http_code}" 2>/dev/null)
+      -w "\n%{http_code}" 2>&1) || true
+
+    local HTTP1
+    HTTP1=$(echo "$RESP1" | tail -1)
+    local BODY1
+    BODY1=$(echo "$RESP1" | head -n -1)
 
     if [ "$HTTP1" != "201" ]; then
-      echo "  [RETRY ${i}/${MAX_RETRIES}] Create ${DEST}: HTTP ${HTTP1}, waiting ${RETRY_DELAY}s..."
+      echo "  [RETRY ${i}/${MAX_RETRIES}] Create ${DEST}: HTTP=${HTTP1}, waiting ${RETRY_DELAY}s..."
+      echo "  [RETRY] Response: $(echo "$BODY1" | head -3)"
       sleep $RETRY_DELAY
       continue
     fi
 
     # Step 2: Upload content (Put Range)
-    HTTP2=$(curl -sk -X PUT \
+    local RESP2
+    RESP2=$(curl -sk -X PUT \
       "${BASE_URL}/${DEST}?comp=range&${SAS}" \
       -H "x-ms-version: ${API_VERSION}" \
       -H "x-ms-range: bytes=0-$((FILE_SIZE - 1))" \
       -H "x-ms-write: update" \
       -H "Content-Length: ${FILE_SIZE}" \
       --data-binary "@${SRC}" \
-      -o /dev/null -w "%{http_code}" 2>/dev/null)
+      -w "\n%{http_code}" 2>&1) || true
+
+    local HTTP2
+    HTTP2=$(echo "$RESP2" | tail -1)
+    local BODY2
+    BODY2=$(echo "$RESP2" | head -n -1)
 
     if [ "$HTTP2" = "201" ]; then
       echo "  [OK] Uploaded ${DEST} (${FILE_SIZE} bytes)"
       return 0
     fi
 
-    echo "  [RETRY ${i}/${MAX_RETRIES}] PutRange ${DEST}: HTTP ${HTTP2}, waiting ${RETRY_DELAY}s..."
+    echo "  [RETRY ${i}/${MAX_RETRIES}] PutRange ${DEST}: HTTP=${HTTP2}, waiting ${RETRY_DELAY}s..."
+    echo "  [RETRY] Response: $(echo "$BODY2" | head -3)"
     sleep $RETRY_DELAY
   done
 
@@ -108,5 +135,12 @@ upload_file() {
 
 echo "=== Uploading ${FW_NAME} bootstrap files ==="
 upload_file "$SRC_CFG" "$DEST_CFG"
+rc1=$?
 upload_file "$SRC_AUTH" "$DEST_AUTH"
+rc2=$?
+
+if [ $rc1 -ne 0 ] || [ $rc2 -ne 0 ]; then
+  echo "=== ${FW_NAME} bootstrap upload FAILED ===" >&2
+  exit 1
+fi
 echo "=== ${FW_NAME} bootstrap upload complete ==="
