@@ -290,10 +290,9 @@ resource "azurerm_linux_virtual_machine" "fw1" {
   }
 
   # Bootstrap: points VM-Series to Azure Storage Account bootstrap package
-  # Managed Identity provides secure access without static storage keys
-  # PAN-OS 11.x czyta bootstrap pointer z user_data (Azure userData).
-  # custom_data (Azure customData) zachowany dla kompatybilności wstecznej.
-  user_data   = var.bootstrap_custom_data_fw1
+  # custom_data wysyłane podczas tworzenia VM (pre-boot).
+  # userData (dla PAN-OS 11.x/12.x) ustawiane przez null_resource po dealokacji VM
+  # aby ominąć bug azurerm_linux_virtual_machine nie propagujący user_data dla marketplace VMs.
   custom_data = var.bootstrap_custom_data_fw1
 
   identity {
@@ -302,6 +301,27 @@ resource "azurerm_linux_virtual_machine" "fw1" {
   }
 
   depends_on = [null_resource.accept_panos_terms]
+}
+
+###############################################################################
+# FW1 – set userData via az CLI after VM creation
+# Workaround: azurerm_linux_virtual_machine.user_data nie jest propagowane
+# do Azure ARM API dla marketplace VMs z blokiem plan{}.
+# Sekwencja: deallocate (force-stop przed zapisem config przez PAN-OS) →
+#   az vm update --user-data (poprawny single-line base64) →
+#   az vm start (PAN-OS first boot czyta userData z IMDS → bootstrap)
+###############################################################################
+resource "null_resource" "fw1_set_userdata" {
+  triggers = {
+    vm_id          = azurerm_linux_virtual_machine.fw1.id
+    bootstrap_hash = sha256(var.bootstrap_custom_data_fw1)
+  }
+
+  provisioner "local-exec" {
+    command = "az vm deallocate --ids ${azurerm_linux_virtual_machine.fw1.id} && az vm update --ids ${azurerm_linux_virtual_machine.fw1.id} --user-data '${var.bootstrap_custom_data_fw1}' && az vm start --ids ${azurerm_linux_virtual_machine.fw1.id}"
+  }
+
+  depends_on = [azurerm_linux_virtual_machine.fw1]
 }
 
 ###############################################################################
@@ -345,7 +365,6 @@ resource "azurerm_linux_virtual_machine" "fw2" {
     product   = "vmseries-flex"
   }
 
-  user_data   = var.bootstrap_custom_data_fw2
   custom_data = var.bootstrap_custom_data_fw2
 
   identity {
@@ -354,4 +373,20 @@ resource "azurerm_linux_virtual_machine" "fw2" {
   }
 
   depends_on = [null_resource.accept_panos_terms]
+}
+
+###############################################################################
+# FW2 – set userData via az CLI after VM creation (identically as FW1)
+###############################################################################
+resource "null_resource" "fw2_set_userdata" {
+  triggers = {
+    vm_id          = azurerm_linux_virtual_machine.fw2.id
+    bootstrap_hash = sha256(var.bootstrap_custom_data_fw2)
+  }
+
+  provisioner "local-exec" {
+    command = "az vm deallocate --ids ${azurerm_linux_virtual_machine.fw2.id} && az vm update --ids ${azurerm_linux_virtual_machine.fw2.id} --user-data '${var.bootstrap_custom_data_fw2}' && az vm start --ids ${azurerm_linux_virtual_machine.fw2.id}"
+  }
+
+  depends_on = [azurerm_linux_virtual_machine.fw2]
 }

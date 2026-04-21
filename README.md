@@ -620,39 +620,38 @@ admin@panorama> request license fetch
 
 ### Bootstrap FW nie działa (Media Detection Failed)
 
-Bootstrap wymaga **dwóch warunków jednocześnie**:
-1. FW VM musi mieć `customData`/`userData` z wskaźnikiem na SA
-2. SA musi być dostępne z FW przez sieć
+**Root cause (zdiagnozowany):** `azurerm_linux_virtual_machine.user_data` NIE jest propagowane do Azure ARM API dla marketplace VMs z blokiem `plan{}`. PAN-OS 11.x/12.x czyta bootstrap pointer wyłącznie z `userData` (IMDS endpoint), nie z `customData`. Efekt: VM startuje bez wiedzy gdzie szukać SA → "Media Detection: Failed".
 
-**Diagnoza krok po kroku:**
+**Fix w kodzie (już wdrożony):** `null_resource.fw1_set_userdata` w `modules/firewall/main.tf` wykonuje:
+1. `az vm deallocate` – force-stop VM przed pierwszym zapisem config przez PAN-OS
+2. `az vm update --user-data` – ustawia userData z poprawnym single-line base64
+3. `az vm start` – PAN-OS first boot czyta userData z IMDS → bootstrap działa
+
+**Weryfikacja po `terraform apply`:**
 
 ```bash
-# 1. Sprawdź czy FW VM ma customData (MUSI BYC NIEPUSTE)
-az vm show -g rg-transit-hub -n vm-panos-fw1 --query "customData" -o tsv | base64 -d 2>/dev/null || echo "[PUSTE - BLAD!]"
-az vm show -g rg-transit-hub -n vm-panos-fw1 --query "userData" -o tsv | base64 -d 2>/dev/null || echo "[PUSTE - BLAD!]"
+# Sprawdź userData (Azure API zwraca userData w GET responses)
+az vm show -g rg-transit-hub -n vm-panos-fw1 --query "userData" -o tsv | base64 -d
 
-# 2. Sprawdź zawartość init-cfg w SA (użyj storage key, nie --auth-mode login)
+# Sprawdź zawartość init-cfg w SA
 SA=$(terraform output -raw bootstrap_storage_account)
 SA_KEY=$(az storage account keys list --account-name "$SA" -g rg-transit-hub --query "[0].value" -o tsv)
 az storage blob download --account-name "$SA" --container-name bootstrap \
   --name fw1/config/init-cfg.txt --account-key "$SA_KEY" --file /tmp/init-cfg.txt && cat /tmp/init-cfg.txt
 
-# 3. Na FW – sprawdź bootstrap log
-admin@fw1> less mp-log bootstrap.log
+# Na FW po ~20 min boot (przez Bastion)
 admin@fw1> show system bootstrap status
+admin@fw1> show system info | match hostname
 ```
 
-**Jeśli customData/userData jest PUSTE** – FW nie wie gdzie szukać SA. Wymagany destroy + recreate:
-
-```bash
-# KRYTYCZNE: customData jest immutable po create VM – wymaga destroy + recreate FW
-terraform destroy -target=module.firewall
-
-# Upewnij się że bootstrap SA jest gotowy PRZED FW
-terraform apply -target=module.bootstrap
-
-# Teraz stwórz FW z poprawnym customData (bootstrap is a depends_on)
-terraform apply -target=module.loadbalancer -target=module.firewall
+**Oczekiwany wynik poprawnego bootstrapu:**
+```
+hostname: fw1-transit-hub
+Bootstrap Phase    Status
+===============    ======
+Media Detection    Succeeded
+Config Retrieval   Succeeded
+Bootstrap         Completed
 ```
 
 **Jeśli SA niedostępne z FW (sprawdź reguły sieci):**
