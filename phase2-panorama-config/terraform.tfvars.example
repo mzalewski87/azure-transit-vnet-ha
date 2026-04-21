@@ -2,86 +2,47 @@
 # Phase 2 – terraform.tfvars.example
 # Panorama Configuration via API + panos provider
 #
-# Skopiuj do terraform.tfvars i uzupełnij wartości:
 #   cp terraform.tfvars.example terraform.tfvars
 #
 # PRZED URUCHOMIENIEM:
-#   1. Phase 1a musi być zakończona (Panorama VM uruchomiona)
-#   2. Otwórz Bastion tunnel w osobnym terminalu:
+#   1. Phase 1a zakończona (Panorama VM uruchomiona)
+#   2. Bastion tunnel w osobnym terminalu:
 #        PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
 #        az network bastion tunnel \
-#          --name bastion-management \
-#          --resource-group rg-transit-hub \
+#          --name bastion-management --resource-group rg-transit-hub \
 #          --target-resource-id "$PANORAMA_ID" \
 #          --resource-port 443 --port 44300
-#   3. Uzupełnij terraform.tfvars i uruchom: terraform init && terraform apply
+#   3. terraform init && terraform apply
 ###############################################################################
 
-#------------------------------------------------------------------------------
-# Panorama connection (przez Bastion tunnel na localhost)
-#------------------------------------------------------------------------------
-panorama_hostname = "127.0.0.1"    # NIE zmieniaj gdy używasz Bastion tunnel
-panorama_port     = 44300          # Musi zgadzać się z --port w bastion tunnel
+# Panorama connection (Bastion tunnel)
+panorama_hostname = "127.0.0.1"
+panorama_port     = 44300
 panorama_username = "panadmin"
-panorama_password = "REPLACE_ME_Admin@Password1!"   # To samo co admin_password w Phase 1
+panorama_password = "REPLACE_ME_Admin@Password1!"
 
-#------------------------------------------------------------------------------
-# Docelowy hostname Panoramy (ustawiany przez XML API)
-# Musi zgadzać się z panorama_hostname w root terraform.tfvars
-#------------------------------------------------------------------------------
+# Hostname ustawiany na Panoramie
 panorama_target_hostname = "panorama-transit-hub"
 
-#------------------------------------------------------------------------------
-# Licencja Panoramy (aktywacja przez XML API)
-#
-# PROCES:
-#   1. CSP Portal (my.paloaltonetworks.com):
-#      Assets → Add Product → wpisz auth-code → wybierz Panorama
-#      CSP przypisze Serial Number (format: 007300XXXXXXX)
-#   2. Skopiuj Serial Number i wpisz poniżej
-#   3. Phase 2 wykona automatycznie:
-#      a. Ustaw serial number w Panoramie (config set)
-#      b. Commit
-#      c. request license fetch  ← Panorama pobiera licencję z serwera PANW
-#
-# Jeśli puste ("") – krok aktywacji jest pomijany
-#------------------------------------------------------------------------------
+# Serial number z CSP Portal (my.paloaltonetworks.com → Assets → Add Product)
+# Puste = pomijamy aktywację licencji
 panorama_serial_number = ""   # np. "007300202012345"
 
-#------------------------------------------------------------------------------
-# Panorama Template & Device Group
-# Muszą zgadzać się z panorama_template_stack i panorama_device_group w Phase 1
-#------------------------------------------------------------------------------
+# vm-auth-key lifetime w minutach (1440 = 24h, max 8760 = 365 dni)
+vm_auth_key_lifetime = 1440
+
+# Template & Device Group (muszą zgadzać się z Phase 1 bootstrap init-cfg)
 template_name       = "Transit-VNet-Template"
 template_stack_name = "Transit-VNet-Stack"
 device_group_name   = "Transit-VNet-DG"
 
-#------------------------------------------------------------------------------
-# Network CIDRs – muszą zgadzać się z Phase 1 (terraform output)
-#
-# Pobierz wartości z Phase 1:
-#   cd ..
-#   terraform output transit_vnet_cidr          # np. 10.0.0.0/16 lub 10.110.0.0/16
-#   terraform output app1_vnet_address_space
-#   terraform output app2_vnet_address_space
-#   terraform output app1_vm_private_ip
-#   terraform output external_lb_public_ip
-#------------------------------------------------------------------------------
-# snet-private = cidrsubnet(transit, 8, 0)    FW eth1/2 (trust)
-trust_subnet_cidr = "10.0.0.0/24"    # REPLACE: np. 10.0.0.0/24 lub 10.110.0.0/24
+# Network CIDRs – domyślne wartości zgadzają się z architekturą referencyjną
+# Zmień TYLKO jeśli zmieniłeś VNet CIDRy w Phase 1
+trust_subnet_cidr   = "10.110.0.0/24"
+untrust_subnet_cidr = "10.110.129.0/24"
+spoke1_vnet_cidr    = "10.112.0.0/16"
+spoke2_vnet_cidr    = "10.113.0.0/16"
 
-# snet-public  = cidrsubnet(transit, 8, 129)  FW eth1/1 (untrust)
-untrust_subnet_cidr = "10.0.129.0/24"  # REPLACE: np. 10.0.129.0/24 lub 10.110.129.0/24
-
-# App VNets (Spoke)
-spoke1_vnet_cidr = "10.112.0.0/16"   # REPLACE: App1 VNet CIDR z Phase 1
-spoke2_vnet_cidr = "10.113.0.0/16"   # REPLACE: App2 VNet CIDR z Phase 1
-
-#------------------------------------------------------------------------------
-# Endpoints – pobierz z: cd .. && terraform output
-#------------------------------------------------------------------------------
-# IP serwera Apache w App1 (cel DNAT dla ruchu inbound)
-apache_server_ip = "10.112.0.4"     # REPLACE: terraform output apache_server_private_ip
-
-# Publiczny IP External LB (frontend ruchu inbound)
-external_lb_public_ip = "REPLACE_ME_EXTERNAL_LB_PUBLIC_IP"  # terraform output external_lb_public_ip
+# Endpoints
+apache_server_ip      = "10.112.0.4"
+external_lb_public_ip = "REPLACE_ME"  # cd .. && terraform output external_lb_public_ip

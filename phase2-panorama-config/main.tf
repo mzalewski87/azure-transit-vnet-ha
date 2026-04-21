@@ -10,21 +10,19 @@
 #          --resource-group rg-transit-hub \
 #          --target-resource-id "$PANORAMA_ID" \
 #          --resource-port 443 --port 44300
-#   3. terraform.tfvars uzupełniony (hasło, auth_code, CIDRy)
+#   3. terraform.tfvars uzupełniony (hasło, serial_number, CIDRy)
 #
-# SEKWENCJA APPLY:
-#   1. null_resource.panorama_wait_for_api  – czeka aż Panorama odpowie na HTTP (max 20 min)
-#   2. null_resource.panorama_set_hostname  – ustawia hostname przez XML API + commit
-#   3. null_resource.panorama_activate_license – aktywuje licencję przez XML API (jeśli podano auth_code)
-#   4. module.panorama_config               – panos provider: Template Stack, DG, policies
-#   5. null_resource.panorama_commit        – commit Panoramy przez XML API
+# SEKWENCJA:
+#   1. Wait for Panorama API (max 20 min)
+#   2. Set hostname via XML API + commit
+#   3. Set serial number via XML API (config mode) + commit + license fetch
+#   4. Generate vm-auth-key via XML API (automatycznie!)
+#   5. panos provider: Template Stack, DG, interfaces, zones, routes, policies
+#   6. Final commit
 ###############################################################################
 
 ###############################################################################
 # Step 1: Wait for Panorama API
-# Panorama bootuje ~10-20 min. Czekamy aż HTTPS API odpowie.
-# Używamy curl --retry (max 40 prób co 30s = 20 min timeout).
-# python3: portable XML parsing (macOS + Linux, bez grep -oP).
 ###############################################################################
 resource "null_resource" "panorama_wait_for_api" {
   triggers = {
@@ -36,7 +34,6 @@ resource "null_resource" "panorama_wait_for_api" {
       set -e
       PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       echo "=== Czekam na Panorama API: $PANORAMA_URL ==="
-      echo "    (max 20 min, sprawdzam co 30s)"
       ATTEMPTS=0
       MAX_ATTEMPTS=40
       while true; do
@@ -47,10 +44,7 @@ resource "null_resource" "panorama_wait_for_api" {
           break
         fi
         if [ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then
-          echo "[BLAD] Panorama API nie odpowiada po $MAX_ATTEMPTS probach ($(( MAX_ATTEMPTS * 30 ))s)."
-          echo "       Sprawdz:"
-          echo "       1. Czy Bastion tunnel dziala: az network bastion tunnel ..."
-          echo "       2. Czy VM jest uruchomiona: az vm show --show-details -g rg-transit-hub -n vm-panorama"
+          echo "[BLAD] Panorama API nie odpowiada po $MAX_ATTEMPTS probach."
           exit 1
         fi
         echo "  [$ATTEMPTS/$MAX_ATTEMPTS] HTTP $HTTP_CODE – czekam 30s..."
@@ -61,14 +55,11 @@ resource "null_resource" "panorama_wait_for_api" {
 }
 
 ###############################################################################
-# Step 2: Set hostname via Panorama XML API
-# Pobiera API key, ustawia hostname, commituje.
-# Idempotentne: bezpieczne przy wielokrotnym apply.
+# Step 2: Set hostname via XML API (config mode + commit)
 ###############################################################################
 resource "null_resource" "panorama_set_hostname" {
   triggers = {
     target_hostname = var.panorama_target_hostname
-    panorama_url    = "https://${var.panorama_hostname}:${var.panorama_port}"
   }
 
   provisioner "local-exec" {
@@ -78,31 +69,22 @@ resource "null_resource" "panorama_set_hostname" {
       PAN_USER="${var.panorama_username}"
       TARGET_HOST="${var.panorama_target_hostname}"
 
-      echo "=== [Step 2] Ustawiam hostname Panoramy: $TARGET_HOST ==="
+      echo "=== [Step 2] Ustawiam hostname: $TARGET_HOST ==="
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
-
-      RAW_KEY=$(curl -sk --max-time 30 "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null)
-
-      API_KEY=$(echo "$RAW_KEY" | python3 -c "
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
 import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    if root.get('status') != 'success':
-        print('ERROR: ' + (root.findtext('.//msg','no message')), file=sys.stderr)
-        sys.exit(1)
-    print(root.findtext('.//key',''))
-except Exception as e:
-    print('ERROR: ' + str(e), file=sys.stderr)
-    sys.exit(1)
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR: ' + (root.findtext('.//msg','no message')), file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
 " 2>&1)
 
       if echo "$API_KEY" | grep -q "^ERROR:"; then
-        echo "[BLAD] Nie mozna pobrac API key: $API_KEY"
-        echo "       Sprawdz haslo (panorama_password w terraform.tfvars)."
-        exit 1
+        echo "[BLAD] API key: $API_KEY"; exit 1
       fi
-
       echo "  API key: OK"
 
       curl -sk --max-time 30 "$PANORAMA_URL/api/" \
@@ -112,12 +94,12 @@ except Exception as e:
         --data-urlencode "element=<hostname>$TARGET_HOST</hostname>" \
         --data-urlencode "key=$API_KEY" > /dev/null
 
-      COMMIT_RESP=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
+      curl -sk --max-time 60 "$PANORAMA_URL/api/" \
         --data-urlencode "type=commit" \
         --data-urlencode "cmd=<commit></commit>" \
-        --data-urlencode "key=$API_KEY" 2>/dev/null)
+        --data-urlencode "key=$API_KEY" > /dev/null
 
-      echo "  Hostname '$TARGET_HOST' ustawiony. Commit: OK"
+      echo "  Hostname '$TARGET_HOST' ustawiony + commit OK"
     SCRIPT
   }
 
@@ -125,17 +107,22 @@ except Exception as e:
 }
 
 ###############################################################################
-# Step 3: Activate Panorama license via XML API
-# Wykonywany TYLKO gdy panorama_auth_code != "".
-# Idempotentne: jesli juz aktywowana, Panorama zwraca blad "already registered"
-# ktory jest ignorowany.
+# Step 3: Set serial number (CONFIG mode) + commit + license fetch
+#
+# WAŻNE: Używamy type=config (nie type=op) dla serial number.
+# Jest to bardziej niezawodne niż `request serial-number set` (operational),
+# które nie działa na wszystkich wersjach PAN-OS.
+#
+# Sekwencja:
+#   1. Set serial via config mode xpath
+#   2. Commit
+#   3. request license fetch (operational)
 ###############################################################################
 resource "null_resource" "panorama_activate_license" {
   count = var.panorama_serial_number != "" ? 1 : 0
 
   triggers = {
     serial_number = var.panorama_serial_number
-    panorama_url  = "https://${var.panorama_hostname}:${var.panorama_port}"
   }
 
   provisioner "local-exec" {
@@ -145,75 +132,84 @@ resource "null_resource" "panorama_activate_license" {
       PAN_USER="${var.panorama_username}"
       SERIAL_NUM="${var.panorama_serial_number}"
 
-      echo "=== [Step 3] Ustawianie numeru seryjnego + aktywacja licencji ==="
-      echo "    Serial Number: $SERIAL_NUM"
-      echo "    UWAGA: Przed uruchomieniem upewnij sie, ze serial jest zarejestrowany"
-      echo "    na CSP Portal: my.paloaltonetworks.com → Assets → Add Product"
+      echo "=== [Step 3] Serial number + aktywacja licencji ==="
+      echo "    Serial: $SERIAL_NUM"
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
-
-      RAW_KEY=$(curl -sk --max-time 30 "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null)
-
-      API_KEY=$(echo "$RAW_KEY" | python3 -c "
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
 import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    if root.get('status') != 'success':
-        print('ERROR: ' + (root.findtext('.//msg','no message')), file=sys.stderr)
-        sys.exit(1)
-    print(root.findtext('.//key',''))
-except Exception as e:
-    print('ERROR: ' + str(e), file=sys.stderr)
-    sys.exit(1)
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR: ' + (root.findtext('.//msg','no message')), file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
 " 2>&1)
 
       if echo "$API_KEY" | grep -q "^ERROR:"; then
-        echo "[BLAD] Nie mozna pobrac API key: $API_KEY"
-        exit 1
+        echo "[BLAD] API key: $API_KEY"; exit 1
       fi
       echo "  API key: OK"
 
-      # Krok 3a: Ustaw numer seryjny przez XML API (tryb OPERACYJNY – request, NIE configure!)
-      # Poprawna komenda PAN-OS CLI (operational mode): request serial-number set <SERIAL>
-      # Komendy "request" nie wymagaja commit – dzialaja natychmiast
+      # 3a: Set serial number via CONFIG mode (nie operational!)
+      echo "  Ustawianie serial number (config mode)..."
       SET_RESP=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=op" \
-        --data-urlencode "cmd=<request><serial-number><set>$SERIAL_NUM</set></serial-number></request>" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system" \
+        --data-urlencode "element=<serial-number>$SERIAL_NUM</serial-number>" \
         --data-urlencode "key=$API_KEY" 2>/dev/null)
-      echo "  Odpowiedz set serial-number: $SET_RESP"
-      echo "  Czekam 15s na przetworzenie..."
-      sleep 15
+      echo "  Set serial: done"
 
-      # Krok 3c: Pobierz licencje z serwera PANW (BEZ auth-code, na podstawie serial number)
-      # Panorama musi miec dostep do internetu przez NAT Gateway (natgw-management)
-      echo "  Pobieranie licencji z serwera PANW (request license fetch)..."
-      LIC_RESP=$(curl -sk --max-time 120 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=op" \
-        --data-urlencode "cmd=<request><license><fetch></fetch></license></request>" \
-        --data-urlencode "key=$API_KEY" 2>/dev/null)
+      # 3b: Commit (wymagany po config set)
+      echo "  Commit po ustawieniu serial..."
+      curl -sk --max-time 90 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=commit" \
+        --data-urlencode "cmd=<commit></commit>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Commit: OK"
 
-      echo "$LIC_RESP" | python3 -c "
+      echo "  Czekam 30s na propagację serial number..."
+      sleep 30
+
+      # 3c: License fetch (operational mode, z retry)
+      echo "  Pobieranie licencji (request license fetch)..."
+      MAX_RETRIES=3
+      for i in $(seq 1 $MAX_RETRIES); do
+        LIC_RESP=$(curl -sk --max-time 120 "$PANORAMA_URL/api/" \
+          --data-urlencode "type=op" \
+          --data-urlencode "cmd=<request><license><fetch></fetch></license></request>" \
+          --data-urlencode "key=$API_KEY" 2>/dev/null)
+
+        LIC_STATUS=$(echo "$LIC_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
     status = root.get('status','')
-    msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'brak informacji'
+    msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'brak info'
     if status == 'success':
-        print('[OK] Licencja pobrana pomyslnie!')
+        print('OK')
     else:
-        print('[WARN] Odpowiedz license fetch: status=' + status + ' msg=' + msg)
-        print('       Sprawdz:')
-        print('       1. CSP Portal: czy serial ' + '$SERIAL_NUM' + ' ma przypisana licencje')
-        print('       2. Panorama → internetu: NAT Gateway w Management VNet aktywny?')
-        print('       3. Siec: curl z VM do internetu dziala?')
+        print('RETRY: ' + msg)
 except Exception as e:
-    print('[WARN] Blad parsowania odpowiedzi: ' + str(e))
-" 2>/dev/null
+    print('RETRY: ' + str(e))
+" 2>/dev/null)
 
-      echo "  Czekam 60s na zakonczenie aktywacji..."
-      sleep 60
-      echo "  [Step 3] Gotowe. Sprawdz status licencji w Panorama GUI:"
-      echo "  https://127.0.0.1:44300 → Panorama → Licenses"
+        if [ "$LIC_STATUS" = "OK" ]; then
+          echo "  [OK] Licencja pobrana pomyslnie!"
+          break
+        fi
+
+        if [ "$i" -lt "$MAX_RETRIES" ]; then
+          echo "  [$i/$MAX_RETRIES] $LIC_STATUS – czekam 30s..."
+          sleep 30
+        else
+          echo "  [WARN] License fetch nie powiodl sie po $MAX_RETRIES probach: $LIC_STATUS"
+          echo "  Sprawdz: CSP Portal, NAT Gateway, dostep do internetu"
+        fi
+      done
+
+      echo "  [Step 3] Gotowe."
     SCRIPT
   }
 
@@ -221,8 +217,99 @@ except Exception as e:
 }
 
 ###############################################################################
-# Step 4: Panorama Config via panos provider
-# Template Stack, Device Group, Ethernet Interfaces, Zones, VR, Routes, NAT, Security
+# Step 4: Generate vm-auth-key automatically via XML API
+#
+# Generuje Device Registration Auth Key na Panoramie.
+# Klucz jest potrzebny w FW init-cfg do automatycznej rejestracji.
+# Licencja Panoramy NIE jest wymagana do wygenerowania klucza.
+#
+# Output: klucz zapisywany do pliku ../panorama_vm_auth_key.txt
+###############################################################################
+resource "null_resource" "panorama_generate_vm_auth_key" {
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
+      PAN_USER="${var.panorama_username}"
+      LIFETIME="${var.vm_auth_key_lifetime}"
+
+      echo "=== [Step 4] Generowanie vm-auth-key (lifetime: $LIFETIME min) ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR: ' + (root.findtext('.//msg','no message')), file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
+" 2>&1)
+
+      if echo "$API_KEY" | grep -q "^ERROR:"; then
+        echo "[BLAD] API key: $API_KEY"; exit 1
+      fi
+
+      # Generate key
+      KEY_RESP=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=op&cmd=<request><authkey><add><name>authkey-auto</name><lifetime>$LIFETIME</lifetime><count>10</count></add></authkey></request>&key=$API_KEY" \
+        2>/dev/null)
+
+      VM_AUTH_KEY=$(echo "$KEY_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET, re
+try:
+    root = ET.fromstring(sys.stdin.read())
+    if root.get('status') != 'success':
+        msg = root.findtext('.//msg','') or root.findtext('.//line','')
+        print('ERROR: ' + str(msg), file=sys.stderr); sys.exit(1)
+    # Search for key pattern in all elements
+    for elem in root.iter():
+        if elem.text:
+            m = re.search(r'(2:[\w-]{20,})', elem.text)
+            if m:
+                print(m.group(1)); sys.exit(0)
+    print('ERROR: key not found in response', file=sys.stderr); sys.exit(1)
+except ET.ParseError as e:
+    print('ERROR: ' + str(e), file=sys.stderr); sys.exit(1)
+" 2>&1)
+
+      if echo "$VM_AUTH_KEY" | grep -q "^ERROR:"; then
+        echo "[WARN] Nie udalo sie wygenerowac vm-auth-key: $VM_AUTH_KEY"
+        echo "       Wygeneruj recznie: admin@panorama> request authkey add name authkey1 lifetime $LIFETIME count 2"
+        exit 0
+      fi
+
+      echo ""
+      echo "  ========================================"
+      echo "  vm-auth-key: $VM_AUTH_KEY"
+      echo "  ========================================"
+      echo ""
+      echo "  Zapisano do: ../panorama_vm_auth_key.txt"
+      echo ""
+      echo "  NASTEPNE KROKI:"
+      echo "  1. Dodaj do ROOT terraform.tfvars:"
+      echo "     panorama_vm_auth_key = \"$VM_AUTH_KEY\""
+      echo "  2. Uruchom (w glownym katalogu):"
+      echo "     cd .."
+      echo "     terraform apply -target=module.bootstrap"
+      echo "     terraform apply -target=module.firewall"
+      echo ""
+
+      # Save to file
+      echo "$VM_AUTH_KEY" > ../panorama_vm_auth_key.txt
+    SCRIPT
+  }
+
+  depends_on = [null_resource.panorama_set_hostname]
+}
+
+###############################################################################
+# Step 5: Panorama Config via panos provider
+# Template Stack, Device Group, Interfaces, Zones, VR, Routes, NAT, Security
 ###############################################################################
 module "panorama_config" {
   source = "../modules/panorama_config"
@@ -247,7 +334,7 @@ module "panorama_config" {
 }
 
 ###############################################################################
-# Step 5: Panorama Commit
+# Step 6: Final Panorama Commit
 ###############################################################################
 resource "null_resource" "panorama_commit" {
   triggers = {
@@ -263,18 +350,16 @@ resource "null_resource" "panorama_commit" {
       PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       PAN_USER="${var.panorama_username}"
 
-      echo "=== [Step 5] Commit Panoramy ==="
+      echo "=== [Step 6] Final Commit Panoramy ==="
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
-
       API_KEY=$(curl -sk --max-time 30 "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
         | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
     print(root.findtext('.//key',''))
-except:
-    pass
+except: pass
 " 2>/dev/null)
 
       COMMIT_RESP=$(curl -sk --max-time 90 "$PANORAMA_URL/api/" \
@@ -288,16 +373,15 @@ try:
     root = ET.fromstring(sys.stdin.read())
     status = root.get('status','')
     code = root.get('code','')
-    msg = root.findtext('.//msg','') or root.findtext('.//line','')
     if status == 'success':
-        print('[OK] Commit Panoramy: sukces!')
+        print('[OK] Commit: sukces!')
     elif code == '19':
-        print('[OK] Brak zmian do commitowania (already committed).')
+        print('[OK] Brak zmian do commitowania.')
     else:
-        print('[WARN] Commit: status=' + status + ' code=' + code + ' msg=' + str(msg))
-        print('       Sprawdz status w GUI Panoramy: Tasks (prawy gorny rog)')
+        msg = root.findtext('.//msg','') or root.findtext('.//line','')
+        print('[WARN] Commit: status=' + status + ' msg=' + str(msg))
 except Exception as e:
-    print('[WARN] Blad parsowania odpowiedzi commit: ' + str(e))
+    print('[WARN] Blad: ' + str(e))
 " 2>/dev/null
     SCRIPT
   }

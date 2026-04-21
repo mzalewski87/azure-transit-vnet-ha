@@ -1,11 +1,10 @@
 ###############################################################################
 # Panorama Config Module Variables
 # Configures Panorama via panos Terraform provider
-# Phase 2 deploy: requires Panorama VM to be running and accessible
 ###############################################################################
 
 variable "panorama_hostname" {
-  description = "Public IP or FQDN of Panorama management interface"
+  description = "Hostname/IP of Panorama management interface"
   type        = string
 }
 
@@ -21,7 +20,7 @@ variable "panorama_password" {
 }
 
 variable "template_name" {
-  description = "Panorama Template name (applied to Template Stack)"
+  description = "Panorama Template name"
   type        = string
   default     = "Transit-VNet-Template"
 }
@@ -38,38 +37,37 @@ variable "device_group_name" {
   default     = "Transit-VNet-DG"
 }
 
-# Network CIDRs for routing and NAT
 variable "trust_subnet_cidr" {
-  description = "Trust subnet CIDR (for default gateway calculation)"
+  description = "Trust subnet CIDR (FW eth1/2)"
   type        = string
-  default     = "10.0.2.0/24"
+  default     = "10.110.0.0/24"
 }
 
 variable "untrust_subnet_cidr" {
-  description = "Untrust subnet CIDR (for default gateway calculation)"
+  description = "Untrust subnet CIDR (FW eth1/1)"
   type        = string
-  default     = "10.0.1.0/24"
+  default     = "10.110.129.0/24"
 }
 
 variable "spoke1_vnet_cidr" {
-  description = "Spoke1 VNet CIDR (for virtual router static routes)"
+  description = "Spoke1 VNet CIDR (App1)"
   type        = string
-  default     = "10.1.0.0/16"
+  default     = "10.112.0.0/16"
 }
 
 variable "spoke2_vnet_cidr" {
-  description = "Spoke2 VNet CIDR (for virtual router static routes)"
+  description = "Spoke2 VNet CIDR (App2/DC)"
   type        = string
-  default     = "10.2.0.0/16"
+  default     = "10.113.0.0/16"
 }
 
 variable "apache_server_ip" {
-  description = "Apache server private IP in Spoke1 (DNAT destination for inbound HTTP/HTTPS)"
+  description = "Apache server private IP in Spoke1 (DNAT destination)"
   type        = string
-  default     = "10.1.0.4"
+  default     = "10.112.0.4"
 }
 
 variable "external_lb_public_ip" {
-  description = "External Load Balancer public IP (DNAT source for inbound traffic)"
+  description = "External Load Balancer public IP (DNAT source)"
   type        = string
 }

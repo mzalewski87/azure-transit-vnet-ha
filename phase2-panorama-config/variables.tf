@@ -6,49 +6,31 @@
 # Panorama Connection
 #------------------------------------------------------------------------------
 variable "panorama_hostname" {
-  description = <<-EOT
-    Hostname/IP do połączenia z Panoramą (panos provider + curl API calls).
-    Gdy używasz az network bastion tunnel: ustaw "127.0.0.1"
-    Gdy używasz VPN/jump-host: ustaw prywatne IP Panoramy "10.255.0.4"
-  EOT
-  type    = string
-  default = "127.0.0.1"
+  description = "Hostname/IP do połączenia z Panoramą. Domyślnie 127.0.0.1 (Bastion tunnel)."
+  type        = string
+  default     = "127.0.0.1"
 }
 
 variable "panorama_target_hostname" {
-  description = <<-EOT
-    Docelowy hostname Panoramy (ustawiany przez XML API).
-    Musi zgadzać się z panorama_hostname w terraform.tfvars Phase 1.
-  EOT
-  type    = string
-  default = "panorama-transit-hub"
+  description = "Docelowy hostname Panoramy (ustawiany przez XML API)."
+  type        = string
+  default     = "panorama-transit-hub"
 }
 
 variable "panorama_serial_number" {
   description = <<-EOT
     Numer seryjny Panoramy z CSP Portal (my.paloaltonetworks.com).
-    WYMAGANY do aktywacji licencji BYOL.
-
-    Jak uzyskać:
-      1. Zaloguj się na CSP Portal: my.paloaltonetworks.com
-      2. Assets → Add Product → wpisz auth-code → wybierz Panorama
-      3. CSP przypisze Serial Number (format: 007300XXXXXXX)
-      4. Skopiuj go tutaj.
-
-    Jeśli pusty (""), krok aktywacji licencji jest pomijany.
+    Wymagany do aktywacji licencji BYOL. Format: 007300XXXXXXX.
+    Jeśli pusty – krok aktywacji licencji jest pomijany.
   EOT
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
 
 variable "panorama_port" {
-  description = <<-EOT
-    Port do połączenia z Panoramą.
-    Domyślnie 44300 – odpowiada --port 44300 w az network bastion tunnel.
-    Jeśli używasz połączenia direct (VPN/jump-host): ustaw 443.
-  EOT
-  type    = number
-  default = 44300
+  description = "Port do połączenia z Panoramą. 44300 = Bastion tunnel, 443 = direct."
+  type        = number
+  default     = 44300
 }
 
 variable "panorama_username" {
@@ -64,7 +46,19 @@ variable "panorama_password" {
 }
 
 #------------------------------------------------------------------------------
-# Panorama Template & Device Group Names
+# vm-auth-key
+#------------------------------------------------------------------------------
+variable "vm_auth_key_lifetime" {
+  description = <<-EOT
+    Czas życia vm-auth-key w minutach. Maksimum PAN-OS = 8760 (365 dni).
+    Domyślnie 1440 = 24h. Klucz generowany automatycznie w Step 4.
+  EOT
+  type        = number
+  default     = 1440
+}
+
+#------------------------------------------------------------------------------
+# Panorama Template & Device Group
 #------------------------------------------------------------------------------
 variable "template_name" {
   description = "Nazwa Panorama Template"
@@ -86,41 +80,42 @@ variable "device_group_name" {
 
 #------------------------------------------------------------------------------
 # Network CIDRs (muszą zgadzać się z Phase 1)
+# Domyślne wartości odpowiadają architekturze referencyjnej z Phase 1
 #------------------------------------------------------------------------------
 variable "trust_subnet_cidr" {
-  description = "CIDR subnetu trust (FW eth1/2)"
+  description = "CIDR subnetu trust (FW eth1/2) = cidrsubnet(transit, 8, 0)"
   type        = string
-  default     = "10.0.2.0/24"
+  default     = "10.110.0.0/24"
 }
 
 variable "untrust_subnet_cidr" {
-  description = "CIDR subnetu untrust (FW eth1/1)"
+  description = "CIDR subnetu untrust (FW eth1/1) = cidrsubnet(transit, 8, 129)"
   type        = string
-  default     = "10.0.1.0/24"
+  default     = "10.110.129.0/24"
 }
 
 variable "spoke1_vnet_cidr" {
-  description = "CIDR VNet Spoke1 (trasa do Apache)"
+  description = "CIDR VNet Spoke1 (App1)"
   type        = string
-  default     = "10.1.0.0/16"
+  default     = "10.112.0.0/16"
 }
 
 variable "spoke2_vnet_cidr" {
-  description = "CIDR VNet Spoke2 (trasa do DC)"
+  description = "CIDR VNet Spoke2 (App2/DC)"
   type        = string
-  default     = "10.2.0.0/16"
+  default     = "10.113.0.0/16"
 }
 
 #------------------------------------------------------------------------------
-# Endpoints (pobierz z: cd .. && terraform output)
+# Endpoints
 #------------------------------------------------------------------------------
 variable "apache_server_ip" {
-  description = "IP serwera Apache w Spoke1 (cel DNAT). Pobierz z: terraform output apache_server_private_ip"
+  description = "IP serwera Apache w Spoke1 (cel DNAT)"
   type        = string
-  default     = "10.1.0.4"
+  default     = "10.112.0.4"
 }
 
 variable "external_lb_public_ip" {
-  description = "Publiczny IP External LB (źródło DNAT). Pobierz z: terraform output external_lb_public_ip"
+  description = "Publiczny IP External LB (źródło DNAT). Pobierz: terraform output external_lb_public_ip"
   type        = string
 }

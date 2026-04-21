@@ -1,27 +1,29 @@
 ###############################################################################
 # Bootstrap Module
-# Azure Storage Account + VM-Series FW Bootstrap Package
+# Azure Storage Account + VM-Series FW Bootstrap Package (Azure File Share)
 #
 # ZAKRES: Bootstrap SA jest WYŁĄCZNIE dla VM-Series FW (FW1 + FW2).
-#         Panorama używa bezpośredniej treści init-cfg w customData (nie SA pointer).
+#         Panorama NIE korzysta z bootstrap – konfiguracja przez Phase 2 (XML API).
 #
-# Struktura SA:
-#   bootstrap/                     ← container
+# Struktura File Share (per dokumentacja PAN-OS bootstrap na Azure):
+#   bootstrap/                     ← Azure File Share (SMB)
 #     fw1/
 #       config/init-cfg.txt        ← FW1 bootstrap config
-#       license/authcodes          ← FW1 auth codes
+#       license/authcodes          ← FW1 auth codes (BYOL)
 #       content/                   ← (puste, FW pobiera content z CDN)
 #       software/                  ← (puste)
 #     fw2/
 #       config/init-cfg.txt        ← FW2 bootstrap config
-#       license/authcodes          ← FW2 auth codes
+#       license/authcodes          ← FW2 auth codes (BYOL)
+#       content/                   ← (puste)
+#       software/                  ← (puste)
+#
+# Ref: https://docs.paloaltonetworks.com/vm-series/11-1/vm-series-deployment/bootstrap-the-vm-series-firewall/bootstrap-the-vm-series-firewall-in-azure
 ###############################################################################
 
 ###############################################################################
 # User Assigned Managed Identity
-# Przypisywana do FW VM – pozwala na dostęp do SA bez access-key w customData.
-# Alternatywnie FW może używać access-key (mniej bezpieczne, ale prostsze).
-# Tu stosujemy MI dla poprawności security baseline.
+# Przypisywana do FW VM – dodatkowa metoda dostępu do SA.
 ###############################################################################
 resource "azurerm_user_assigned_identity" "bootstrap" {
   name                = "id-panos-bootstrap"
@@ -33,7 +35,7 @@ resource "azurerm_user_assigned_identity" "bootstrap" {
 ###############################################################################
 # Storage Account
 # Network rules: default_action=Deny (Azure Policy compliance)
-# Dostęp: FW mgmt subnet (service endpoint) + operator IP (dla blob upload)
+# Dostęp: FW mgmt subnet (service endpoint) + operator IP + NAT GW IP
 ###############################################################################
 resource "random_string" "sa_suffix" {
   length  = 8
@@ -49,8 +51,6 @@ resource "azurerm_storage_account" "bootstrap" {
   account_replication_type        = "LRS"
   min_tls_version                 = "TLS1_2"
   allow_nested_items_to_be_public = false
-  # Azure Policy: "Storage accounts should prevent cross tenant object replication"
-  # policyDefinition/92a89a79-6c52-4a7e-a03f-61306fc49312
   cross_tenant_replication_enabled = false
   tags                            = var.tags
 
@@ -58,119 +58,177 @@ resource "azurerm_storage_account" "bootstrap" {
     default_action             = "Deny"
     bypass                     = ["AzureServices"]
     virtual_network_subnet_ids = var.allowed_subnet_ids
-    # concat: operator IP + NAT GW public IP (FW management outbound)
-    # NAT GW IP jest WYMAGANY – FW próbuje dostać się do SA przez publiczny IP
-    # (NAT GW) podczas bootowania, zanim service endpoint jest gotowy.
-    ip_rules = concat(var.terraform_operator_ips, var.nat_gateway_ips)
+    ip_rules                   = concat(var.terraform_operator_ips, var.nat_gateway_ips)
   }
-  # UWAGA: Brak ignore_changes na network_rules – Terraform zarządza regułami.
-  # Manualne zmiany (np. dodane przez az CLI) będą usunięte przy następnym apply.
 }
 
-# Bootstrap container
-resource "azurerm_storage_container" "bootstrap" {
-  name                  = "bootstrap"
-  storage_account_name  = azurerm_storage_account.bootstrap.name
-  container_access_type = "private"
+###############################################################################
+# Azure File Share (SMB) – wymagane przez PAN-OS bootstrap
+# PAN-OS oczekuje Azure File Share, NIE Blob Container.
+###############################################################################
+resource "azurerm_storage_share" "bootstrap" {
+  name               = "bootstrap"
+  storage_account_id = azurerm_storage_account.bootstrap.id
+  quota              = 1
 }
 
-# Storage Blob Data Reader role for MI
+# RBAC roles for MI
 resource "azurerm_role_assignment" "bootstrap_mi_reader" {
   scope                = azurerm_storage_account.bootstrap.id
   role_definition_name = "Storage Blob Data Reader"
   principal_id         = azurerm_user_assigned_identity.bootstrap.principal_id
 }
 
+resource "azurerm_role_assignment" "bootstrap_mi_file_reader" {
+  scope                = azurerm_storage_account.bootstrap.id
+  role_definition_name = "Storage File Data SMB Share Reader"
+  principal_id         = azurerm_user_assigned_identity.bootstrap.principal_id
+}
+
 ###############################################################################
-# FW1 Bootstrap Files
+# Local files – rendered bootstrap content
+# azurerm_storage_share_file wymaga `source` (ścieżka do pliku),
+# nie obsługuje `source_content`. Tworzymy pliki lokalnie.
 ###############################################################################
 
-resource "azurerm_storage_blob" "fw1_init_cfg" {
-  name                   = "fw1/config/init-cfg.txt"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content = templatefile("${path.module}/templates/init-cfg.txt.tpl", {
-    hostname               = "fw1-transit-hub"
-    panorama_server        = var.panorama_private_ip
+resource "local_file" "fw1_init_cfg" {
+  content = templatefile("${path.module}/templates/init-cfg.txt.tpl", {
+    hostname                = "fw1-transit-hub"
+    panorama_server         = var.panorama_private_ip
     panorama_template_stack = var.panorama_template_stack
-    panorama_device_group  = var.panorama_device_group
-    panorama_vm_auth_key   = var.panorama_vm_auth_key
-    authcodes              = var.fw_auth_code
+    panorama_device_group   = var.panorama_device_group
+    panorama_vm_auth_key    = var.panorama_vm_auth_key
+    authcodes               = var.fw_auth_code
   })
+  filename = "${path.module}/rendered/fw1-init-cfg.txt"
 }
 
-resource "azurerm_storage_blob" "fw1_authcodes" {
-  name                   = "fw1/license/authcodes"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content         = var.fw_auth_code != "" ? var.fw_auth_code : "# no authcode"
+resource "local_file" "fw1_authcodes" {
+  content  = var.fw_auth_code != "" ? var.fw_auth_code : "# no authcode"
+  filename = "${path.module}/rendered/fw1-authcodes"
 }
 
-# Required empty dirs (FW bootstrap expects these paths to exist)
-resource "azurerm_storage_blob" "fw1_content_placeholder" {
-  name                   = "fw1/content/.keep"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content         = ""
-}
-
-resource "azurerm_storage_blob" "fw1_software_placeholder" {
-  name                   = "fw1/software/.keep"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content         = ""
-}
-
-###############################################################################
-# FW2 Bootstrap Files
-###############################################################################
-
-resource "azurerm_storage_blob" "fw2_init_cfg" {
-  name                   = "fw2/config/init-cfg.txt"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content = templatefile("${path.module}/templates/init-cfg.txt.tpl", {
-    hostname               = "fw2-transit-hub"
-    panorama_server        = var.panorama_private_ip
+resource "local_file" "fw2_init_cfg" {
+  content = templatefile("${path.module}/templates/init-cfg.txt.tpl", {
+    hostname                = "fw2-transit-hub"
+    panorama_server         = var.panorama_private_ip
     panorama_template_stack = var.panorama_template_stack
-    panorama_device_group  = var.panorama_device_group
-    panorama_vm_auth_key   = var.panorama_vm_auth_key
-    authcodes              = var.fw_auth_code
+    panorama_device_group   = var.panorama_device_group
+    panorama_vm_auth_key    = var.panorama_vm_auth_key
+    authcodes               = var.fw_auth_code
   })
+  filename = "${path.module}/rendered/fw2-init-cfg.txt"
 }
 
-resource "azurerm_storage_blob" "fw2_authcodes" {
-  name                   = "fw2/license/authcodes"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content         = var.fw_auth_code != "" ? var.fw_auth_code : "# no authcode"
+resource "local_file" "fw2_authcodes" {
+  content  = var.fw_auth_code != "" ? var.fw_auth_code : "# no authcode"
+  filename = "${path.module}/rendered/fw2-authcodes"
 }
 
-resource "azurerm_storage_blob" "fw2_content_placeholder" {
-  name                   = "fw2/content/.keep"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content         = ""
+###############################################################################
+# FW1 Bootstrap – directory structure + files
+###############################################################################
+
+resource "azurerm_storage_share_directory" "fw1" {
+  name             = "fw1"
+  storage_share_id = azurerm_storage_share.bootstrap.id
 }
 
-resource "azurerm_storage_blob" "fw2_software_placeholder" {
-  name                   = "fw2/software/.keep"
-  storage_account_name   = azurerm_storage_account.bootstrap.name
-  storage_container_name = azurerm_storage_container.bootstrap.name
-  type                   = "Block"
-  source_content         = ""
+resource "azurerm_storage_share_directory" "fw1_config" {
+  name             = "fw1/config"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  depends_on       = [azurerm_storage_share_directory.fw1]
+}
+
+resource "azurerm_storage_share_directory" "fw1_license" {
+  name             = "fw1/license"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  depends_on       = [azurerm_storage_share_directory.fw1]
+}
+
+resource "azurerm_storage_share_directory" "fw1_content" {
+  name             = "fw1/content"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  depends_on       = [azurerm_storage_share_directory.fw1]
+}
+
+resource "azurerm_storage_share_directory" "fw1_software" {
+  name             = "fw1/software"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  depends_on       = [azurerm_storage_share_directory.fw1]
+}
+
+resource "azurerm_storage_share_file" "fw1_init_cfg" {
+  name             = "init-cfg.txt"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  path             = "fw1/config"
+  source           = local_file.fw1_init_cfg.filename
+
+  depends_on = [azurerm_storage_share_directory.fw1_config]
+}
+
+resource "azurerm_storage_share_file" "fw1_authcodes" {
+  name             = "authcodes"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  path             = "fw1/license"
+  source           = local_file.fw1_authcodes.filename
+
+  depends_on = [azurerm_storage_share_directory.fw1_license]
+}
+
+###############################################################################
+# FW2 Bootstrap – directory structure + files
+###############################################################################
+
+resource "azurerm_storage_share_directory" "fw2" {
+  name             = "fw2"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+}
+
+resource "azurerm_storage_share_directory" "fw2_config" {
+  name             = "fw2/config"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  depends_on       = [azurerm_storage_share_directory.fw2]
+}
+
+resource "azurerm_storage_share_directory" "fw2_license" {
+  name             = "fw2/license"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  depends_on       = [azurerm_storage_share_directory.fw2]
+}
+
+resource "azurerm_storage_share_directory" "fw2_content" {
+  name             = "fw2/content"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  depends_on       = [azurerm_storage_share_directory.fw2]
+}
+
+resource "azurerm_storage_share_directory" "fw2_software" {
+  name             = "fw2/software"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  depends_on       = [azurerm_storage_share_directory.fw2]
+}
+
+resource "azurerm_storage_share_file" "fw2_init_cfg" {
+  name             = "init-cfg.txt"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  path             = "fw2/config"
+  source           = local_file.fw2_init_cfg.filename
+
+  depends_on = [azurerm_storage_share_directory.fw2_config]
+}
+
+resource "azurerm_storage_share_file" "fw2_authcodes" {
+  name             = "authcodes"
+  storage_share_id = azurerm_storage_share.bootstrap.id
+  path             = "fw2/license"
+  source           = local_file.fw2_authcodes.filename
+
+  depends_on = [azurerm_storage_share_directory.fw2_license]
 }
 
 ###############################################################################
 # Sleep after SA creation to allow network_rules propagation
-# (Azure may take up to 30s to apply SA network ACLs)
 ###############################################################################
 resource "time_sleep" "wait_for_sa_network_rules" {
   depends_on      = [azurerm_storage_account.bootstrap]

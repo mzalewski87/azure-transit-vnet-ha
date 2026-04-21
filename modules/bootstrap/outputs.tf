@@ -23,28 +23,32 @@ output "managed_identity_principal_id" {
 }
 
 # FW bootstrap storage pointers (base64-encoded, used as customData/userData for VM-Series FW)
-# Format per PAN-OS 11.x/12.x Azure bootstrap specification:
+#
+# Format per dokumentacja PAN-OS bootstrap na Azure:
 #   storage-account  = SA name
-#   storage-key      = SA primary access key   ← CORRECT field name (NOT "access-key")
-#   file-share       = blob container name (PAN-OS treats blob containers same as file shares)
+#   access-key       = SA primary access key (poprawna nazwa pola per PANW docs)
+#   file-share       = Azure File Share name
 #   share-directory  = subfolder per FW (fw1 / fw2)
+#
+# Ref: https://docs.paloaltonetworks.com/vm-series/11-1/vm-series-deployment/bootstrap-the-vm-series-firewall/bootstrap-the-vm-series-firewall-in-azure
+
 output "fw1_custom_data" {
-  description = "FW1 bootstrap custom_data (storage pointer, base64-encoded for Azure customData/userData)"
+  description = "FW1 bootstrap custom_data (storage pointer, base64-encoded)"
   value       = base64encode(join("\n", [
     "storage-account=${azurerm_storage_account.bootstrap.name}",
-    "storage-key=${azurerm_storage_account.bootstrap.primary_access_key}",
-    "file-share=${azurerm_storage_container.bootstrap.name}",
+    "access-key=${azurerm_storage_account.bootstrap.primary_access_key}",
+    "file-share=${azurerm_storage_share.bootstrap.name}",
     "share-directory=fw1",
   ]))
   sensitive = true
 }
 
 output "fw2_custom_data" {
-  description = "FW2 bootstrap custom_data (storage pointer, base64-encoded for Azure customData/userData)"
+  description = "FW2 bootstrap custom_data (storage pointer, base64-encoded)"
   value       = base64encode(join("\n", [
     "storage-account=${azurerm_storage_account.bootstrap.name}",
-    "storage-key=${azurerm_storage_account.bootstrap.primary_access_key}",
-    "file-share=${azurerm_storage_container.bootstrap.name}",
+    "access-key=${azurerm_storage_account.bootstrap.primary_access_key}",
+    "file-share=${azurerm_storage_share.bootstrap.name}",
     "share-directory=fw2",
   ]))
   sensitive = true
