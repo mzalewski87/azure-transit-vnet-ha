@@ -67,9 +67,9 @@ resource "azurerm_storage_account" "bootstrap" {
 # PAN-OS oczekuje Azure File Share, NIE Blob Container.
 ###############################################################################
 resource "azurerm_storage_share" "bootstrap" {
-  name               = "bootstrap"
-  storage_account_id = azurerm_storage_account.bootstrap.id
-  quota              = 1
+  name                 = "bootstrap"
+  storage_account_name = azurerm_storage_account.bootstrap.name
+  quota                = 1
 }
 
 # RBAC roles for MI
@@ -159,19 +159,19 @@ resource "azurerm_storage_share_directory" "fw1_software" {
 }
 
 resource "azurerm_storage_share_file" "fw1_init_cfg" {
-  name             = "init-cfg.txt"
-  storage_share_id = azurerm_storage_share.bootstrap.id
-  path             = "fw1/config"
-  source           = local_file.fw1_init_cfg.filename
+  name                 = "init-cfg.txt"
+  storage_share_id     = azurerm_storage_share.bootstrap.id
+  path                 = "fw1/config"
+  source               = local_file.fw1_init_cfg.filename
 
   depends_on = [azurerm_storage_share_directory.fw1_config]
 }
 
 resource "azurerm_storage_share_file" "fw1_authcodes" {
-  name             = "authcodes"
-  storage_share_id = azurerm_storage_share.bootstrap.id
-  path             = "fw1/license"
-  source           = local_file.fw1_authcodes.filename
+  name                 = "authcodes"
+  storage_share_id     = azurerm_storage_share.bootstrap.id
+  path                 = "fw1/license"
+  source               = local_file.fw1_authcodes.filename
 
   depends_on = [azurerm_storage_share_directory.fw1_license]
 }
@@ -210,19 +210,19 @@ resource "azurerm_storage_share_directory" "fw2_software" {
 }
 
 resource "azurerm_storage_share_file" "fw2_init_cfg" {
-  name             = "init-cfg.txt"
-  storage_share_id = azurerm_storage_share.bootstrap.id
-  path             = "fw2/config"
-  source           = local_file.fw2_init_cfg.filename
+  name                 = "init-cfg.txt"
+  storage_share_id     = azurerm_storage_share.bootstrap.id
+  path                 = "fw2/config"
+  source               = local_file.fw2_init_cfg.filename
 
   depends_on = [azurerm_storage_share_directory.fw2_config]
 }
 
 resource "azurerm_storage_share_file" "fw2_authcodes" {
-  name             = "authcodes"
-  storage_share_id = azurerm_storage_share.bootstrap.id
-  path             = "fw2/license"
-  source           = local_file.fw2_authcodes.filename
+  name                 = "authcodes"
+  storage_share_id     = azurerm_storage_share.bootstrap.id
+  path                 = "fw2/license"
+  source               = local_file.fw2_authcodes.filename
 
   depends_on = [azurerm_storage_share_directory.fw2_license]
 }
