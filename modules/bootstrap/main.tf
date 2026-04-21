@@ -158,11 +158,38 @@ resource "azurerm_storage_share_directory" "fw1_software" {
   depends_on       = [azurerm_storage_share_directory.fw1]
 }
 
+# Pre-cleanup: delete existing files before azurerm_storage_share_file create
+# (prevents "already exists" error after partial failures)
+# Uses curl DELETE (empty body) — works through corporate SSL proxy
+resource "null_resource" "cleanup_existing_files" {
+  # Always run when file content changes
+  triggers = {
+    fw1_cfg_hash  = local_file.fw1_init_cfg.content_md5
+    fw1_auth_hash = local_file.fw1_authcodes.content_md5
+    fw2_cfg_hash  = local_file.fw2_init_cfg.content_md5
+    fw2_auth_hash = local_file.fw2_authcodes.content_md5
+  }
+
+  provisioner "local-exec" {
+    command = "bash ${path.root}/scripts/cleanup-bootstrap-files.sh"
+    environment = {
+      SA_NAME    = azurerm_storage_account.bootstrap.name
+      SA_KEY     = azurerm_storage_account.bootstrap.primary_access_key
+      SHARE      = "bootstrap"
+      FILE_PATHS = "fw1/config/init-cfg.txt,fw1/license/authcodes,fw2/config/init-cfg.txt,fw2/license/authcodes"
+    }
+  }
+
+  depends_on = [
+    azurerm_storage_share_directory.fw1_config,
+    azurerm_storage_share_directory.fw1_license,
+    azurerm_storage_share_directory.fw2_config,
+    azurerm_storage_share_directory.fw2_license,
+    time_sleep.wait_for_sa_network_rules,
+  ]
+}
+
 # Upload via AzureRM provider (Go HTTP client – works through corporate proxy)
-# NOTE: If "already exists" error occurs after partial failure, run:
-#   terraform state rm 'module.bootstrap.azurerm_storage_share_file.fw1_init_cfg'
-#   terraform import 'module.bootstrap.azurerm_storage_share_file.fw1_init_cfg' \
-#     'https://<SA_NAME>.file.core.windows.net/bootstrap/fw1/config/init-cfg.txt'
 resource "azurerm_storage_share_file" "fw1_init_cfg" {
   name             = "init-cfg.txt"
   storage_share_id = azurerm_storage_share.bootstrap.id
@@ -172,6 +199,7 @@ resource "azurerm_storage_share_file" "fw1_init_cfg" {
   depends_on = [
     azurerm_storage_share_directory.fw1_config,
     time_sleep.wait_for_sa_network_rules,
+    null_resource.cleanup_existing_files,
   ]
 }
 
@@ -184,6 +212,7 @@ resource "azurerm_storage_share_file" "fw1_authcodes" {
   depends_on = [
     azurerm_storage_share_directory.fw1_license,
     time_sleep.wait_for_sa_network_rules,
+    null_resource.cleanup_existing_files,
   ]
 }
 
@@ -229,6 +258,7 @@ resource "azurerm_storage_share_file" "fw2_init_cfg" {
   depends_on = [
     azurerm_storage_share_directory.fw2_config,
     time_sleep.wait_for_sa_network_rules,
+    null_resource.cleanup_existing_files,
   ]
 }
 
@@ -241,6 +271,7 @@ resource "azurerm_storage_share_file" "fw2_authcodes" {
   depends_on = [
     azurerm_storage_share_directory.fw2_license,
     time_sleep.wait_for_sa_network_rules,
+    null_resource.cleanup_existing_files,
   ]
 }
 
