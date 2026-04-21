@@ -158,25 +158,46 @@ resource "azurerm_storage_share_directory" "fw1_software" {
   depends_on       = [azurerm_storage_share_directory.fw1]
 }
 
-resource "azurerm_storage_share_file" "fw1_init_cfg" {
-  name                 = "init-cfg.txt"
-  storage_share_id     = azurerm_storage_share.bootstrap.id
-  path                 = "fw1/config"
-  source               = local_file.fw1_init_cfg.filename
+# Upload plików via az CLI (nadpisuje istniejące, retry na network rules)
+resource "null_resource" "fw1_upload_files" {
+  triggers = {
+    init_cfg_hash  = local_file.fw1_init_cfg.content_md5
+    authcodes_hash = local_file.fw1_authcodes.content_md5
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      SA_NAME="${azurerm_storage_account.bootstrap.name}"
+      SA_KEY="${azurerm_storage_account.bootstrap.primary_access_key}"
+      SHARE="bootstrap"
+      MAX_RETRIES=5
+
+      upload_file() {
+        local SRC="$1" DEST="$2"
+        for i in $(seq 1 $MAX_RETRIES); do
+          if az storage file upload \
+            --account-name "$SA_NAME" --account-key "$SA_KEY" \
+            --share-name "$SHARE" --path "$DEST" \
+            --source "$SRC" --no-progress 2>/dev/null; then
+            echo "  [OK] Uploaded $DEST"
+            return 0
+          fi
+          echo "  [RETRY $i/$MAX_RETRIES] Upload $DEST failed, waiting 30s..."
+          sleep 30
+        done
+        echo "  [ERROR] Failed to upload $DEST after $MAX_RETRIES retries"
+        return 1
+      }
+
+      echo "=== Uploading FW1 bootstrap files ==="
+      upload_file "${local_file.fw1_init_cfg.filename}" "fw1/config/init-cfg.txt"
+      upload_file "${local_file.fw1_authcodes.filename}" "fw1/license/authcodes"
+    SCRIPT
+  }
 
   depends_on = [
     azurerm_storage_share_directory.fw1_config,
-    time_sleep.wait_for_sa_network_rules,
-  ]
-}
-
-resource "azurerm_storage_share_file" "fw1_authcodes" {
-  name                 = "authcodes"
-  storage_share_id     = azurerm_storage_share.bootstrap.id
-  path                 = "fw1/license"
-  source               = local_file.fw1_authcodes.filename
-
-  depends_on = [
     azurerm_storage_share_directory.fw1_license,
     time_sleep.wait_for_sa_network_rules,
   ]
@@ -215,25 +236,46 @@ resource "azurerm_storage_share_directory" "fw2_software" {
   depends_on       = [azurerm_storage_share_directory.fw2]
 }
 
-resource "azurerm_storage_share_file" "fw2_init_cfg" {
-  name                 = "init-cfg.txt"
-  storage_share_id     = azurerm_storage_share.bootstrap.id
-  path                 = "fw2/config"
-  source               = local_file.fw2_init_cfg.filename
+# Upload plików via az CLI (nadpisuje istniejące, retry na network rules)
+resource "null_resource" "fw2_upload_files" {
+  triggers = {
+    init_cfg_hash  = local_file.fw2_init_cfg.content_md5
+    authcodes_hash = local_file.fw2_authcodes.content_md5
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      SA_NAME="${azurerm_storage_account.bootstrap.name}"
+      SA_KEY="${azurerm_storage_account.bootstrap.primary_access_key}"
+      SHARE="bootstrap"
+      MAX_RETRIES=5
+
+      upload_file() {
+        local SRC="$1" DEST="$2"
+        for i in $(seq 1 $MAX_RETRIES); do
+          if az storage file upload \
+            --account-name "$SA_NAME" --account-key "$SA_KEY" \
+            --share-name "$SHARE" --path "$DEST" \
+            --source "$SRC" --no-progress 2>/dev/null; then
+            echo "  [OK] Uploaded $DEST"
+            return 0
+          fi
+          echo "  [RETRY $i/$MAX_RETRIES] Upload $DEST failed, waiting 30s..."
+          sleep 30
+        done
+        echo "  [ERROR] Failed to upload $DEST after $MAX_RETRIES retries"
+        return 1
+      }
+
+      echo "=== Uploading FW2 bootstrap files ==="
+      upload_file "${local_file.fw2_init_cfg.filename}" "fw2/config/init-cfg.txt"
+      upload_file "${local_file.fw2_authcodes.filename}" "fw2/license/authcodes"
+    SCRIPT
+  }
 
   depends_on = [
     azurerm_storage_share_directory.fw2_config,
-    time_sleep.wait_for_sa_network_rules,
-  ]
-}
-
-resource "azurerm_storage_share_file" "fw2_authcodes" {
-  name                 = "authcodes"
-  storage_share_id     = azurerm_storage_share.bootstrap.id
-  path                 = "fw2/license"
-  source               = local_file.fw2_authcodes.filename
-
-  depends_on = [
     azurerm_storage_share_directory.fw2_license,
     time_sleep.wait_for_sa_network_rules,
   ]
