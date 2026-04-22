@@ -262,6 +262,44 @@ except Exception as e:
         fi
       done
 
+      # 3d: Po license fetch Panorama może PONOWNIE restartować management service
+      # aby zaaplikować nową licencję. Czekamy na stabilne API.
+      echo "  Czekam na stabilne API po license fetch..."
+      sleep 20
+      for WAIT_L in $(seq 1 15); do
+        WAIT_CODE=$(curl -sk --max-time 10 -o /dev/null -w "%%{http_code}" "$PANORAMA_URL/php/login.php" 2>/dev/null || echo "000")
+        if [ "$WAIT_CODE" = "200" ] || [ "$WAIT_CODE" = "302" ]; then
+          echo "  Panorama API stabilna (HTTP $WAIT_CODE, proba $WAIT_L)"
+          break
+        fi
+        if [ "$WAIT_L" -ge 15 ]; then
+          echo "  [WARN] Panorama API niestabilna po 15 probach — kontynuuje..."
+        fi
+        echo "  [$WAIT_L/15] HTTP $WAIT_CODE — czekam 10s..."
+        sleep 10
+      done
+
+      # Weryfikacja: czy keygen działa (test credentials)
+      echo "  Weryfikacja API credentials..."
+      for VERIFY in $(seq 1 5); do
+        TEST_KEY=$(curl -sk --max-time 15 \
+          "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+          | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    if root.get('status') == 'success': print('OK')
+    else: print('RETRY')
+except: print('RETRY')
+" 2>/dev/null)
+        if [ "$TEST_KEY" = "OK" ]; then
+          echo "  Credentials: OK"
+          break
+        fi
+        echo "  [$VERIFY/5] Credentials not ready — czekam 15s..."
+        sleep 15
+      done
+
       echo "  [Step 3] Gotowe."
     SCRIPT
   }
@@ -293,19 +331,33 @@ resource "null_resource" "panorama_generate_vm_auth_key" {
       echo "=== [Step 4] Generowanie vm-auth-key (lifetime: $LIFETIME min) ==="
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
-      API_KEY=$(curl -sk --max-time 30 \
-        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
-        | python3 -c "
-import sys, xml.etree.ElementTree as ET
-root = ET.fromstring(sys.stdin.read())
-if root.get('status') != 'success':
-    print('ERROR: ' + (root.findtext('.//msg','no message')), file=sys.stderr); sys.exit(1)
-print(root.findtext('.//key',''))
-" 2>&1)
 
-      if echo "$API_KEY" | grep -q "^ERROR:"; then
-        echo "[BLAD] API key: $API_KEY"; exit 1
-      fi
+      # Retry keygen — API może być jeszcze niestabilna po license fetch
+      API_KEY=""
+      for KG_TRY in $(seq 1 10); do
+        API_KEY=$(curl -sk --max-time 30 \
+          "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+          | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    if root.get('status') == 'success':
+        print(root.findtext('.//key',''))
+    else:
+        print('ERROR')
+except:
+    print('ERROR')
+" 2>/dev/null)
+        if [ -n "$API_KEY" ] && [ "$API_KEY" != "ERROR" ]; then
+          echo "  API key: OK (proba $KG_TRY)"
+          break
+        fi
+        if [ "$KG_TRY" -ge 10 ]; then
+          echo "[BLAD] API key: nie udalo sie po 10 probach"; exit 1
+        fi
+        echo "  [$KG_TRY/10] API key nie gotowy — czekam 15s..."
+        sleep 15
+      done
 
       # Generate key
       KEY_RESP=$(curl -sk --max-time 30 \
