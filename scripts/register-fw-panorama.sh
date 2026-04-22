@@ -168,18 +168,44 @@ if [ "$FW1_SERIAL" = "unknown" ] || [ "$FW2_SERIAL" = "unknown" ]; then
   exit 1
 fi
 
-# Auto-generate auth-key on Panorama if missing
+# Auto-generate or retrieve auth-key on Panorama if missing
 if [ -z "$VM_AUTH_KEY" ]; then
   echo ""
-  echo "[3.5/6] Generowanie vm-auth-key na Panoramie..."
+  echo "[3.5/6] Pobieranie/generowanie vm-auth-key na Panoramie..."
   PAN_KEY_TMP=$(get_api_key "https://127.0.0.1:$PANORAMA_PORT" "$PAN_USER" "$PAN_PASS")
 
-  for GEN_TRY in $(seq 1 5); do
-    GEN_RESP=$(curl -sk --max-time 60 \
-      "https://127.0.0.1:$PANORAMA_PORT/api/?type=op&cmd=<request><authkey><add><name>authkey-auto</name><lifetime>1440</lifetime><count>10</count></add></authkey></request>&key=$PAN_KEY_TMP" \
-      2>/dev/null || echo "")
+  # Step A: Try to LIST existing auth keys first
+  LIST_RESP=$(curl -sk --max-time 30 \
+    "https://127.0.0.1:$PANORAMA_PORT/api/?type=op&cmd=<request><authkey><list></list></authkey></request>&key=$PAN_KEY_TMP" \
+    2>/dev/null || echo "")
 
-    VM_AUTH_KEY=$(echo "$GEN_RESP" | python3 -c "
+  VM_AUTH_KEY=$(echo "$LIST_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET, re
+try:
+    data = sys.stdin.read()
+    if not data: sys.exit(0)
+    root = ET.fromstring(data)
+    # Search for auth key pattern (2:XXXXX) in response
+    for elem in root.iter():
+        if elem.text:
+            m = re.search(r'(2:[\w-]{20,})', elem.text)
+            if m: print(m.group(1)); sys.exit(0)
+except: pass
+" 2>/dev/null)
+
+  if [ -n "$VM_AUTH_KEY" ]; then
+    echo "  [OK] Istniejacy auth key znaleziony: ${VM_AUTH_KEY:0:30}..."
+  else
+    # Step B: Generate new key with unique name (timestamp-based)
+    KEY_NAME="authkey-$(date +%s)"
+    echo "  Brak istniejacych kluczy, generuje nowy ($KEY_NAME)..."
+
+    for GEN_TRY in $(seq 1 3); do
+      GEN_RESP=$(curl -sk --max-time 60 \
+        "https://127.0.0.1:$PANORAMA_PORT/api/?type=op&cmd=<request><authkey><add><name>$KEY_NAME</name><lifetime>1440</lifetime><count>10</count></add></authkey></request>&key=$PAN_KEY_TMP" \
+        2>/dev/null || echo "")
+
+      VM_AUTH_KEY=$(echo "$GEN_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET, re
 try:
     data = sys.stdin.read()
@@ -192,30 +218,29 @@ try:
         if elem.text:
             m = re.search(r'(2:[\w-]{20,})', elem.text)
             if m: print(m.group(1)); sys.exit(0)
-    # Try without 2: prefix — some versions return plain key
-    for elem in root.iter():
-        if elem.text and len(elem.text.strip()) > 20:
-            print(elem.text.strip()); sys.exit(0)
-    print('ERROR: key not found'); sys.exit(0)
+    print('ERROR: key pattern not found'); sys.exit(0)
 except Exception as e:
     print('ERROR: ' + str(e)); sys.exit(0)
 " 2>/dev/null)
 
-    if [ -n "$VM_AUTH_KEY" ] && ! echo "$VM_AUTH_KEY" | grep -q "^ERROR"; then
-      echo "  [OK] Auth key: ${VM_AUTH_KEY:0:30}..."
-      # Save for future use
-      echo "$VM_AUTH_KEY" > "$ROOT_DIR/panorama_vm_auth_key.txt"
-      echo "  Zapisano do: panorama_vm_auth_key.txt"
-      break
-    fi
+      if [ -n "$VM_AUTH_KEY" ] && ! echo "$VM_AUTH_KEY" | grep -q "^ERROR"; then
+        echo "  [OK] Auth key wygenerowany!"
+        break
+      fi
+      echo "  [$GEN_TRY/3] $VM_AUTH_KEY — czekam 10s..."
+      VM_AUTH_KEY=""
+      sleep 10
+    done
+  fi
 
-    echo "  [$GEN_TRY/5] $VM_AUTH_KEY — czekam 15s..."
+  # Save if found
+  if [ -n "$VM_AUTH_KEY" ] && ! echo "$VM_AUTH_KEY" | grep -q "^ERROR"; then
+    echo "  Auth key: ${VM_AUTH_KEY:0:30}..."
+    echo "$VM_AUTH_KEY" > "$ROOT_DIR/panorama_vm_auth_key.txt"
+    echo "  Zapisano do: panorama_vm_auth_key.txt"
+  else
     VM_AUTH_KEY=""
-    sleep 15
-  done
-
-  if [ -z "$VM_AUTH_KEY" ]; then
-    echo "  [WARN] Nie udalo sie wygenerowac auth-key."
+    echo "  [WARN] Nie udalo sie pobrac/wygenerowac auth-key."
     echo "         Wygeneruj recznie: SSH do Panoramy -> request authkey add name authkey1 lifetime 1440 count 2"
   fi
 fi
