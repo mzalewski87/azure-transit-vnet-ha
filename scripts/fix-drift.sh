@@ -50,7 +50,7 @@ echo ""
 info "======================================================"
 info " STEP 1: Remove old azurerm_marketplace_agreement from state"
 info "======================================================"
-info "(Kod zmieniony na null_resource – stary resource type powoduje konflikt)"
+info "(Kod changed to null_resource – stary resource type generates conflict)"
 echo ""
 
 # Remove from state if present (no error if missing)
@@ -61,17 +61,17 @@ AGREEMENTS=(
 
 for agreement in "${AGREEMENTS[@]}"; do
   if terraform state list 2>/dev/null | grep -q "^${agreement}$"; then
-    warn "Usuwam ze stanu: ${agreement}"
+    warn "Removing from state: ${agreement}"
     terraform state rm "${agreement}"
     info "Removed: ${agreement}"
   else
-    info "Nie ma w stanie (OK): ${agreement}"
+    info "Not in state (OK): ${agreement}"
   fi
 done
 
 echo ""
 info "======================================================"
-info " STEP 2: Import dc_promote extension do stanu"
+info " STEP 2: Import dc_promote extension to state"
 info "======================================================"
 info "(Extension exists in Azure, DC is already promoted)"
 echo ""

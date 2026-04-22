@@ -40,13 +40,16 @@ resource "azurerm_lb_backend_address_pool" "external" {
   loadbalancer_id = azurerm_lb.external.id
 }
 
-# Health probe - checks VM-Series SSH port to determine firewall liveness
-# When FW fails, Azure LB stops sending traffic to that instance
+# Health probe - checks VM-Series HTTPS management on data plane interface
+# PAN-OS responds to /php/login.php on port 443 when Management Profile is enabled.
+# When FW fails or data plane is down, probe fails → LB stops sending traffic.
+# Ref: https://github.com/PaloAltoNetworks/azure-terraform-vmseries-fast-ha-failover
 resource "azurerm_lb_probe" "external" {
   name                = "probe-fw-ssh"
   loadbalancer_id     = azurerm_lb.external.id
-  protocol            = "Tcp"
-  port                = var.health_probe_port
+  protocol            = "Https"
+  port                = 443
+  request_path        = "/php/login.php"
   interval_in_seconds = 5
   number_of_probes    = 2
 }
@@ -123,12 +126,13 @@ resource "azurerm_lb_backend_address_pool" "internal" {
   loadbalancer_id = azurerm_lb.internal.id
 }
 
-# Health probe for internal LB - same mechanism as external
+# Health probe for internal LB — same HTTPS mechanism as external
 resource "azurerm_lb_probe" "internal" {
   name                = "probe-fw-ssh"
   loadbalancer_id     = azurerm_lb.internal.id
-  protocol            = "Tcp"
-  port                = var.health_probe_port
+  protocol            = "Https"
+  port                = 443
+  request_path        = "/php/login.php"
   interval_in_seconds = 5
   number_of_probes    = 2
 }

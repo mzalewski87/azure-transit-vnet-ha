@@ -68,9 +68,10 @@ resource "panos_panorama_ethernet_interface" "untrust" {
   mode                      = "layer3"
   enable_dhcp               = true
   create_dhcp_default_route = false   # static routes in VR handle routing
+  management_profile        = panos_panorama_management_profile.health_probe.name
   comment                   = "Untrust interface - External LB / Internet (DHCP from Azure)"
 
-  depends_on = [panos_panorama_template.transit]
+  depends_on = [panos_panorama_template.transit, panos_panorama_management_profile.health_probe]
 }
 
 # ethernet1/2 - Trust (internal, faces Spoke VNets via Internal LB)
@@ -81,9 +82,10 @@ resource "panos_panorama_ethernet_interface" "trust" {
   mode                      = "layer3"
   enable_dhcp               = true
   create_dhcp_default_route = false
+  management_profile        = panos_panorama_management_profile.health_probe.name
   comment                   = "Trust interface - Internal LB / Spoke VNets (DHCP from Azure)"
 
-  depends_on = [panos_panorama_template.transit]
+  depends_on = [panos_panorama_template.transit, panos_panorama_management_profile.health_probe]
 }
 
 # ethernet1/3 - HA2 (data synchronization link)
@@ -92,6 +94,22 @@ resource "panos_panorama_ethernet_interface" "ha2" {
   template = panos_panorama_template.transit.name
   mode     = "ha"
   comment  = "HA2 data synchronization interface"
+
+  depends_on = [panos_panorama_template.transit]
+}
+
+###############################################################################
+# Interface Management Profile (in Template)
+# Enables HTTPS on data plane interfaces for Azure LB health probes.
+# LB probes HTTPS /php/login.php on port 443 — PAN-OS responds with HTTP 200
+# when the management plane is ready on that interface.
+# Ref: https://github.com/PaloAltoNetworks/azure-terraform-vmseries-fast-ha-failover
+###############################################################################
+
+resource "panos_panorama_management_profile" "health_probe" {
+  name     = "allow-health-probe"
+  template = panos_panorama_template.transit.name
+  https    = true
 
   depends_on = [panos_panorama_template.transit]
 }

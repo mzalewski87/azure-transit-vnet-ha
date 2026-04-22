@@ -121,11 +121,19 @@ echo "  Phase 2b: FW Registration on Panorama"
 echo "============================================================"
 echo ""
 
-# Get password
+# Get password — auto-read from terraform.tfvars if not set via environment
 if [ -z "${PAN_PASS:-}" ]; then
-  echo -n "Admin password (panadmin): "
-  read -rs PAN_PASS
-  echo
+  if [ -f "$ROOT_DIR/terraform.tfvars" ]; then
+    PAN_PASS=$(grep -E '^\s*admin_password\s*=' "$ROOT_DIR/terraform.tfvars" \
+      | head -1 | sed 's/.*=\s*"\(.*\)".*/\1/')
+  fi
+  if [ -z "${PAN_PASS:-}" ]; then
+    echo -n "Admin password (panadmin): "
+    read -rs PAN_PASS
+    echo
+  else
+    echo "  Password: read from terraform.tfvars"
+  fi
 fi
 
 # Get VM IDs from Terraform output
