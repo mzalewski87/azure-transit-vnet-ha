@@ -359,32 +359,64 @@ except:
         sleep 15
       done
 
-      # Generate key
-      KEY_RESP=$(curl -sk --max-time 30 \
-        "$PANORAMA_URL/api/?type=op&cmd=<request><authkey><add><name>authkey-auto</name><lifetime>$LIFETIME</lifetime><count>10</count></add></authkey></request>&key=$API_KEY" \
-        2>/dev/null)
+      # Generate key (z retry — Panorama może potrzebować chwili po license fetch)
+      VM_AUTH_KEY=""
+      for AUTH_TRY in $(seq 1 5); do
+        KEY_RESP=$(curl -sk --max-time 60 \
+          "$PANORAMA_URL/api/?type=op&cmd=<request><authkey><add><name>authkey-auto</name><lifetime>$LIFETIME</lifetime><count>10</count></add></authkey></request>&key=$API_KEY" \
+          2>/dev/null || echo "")
 
-      VM_AUTH_KEY=$(echo "$KEY_RESP" | python3 -c "
+        # Debug: pokaż raw response (pierwsze 500 znaków)
+        echo "  [authkey proba $AUTH_TRY] Response length: $(echo "$KEY_RESP" | wc -c | tr -d ' ') bytes"
+
+        # Parser — ZAWSZE exit 0, błędy w stdout prefixowane ERROR:
+        VM_AUTH_KEY=$(echo "$KEY_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET, re
 try:
-    root = ET.fromstring(sys.stdin.read())
-    if root.get('status') != 'success':
-        msg = root.findtext('.//msg','') or root.findtext('.//line','')
-        print('ERROR: ' + str(msg), file=sys.stderr); sys.exit(1)
-    # Search for key pattern in all elements
+    data = sys.stdin.read()
+    if not data or len(data) < 10:
+        print('ERROR: empty response'); sys.exit(0)
+    root = ET.fromstring(data)
+    status = root.get('status','')
+    if status != 'success':
+        msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'unknown'
+        print('ERROR: API status=' + status + ' msg=' + str(msg)); sys.exit(0)
+    # Search for key pattern (format: 2:XXXXXXXXX)
     for elem in root.iter():
         if elem.text:
             m = re.search(r'(2:[\w-]{20,})', elem.text)
             if m:
                 print(m.group(1)); sys.exit(0)
-    print('ERROR: key not found in response', file=sys.stderr); sys.exit(1)
+    # Key not found — dump all text for diagnostics
+    all_text = ' | '.join(e.text.strip() for e in root.iter() if e.text and e.text.strip())
+    print('ERROR: key pattern not found. Response text: ' + all_text[:300]); sys.exit(0)
 except ET.ParseError as e:
-    print('ERROR: ' + str(e), file=sys.stderr); sys.exit(1)
-" 2>&1)
+    print('ERROR: XML parse: ' + str(e)); sys.exit(0)
+except Exception as e:
+    print('ERROR: ' + str(e)); sys.exit(0)
+" 2>/dev/null)
 
-      if echo "$VM_AUTH_KEY" | grep -q "^ERROR:"; then
-        echo "[WARN] Nie udalo sie wygenerowac vm-auth-key: $VM_AUTH_KEY"
+        # Check if key was found
+        if echo "$VM_AUTH_KEY" | grep -q "^2:"; then
+          echo "  [OK] vm-auth-key wygenerowany!"
+          break
+        fi
+
+        echo "  [$AUTH_TRY/5] $VM_AUTH_KEY"
+        if [ "$AUTH_TRY" -lt 5 ]; then
+          echo "  Czekam 20s przed kolejna proba..."
+          sleep 20
+        fi
+      done
+
+      # Final check
+      if ! echo "$VM_AUTH_KEY" | grep -q "^2:"; then
+        echo ""
+        echo "[WARN] Nie udalo sie wygenerowac vm-auth-key po 5 probach."
+        echo "       Ostatni wynik: $VM_AUTH_KEY"
         echo "       Wygeneruj recznie: admin@panorama> request authkey add name authkey1 lifetime $LIFETIME count 2"
+        echo "       Nastepnie dodaj do terraform.tfvars: panorama_vm_auth_key = \"<klucz>\""
+        # Nie failujemy — reszta Phase 2a (Step 5, 6) może działać
         exit 0
       fi
 
