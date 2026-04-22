@@ -20,48 +20,48 @@ Terraform IaC for **Palo Alto Networks Azure Transit VNet** reference architectu
                                    │ HTTPS
                     ┌──────────────▼──────────────┐
                     │  External LB (Standard)     │
-                    │  pip-external-lb             │
-                    │  Rules: TCP 80, TCP 443      │
-                    │  Health: TCP 22 (5s/2probe)  │
-                    │  SNAT outbound rule          │
+                    │  pip-external-lb            │
+                    │  Rules: TCP 80, TCP 443     │
+                    │  Health: TCP 22 (5s/2probe) │
+                    │  SNAT outbound rule         │
                     └──────────────┬──────────────┘
                                    │
-  ┌────────────────────────────────▼──────────────────────────────────────┐
+  ┌────────────────────────────────▼─────────────────────────────────────┐
   │  Transit Hub VNet (10.110.0.0/16)                                    │
   │                                                                      │
-  │   snet-public (10.110.129.0/24) ─── FW eth1/1 (untrust, DHCP)      │
+  │   snet-public (10.110.129.0/24) ─── FW eth1/1 (untrust, DHCP)        │
   │        ┌──────────┐  ┌──────────┐                                    │
-  │        │  FW1 (A) │  │  FW2 (P) │  VM-Series Active/Passive HA     │
+  │        │  FW1 (A) │  │  FW2 (P) │  VM-Series Active/Passive HA       │
   │        └────┬─────┘  └────┬─────┘                                    │
-  │   snet-private (10.110.0.0/24) ─── FW eth1/2 (trust, DHCP)         │
-  │   snet-ha (10.110.128.0/24)    ─── FW eth1/3 (HA2 data sync)       │
-  │   snet-mgmt (10.110.255.0/24)  ─── FW eth0 (mgmt, HA1)            │
+  │   snet-private (10.110.0.0/24) ─── FW eth1/2 (trust, DHCP)           │
+  │   snet-ha (10.110.128.0/24)    ─── FW eth1/3 (HA2 data sync)         │
+  │   snet-mgmt (10.110.255.0/24)  ─── FW eth0 (mgmt, HA1)               │
   │        │  NAT GW (license/updates)                                   │
   └────────┼─────────────────────────────────────────────────────────────┘
            │                    │ peering              │ peering
-           │         ┌──────────▼──────────┐  ┌───────▼──────────────┐
-           │         │  Internal LB (Std)  │  │  Management VNet     │
-           │         │  10.110.0.100       │  │  (10.255.0.0/16)     │
-           │         │  HA Ports (All/0)   │  │                      │
-           │         │  HC: TCP 22 (5s/2)  │  │  Panorama 10.255.0.4 │
-           │         └──────────┬──────────┘  │  NAT GW (license)    │
+           │         ┌──────────▼──────────┐  ┌───────▼───────────────┐
+           │         │  Internal LB (Std)  │  │  Management VNet      │
+           │         │  10.110.0.100       │  │  (10.255.0.0/16)      │
+           │         │  HA Ports (All/0)   │  │                       │
+           │         │  HC: TCP 22 (5s/2)  │  │  Panorama 10.255.0.4  │
+           │         └──────────┬──────────┘  │  NAT GW (license)     │
            │                    │              │  Bastion Standard    │
            │         next-hop=VirtualAppliance │  (tunnel + IpConnect)│
-           │                    │              └───┬────────┬────────┘
+           │                    │              └───┬────────┬─────────┘
   ┌────────▼────────────────────▼───┐              │peer    │peer
   │                                 │              │        │
   │   ┌─────────────────────────┐   │   ┌─────────▼────────▼──────────┐
   │   │  Spoke1: App1 VNet      │   │   │  Spoke2: App2 VNet          │
   │   │  (10.112.0.0/16)        │◄──┼──►│  (10.113.0.0/16)            │
-  │   │                         │   │   │                              │
-  │   │  Ubuntu + Apache        │   │   │  Windows Server DC           │
-  │   │  10.112.0.4             │   │   │  10.113.0.4                  │
-  │   │                         │   │   │                              │
+  │   │                         │   │   │                             │
+  │   │  Ubuntu + Apache        │   │   │  Windows Server DC          │
+  │   │  10.112.0.4             │   │   │  10.113.0.4                 │
+  │   │                         │   │   │                             │
   │   │  UDR (rt-spoke1):       │   │   │  UDR (rt-spoke2):           │
-  │   │   0.0.0.0/0 → ILB      │   │   │   0.0.0.0/0 → ILB          │
-  │   │   10.113.0.0/16 → ILB  │   │   │   10.112.0.0/16 → ILB      │
+  │   │   0.0.0.0/0 → ILB       │   │   │   0.0.0.0/0 → ILB           │
+  │   │   10.113.0.0/16 → ILB   │   │   │   10.112.0.0/16 → ILB       │
   │   │   BGP propagation: OFF  │   │   │   BGP propagation: OFF      │
-  │   └─────────────────────────┘   │   └──────────────────────────────┘
+  │   └─────────────────────────┘   │   └─────────────────────────────┘
   └─────────────────────────────────┘
 
   VNet Peerings (bidirectional, allow_forwarded_traffic=true):
