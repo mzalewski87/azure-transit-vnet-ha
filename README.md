@@ -121,7 +121,12 @@ Wait ~15 min for Panorama to boot.
 ```bash
 cd phase2-panorama-config/
 cp terraform.tfvars.example terraform.tfvars
-# Edit: panorama_password, panorama_serial_number, external_lb_public_ip
+# Edit terraform.tfvars — set these REQUIRED values:
+#   panorama_password      = "<same as admin_password from Phase 1>"
+#   panorama_serial_number = "<from CSP Portal, e.g. 007300XXXXXXX>"
+#
+# external_lb_public_ip is AUTO-POPULATED by the script from terraform output.
+# If needed manually: terraform output -raw external_lb_public_ip
 
 cd ..  # back to root
 bash scripts/configure-panorama.sh

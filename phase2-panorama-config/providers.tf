@@ -40,9 +40,12 @@ terraform {
 }
 
 # The panos provider connects via the local Bastion tunnel (127.0.0.1:44300)
+# timeout increased from default 10s — Bastion tunnel adds latency, and
+# Panorama API may be slow after license activation or Collector Group commit.
 provider "panos" {
   hostname = var.panorama_hostname  # 127.0.0.1
   port     = var.panorama_port      # 44300 (match --port from az bastion tunnel)
   username = var.panorama_username
   password = var.panorama_password
+  timeout  = 60
 }

@@ -519,7 +519,8 @@ except: print('error')
         --data-urlencode "key=$API_KEY" >/dev/null 2>&1
 
       echo "  [OK] Collector Group commit submitted"
-      sleep 10
+      echo "  Waiting 30s for Panorama to stabilize after commit..."
+      sleep 30
     SCRIPT
   }
 

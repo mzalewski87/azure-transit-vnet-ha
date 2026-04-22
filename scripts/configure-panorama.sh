@@ -56,8 +56,8 @@ if [ ! -f "$PHASE2_DIR/terraform.tfvars" ]; then
   exit 1
 fi
 
-# Get Panorama VM ID from Terraform output
-echo "[1/4] Fetching Panorama VM ID from Terraform output..."
+# Get Panorama VM ID and External LB IP from Terraform output
+echo "[1/4] Fetching infrastructure info from Terraform output..."
 cd "$ROOT_DIR"
 PANORAMA_ID=$(terraform output -raw panorama_vm_id 2>/dev/null || true)
 if [ -z "$PANORAMA_ID" ]; then
@@ -65,6 +65,19 @@ if [ -z "$PANORAMA_ID" ]; then
   exit 1
 fi
 echo "       VM ID: $PANORAMA_ID"
+
+# Auto-populate external_lb_public_ip if still REPLACE_ME
+ELB_IP=$(terraform output -raw external_lb_public_ip 2>/dev/null || true)
+if [ -n "$ELB_IP" ]; then
+  echo "       External LB IP: $ELB_IP"
+  if grep -q 'external_lb_public_ip.*REPLACE_ME' "$PHASE2_DIR/terraform.tfvars" 2>/dev/null; then
+    echo "       [AUTO] Injecting external_lb_public_ip into phase2 terraform.tfvars..."
+    sed -i '' "s|external_lb_public_ip.*=.*\"REPLACE_ME\"|external_lb_public_ip = \"$ELB_IP\"|" "$PHASE2_DIR/terraform.tfvars"
+    echo "       [OK] external_lb_public_ip = \"$ELB_IP\""
+  fi
+else
+  echo "       [WARN] Cannot fetch external_lb_public_ip. Make sure it's set in phase2 terraform.tfvars."
+fi
 
 # Start Bastion tunnel
 echo "[2/4] Starting Bastion tunnel (port $LOCAL_PORT -> Panorama:443)..."
@@ -104,7 +117,7 @@ terraform apply -auto-approve -input=false
 echo ""
 echo "[4/4] Verification..."
 if [ -f "$ROOT_DIR/panorama_vm_auth_key.auto.tfvars" ]; then
-  echo "  [OK] panorama_vm_auth_key.auto.tfvars utworzony"
+  echo "  [OK] panorama_vm_auth_key.auto.tfvars created"
   echo "       Phase 1b automatically gets vm-auth-key."
 else
   echo "  [WARN] panorama_vm_auth_key.auto.tfvars was NOT created."
