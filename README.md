@@ -95,13 +95,13 @@ python3 >= 3.8
 
 ---
 
-## Deployment – 3 Steps
+## Deployment – 5 Phases
 
-### Step 1: Infrastructure (Phase 1a)
+### Phase 1a: Infrastructure (Panorama + Networking)
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
-# Edit: subscription IDs, admin_password, terraform_operator_ips
+# Edit: subscription IDs, admin_password, fw_auth_code, terraform_operator_ips
 
 terraform init
 terraform apply \
@@ -110,13 +110,25 @@ terraform apply \
   -target=azurerm_resource_group.app2 \
   -target=module.networking \
   -target=module.bootstrap \
-  -target=module.panorama \
-  -target=module.app2_dc
+  -target=module.panorama
 ```
 
-Wait ~15 min for Panorama boot.
+Wait ~15 min for Panorama to boot.
 
-### Step 2: Panorama Configuration (Phase 2)
+### Phase 2a: Panorama Configuration (automated)
+
+**Recommended** — single script handles Bastion tunnel + Terraform automatically:
+```bash
+cd phase2-panorama-config/
+cp terraform.tfvars.example terraform.tfvars
+# Edit: panorama_password, panorama_serial_number, external_lb_public_ip
+
+cd ..  # back to root
+bash scripts/configure-panorama.sh
+```
+
+<details>
+<summary>Manual alternative (if script fails)</summary>
 
 **Terminal 1** – Bastion tunnel (keep open):
 ```bash
@@ -130,25 +142,21 @@ az network bastion tunnel \
 **Terminal 2** – Phase 2 apply:
 ```bash
 cd phase2-panorama-config/
-cp terraform.tfvars.example terraform.tfvars
-# Edit: panorama_password, panorama_serial_number, external_lb_public_ip
-
 terraform init && terraform apply
 ```
+</details>
 
-Phase 2 automatically:
+Phase 2a automatically:
 1. ⏳ Waits for Panorama API (max 20 min)
-2. ✅ Sets hostname via XML API (config mode) + commit
-3. ✅ Sets serial number via XML API (config mode) + commit + `request license fetch`
-4. ✅ **Generates vm-auth-key automatically** → saved to `../panorama_vm_auth_key.txt`
+2. ✅ Sets hostname via XML API + commit
+3. ✅ Sets serial number + commit + `request license fetch`
+4. ✅ **Generates vm-auth-key** → saved to `panorama_vm_auth_key.txt`
 5. ✅ Creates Template Stack, Device Group, interfaces, zones, routes, NAT, security policies
 6. ✅ Final commit
 
-### Step 3: Deploy Firewalls (Phase 1b)
+### Phase 1b: Deploy Firewalls + Load Balancers + Routing
 
 ```bash
-cd ..  # back to root
-
 # Add the auto-generated vm-auth-key to terraform.tfvars:
 #   panorama_vm_auth_key = "<key from panorama_vm_auth_key.txt>"
 
@@ -162,10 +170,36 @@ terraform apply \
 ```
 
 FW bootstrap process:
-1. VM creates with `custom_data` (SA pointer) → deallocate → set `userData` → start
-2. PAN-OS reads `userData` from IMDS → connects to Azure File Share via `access-key`
-3. Downloads `init-cfg.txt` (Panorama IP, Template Stack, Device Group, vm-auth-key)
-4. Auto-registers with Panorama using vm-auth-key
+1. VM created with `custom_data` containing init-cfg parameters (base64-encoded)
+2. Deallocate → set `userData` via az CLI → start (workaround for azurerm marketplace VM bug)
+3. PAN-OS reads init-cfg from Azure IMDS on first boot (direct parameters, no File Share needed)
+4. Activates license using `authcodes` from init-cfg
+5. Connects to Panorama using `panorama-server`, `tplname`, `dgname`, `vm-auth-key`
+
+> **Note:** FW registration on Panorama is NOT complete after this phase.
+> Phase 2b is required to register FW serial numbers on Panorama.
+
+### Phase 2b: Register Firewalls on Panorama (automated)
+
+```bash
+bash scripts/register-fw-panorama.sh
+```
+
+This script automatically:
+1. Opens Bastion tunnels to FW1, FW2, and Panorama
+2. Reads FW serial numbers (dynamically generated during license activation)
+3. Registers FW serials on Panorama (mgt-config + Device Group + Template Stack)
+4. Commits on Panorama → FW status changes to **connected + in sync**
+
+> **Without this step, firewalls will NOT appear as managed devices in Panorama.**
+
+### Phase 3: Domain Controller (optional)
+
+```bash
+terraform apply -target=module.app2_dc
+```
+
+See `optional/dc-promote/` for Active Directory promotion.
 
 ### Verification
 
@@ -176,43 +210,43 @@ az network bastion ssh --name bastion-management --resource-group rg-transit-hub
   --target-resource-id "$FW1_ID" --auth-type password --username panadmin
 
 admin@fw1> show system bootstrap status
-admin@fw1> show panorama-status
+admin@fw1> show system info | match serial
+admin@fw1> show panorama-status          # should show Connected: yes
 
 # Check connected devices in Panorama
 az network bastion ssh --name bastion-management --resource-group rg-transit-hub \
   --target-resource-id "$(terraform output -raw panorama_vm_id)" \
   --auth-type password --username panadmin
 
-admin@panorama> show devices connected
+admin@panorama> show devices connected    # should list fw1 + fw2
 ```
 
 ---
 
 ## Bootstrap – How It Works
 
-FW bootstrap uses **Azure File Share** (not Blob Container) per [PAN-OS documentation](https://docs.paloaltonetworks.com/vm-series/11-1/vm-series-deployment/bootstrap-the-vm-series-firewall/bootstrap-the-vm-series-firewall-in-azure):
+FW bootstrap uses **direct init-cfg parameters in custom_data/userData** (PAN-OS 10.0+ reads from Azure IMDS):
+
+```
+custom_data (base64-encoded init-cfg):
+  type=dhcp-client
+  hostname=fw1-transit-hub
+  panorama-server=10.255.0.4
+  tplname=Transit-VNet-Stack
+  dgname=Transit-VNet-DG
+  vm-auth-key=2:XXXXXX...
+  authcodes=XXXX-XXXX-XXXX-XXXX
+  dns-primary=168.63.129.16
+```
+
+An Azure Storage Account with File Share structure is also provisioned for optional future use
+(e.g., uploading `bootstrap.xml`, content packages via Azure Cloud Shell):
 
 ```
 Storage Account (default_action=Deny, service endpoint + NAT GW IP)
   └── File Share: "bootstrap"
-        ├── fw1/
-        │   ├── config/init-cfg.txt    ← hostname, panorama-server, tplname, dgname, vm-auth-key
-        │   ├── license/authcodes      ← BYOL auth code
-        │   ├── content/               ← (empty)
-        │   └── software/              ← (empty)
-        └── fw2/
-            ├── config/init-cfg.txt
-            ├── license/authcodes
-            ├── content/
-            └── software/
-```
-
-Bootstrap pointer format (`userData`, base64-encoded):
-```
-storage-account=sapanosbstrapXXXXXXXX
-access-key=<SA primary access key>
-file-share=bootstrap
-share-directory=fw1
+        ├── fw1/config/ license/ content/ software/
+        └── fw2/config/ license/ content/ software/
 ```
 
 Network access: FW management subnet has `Microsoft.Storage` service endpoint + NAT GW public IP in SA `ip_rules` as fallback.
