@@ -3,7 +3,7 @@
 ###############################################################################
 
 output "panorama_vm_id" {
-  description = "Panorama VM resource ID (używany w az network bastion tunnel --target-resource-id)"
+  description = "Panorama VM resource ID (used in az network bastion tunnel --target-resource-id)"
   value       = azurerm_linux_virtual_machine.panorama.id
 }
 

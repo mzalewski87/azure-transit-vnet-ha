@@ -6,7 +6,7 @@
 # Panorama Connection
 #------------------------------------------------------------------------------
 variable "panorama_hostname" {
-  description = "Hostname/IP do połączenia z Panoramą. Domyślnie 127.0.0.1 (Bastion tunnel)."
+  description = "Hostname/IP to connect to Panorama. Default 127.0.0.1 (Bastion tunnel)."
   type        = string
   default     = "127.0.0.1"
 }
@@ -20,15 +20,15 @@ variable "panorama_target_hostname" {
 variable "panorama_serial_number" {
   description = <<-EOT
     Numer seryjny Panoramy z CSP Portal (my.paloaltonetworks.com).
-    Wymagany do aktywacji licencji BYOL. Format: 007300XXXXXXX.
-    Jeśli pusty – krok aktywacji licencji jest pomijany.
+    Required for BYOL license activation. Format: 007300XXXXXXX.
+    If empty — license activation step is skipped.
   EOT
   type        = string
   default     = ""
 }
 
 variable "panorama_port" {
-  description = "Port do połączenia z Panoramą. 44300 = Bastion tunnel, 443 = direct."
+  description = "Port to connect to Panorama. 44300 = Bastion tunnel, 443 = direct."
   type        = number
   default     = 44300
 }
@@ -40,7 +40,7 @@ variable "panorama_username" {
 }
 
 variable "panorama_password" {
-  description = "Hasło administratora Panoramy (to samo co admin_password w Phase 1)"
+  description = "Panorama admin password (same as admin_password in Phase 1)"
   type        = string
   sensitive   = true
 }
@@ -50,8 +50,8 @@ variable "panorama_password" {
 #------------------------------------------------------------------------------
 variable "vm_auth_key_lifetime" {
   description = <<-EOT
-    Czas życia vm-auth-key w minutach. Maksimum PAN-OS = 8760 (365 dni).
-    Domyślnie 1440 = 24h. Klucz generowany automatycznie w Step 4.
+    vm-auth-key lifetime in minutes. PAN-OS maximum = 8760 (365 days).
+    Default 1440 = 24h. Key generated automatically in Step 4.
   EOT
   type        = number
   default     = 1440
@@ -79,8 +79,8 @@ variable "device_group_name" {
 }
 
 #------------------------------------------------------------------------------
-# Network CIDRs (muszą zgadzać się z Phase 1)
-# Domyślne wartości odpowiadają architekturze referencyjnej z Phase 1
+# Network CIDRs (must match Phase 1)
+# Default values match Phase 1 reference architecture
 #------------------------------------------------------------------------------
 variable "trust_subnet_cidr" {
   description = "CIDR subnetu trust (FW eth1/2) = cidrsubnet(transit, 8, 0)"
@@ -116,6 +116,6 @@ variable "apache_server_ip" {
 }
 
 variable "external_lb_public_ip" {
-  description = "Publiczny IP External LB (źródło DNAT). Pobierz: terraform output external_lb_public_ip"
+  description = "External LB public IP (DNAT source). Get: terraform output external_lb_public_ip"
   type        = string
 }

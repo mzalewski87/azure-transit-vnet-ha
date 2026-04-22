@@ -3,7 +3,7 @@
 #
 # INSTRUKCJA:
 #   cp terraform.tfvars.example terraform.tfvars
-#   # Uzupełnij poniższe wartości
+#   # Fill in the values below
 #   terraform init && terraform apply
 #
 # CZAS: ~30-45 minut (instalacja AD DS + reboot)
@@ -12,13 +12,13 @@
 #   Get-ADDomain | Select Name,DomainMode
 ###############################################################################
 
-# Subskrypcja Spoke2 (ta sama co spoke2_subscription_id w głównym terraform.tfvars)
+# Spoke2 subscription (same as spoke2_subscription_id in main terraform.tfvars)
 spoke2_subscription_id = "REPLACE_ME"
 
-# Hasło DC admina (to samo co dc_admin_password w głównym terraform.tfvars)
+# DC admin password (same as dc_admin_password in main terraform.tfvars)
 admin_password = "REPLACE_ME"
 
-# Opcjonalnie – zmień jeśli różni się od domyślnych:
+# Optional — change if different from defaults:
 # spoke2_resource_group_name = "rg-spoke2-dc"
 # dc_vm_name                 = "vm-spoke2-dc"
 # domain_name                = "panw.labs"

@@ -111,9 +111,9 @@ variable "panorama_private_ip" {
   default     = "10.255.0.4"
 }
 
-# panorama_serial_number i panorama_auth_code USUNIĘTE z Phase 1
-# Aktywacja licencji następuje przez XML API w Phase 2 (phase2-panorama-config/)
-# Podaj auth_code jako panorama_auth_code w phase2-panorama-config/terraform.tfvars
+# panorama_serial_number and panorama_auth_code REMOVED from Phase 1
+# License activation happens via XML API in Phase 2 (phase2-panorama-config/)
+# Provide auth_code as panorama_auth_code in phase2-panorama-config/terraform.tfvars
 
 variable "panorama_vm_size" {
   description = "VM size for Panorama (min Standard_D8s_v3, recommended Standard_D16s_v3)"

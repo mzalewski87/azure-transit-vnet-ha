@@ -2,28 +2,28 @@
 # Bootstrap Module
 # Azure Storage Account + VM-Series FW Bootstrap Package (Azure File Share)
 #
-# ZAKRES: Bootstrap SA jest WYŁĄCZNIE dla VM-Series FW (FW1 + FW2).
-#         Panorama NIE korzysta z bootstrap – konfiguracja przez Phase 2 (XML API).
+# SCOPE: Bootstrap SA is ONLY for VM-Series FW (FW1 + FW2).
+#        Panorama does NOT use bootstrap — configuration via Phase 2 (XML API).
 #
-# Struktura File Share (per dokumentacja PAN-OS bootstrap na Azure):
+# File Share structure (per PAN-OS Azure bootstrap documentation):
 #   bootstrap/                     ← Azure File Share (SMB)
 #     fw1/
 #       config/init-cfg.txt        ← FW1 bootstrap config
 #       license/authcodes          ← FW1 auth codes (BYOL)
-#       content/                   ← (puste, FW pobiera content z CDN)
-#       software/                  ← (puste)
+#       content/                   ← (empty, FW downloads content from CDN)
+#       software/                  ← (empty)
 #     fw2/
 #       config/init-cfg.txt        ← FW2 bootstrap config
 #       license/authcodes          ← FW2 auth codes (BYOL)
-#       content/                   ← (puste)
-#       software/                  ← (puste)
+#       content/                   ← (empty)
+#       software/                  ← (empty)
 #
 # Ref: https://docs.paloaltonetworks.com/vm-series/11-1/vm-series-deployment/bootstrap-the-vm-series-firewall/bootstrap-the-vm-series-firewall-in-azure
 ###############################################################################
 
 ###############################################################################
 # User Assigned Managed Identity
-# Przypisywana do FW VM – dodatkowa metoda dostępu do SA.
+# Assigned to FW VM — additional SA access method.
 ###############################################################################
 resource "azurerm_user_assigned_identity" "bootstrap" {
   name                = "id-panos-bootstrap"
@@ -35,7 +35,7 @@ resource "azurerm_user_assigned_identity" "bootstrap" {
 ###############################################################################
 # Storage Account
 # Network rules: default_action=Deny (Azure Policy compliance)
-# Dostęp: FW mgmt subnet (service endpoint) + operator IP + NAT GW IP
+# Access: FW mgmt subnet (service endpoint) + operator IP + NAT GW IP
 ###############################################################################
 resource "random_string" "sa_suffix" {
   length  = 8
@@ -63,8 +63,8 @@ resource "azurerm_storage_account" "bootstrap" {
 }
 
 ###############################################################################
-# Azure File Share (SMB) – wymagane przez PAN-OS bootstrap
-# PAN-OS oczekuje Azure File Share, NIE Blob Container.
+# Azure File Share (SMB) — required by PAN-OS bootstrap
+# PAN-OS expects Azure File Share, NOT Blob Container.
 ###############################################################################
 resource "azurerm_storage_share" "bootstrap" {
   name                 = "bootstrap"
@@ -87,8 +87,8 @@ resource "azurerm_role_assignment" "bootstrap_mi_file_reader" {
 
 ###############################################################################
 # Local files – rendered bootstrap content
-# azurerm_storage_share_file wymaga `source` (ścieżka do pliku),
-# nie obsługuje `source_content`. Tworzymy pliki lokalnie.
+# azurerm_storage_share_file requires `source` (file path),
+# does not support `source_content`. We create files locally.
 ###############################################################################
 
 resource "local_file" "fw1_init_cfg" {

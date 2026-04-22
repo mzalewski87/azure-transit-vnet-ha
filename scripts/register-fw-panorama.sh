@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ###############################################################################
-# register-fw-panorama.sh — Phase 2b: Rejestracja FW na Panoramie
+# register-fw-panorama.sh — Phase 2b: FW Registration on Panorama
 #
 # Automatycznie:
 #   1. Otwiera Bastion tunnele do FW1, FW2 i Panoramy
@@ -9,13 +9,13 @@
 #   4. Dodaje seriale do Panoramy (mgt-config, device-group, template-stack)
 #   5. Commit na Panoramie
 #
-# Użycie:
+# Usage:
 #   bash scripts/register-fw-panorama.sh
 #
-# Wymagania:
-#   - Phase 1b zakończona (FW1 + FW2 uruchomione, licencje aktywne)
-#   - Phase 2a zakończona (Panorama skonfigurowana, vm-auth-key wygenerowany)
-#   - az CLI zalogowany
+# Requirements:
+#   - Phase 1b completed (FW1 + FW2 running, licenses active)
+#   - Phase 2a completed (Panorama configured, vm-auth-key generated)
+#   - az CLI logged in
 #
 # Komendy XML API (potwierdzone debug cli on na Panoramie):
 #   set mgt-config devices SERIAL →
@@ -47,7 +47,7 @@ TUNNEL_PIDS=()
 
 cleanup() {
   echo ""
-  echo "[*] Zamykanie Bastion tunneli..."
+  echo "[*] Closing Bastion tunnels..."
   for pid in "${TUNNEL_PIDS[@]}"; do
     # Kill process group (az + Python subprocesses)
     kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
@@ -112,24 +112,24 @@ wait_for_tunnel() {
     fi
     sleep 5
   done
-  echo "[BLAD] Tunnel $name (port $port) nie odpowiada."
+  echo "[BLAD] Tunnel $name (port $port) not responding."
   return 1
 }
 
 echo "============================================================"
-echo "  Phase 2b: Rejestracja FW na Panoramie"
+echo "  Phase 2b: FW Registration on Panorama"
 echo "============================================================"
 echo ""
 
 # Get password
 if [ -z "${PAN_PASS:-}" ]; then
-  echo -n "Haslo administratora (panadmin): "
+  echo -n "Admin password (panadmin): "
   read -rs PAN_PASS
   echo
 fi
 
 # Get VM IDs from Terraform output
-echo "[1/6] Pobieranie VM IDs z Terraform output..."
+echo "[1/6] Fetching VM IDs from Terraform output..."
 cd "$ROOT_DIR"
 PANORAMA_ID=$(terraform output -raw panorama_vm_id 2>/dev/null)
 FW1_ID=$(terraform output -raw fw1_vm_id 2>/dev/null)
@@ -144,26 +144,26 @@ if [ -f "$ROOT_DIR/panorama_vm_auth_key.txt" ]; then
   VM_AUTH_KEY=$(cat "$ROOT_DIR/panorama_vm_auth_key.txt" | tr -d '[:space:]')
   echo "       Auth key: ${VM_AUTH_KEY:0:20}..."
 else
-  echo "       Auth key: brak pliku — zostanie wygenerowany w kroku 3.5"
+  echo "       Auth key: file missing — will be generated in step 3.5"
 fi
 
 # Start tunnels
 echo ""
-echo "[2/6] Uruchamianie Bastion tunneli..."
+echo "[2/6] Starting Bastion tunneli..."
 start_tunnel "Panorama" "$PANORAMA_ID" "$PANORAMA_PORT"
 start_tunnel "FW1"      "$FW1_ID"      "$FW1_PORT"
 start_tunnel "FW2"      "$FW2_ID"      "$FW2_PORT"
 
-echo "  Czekam na tunnele..."
+echo "  Waiting for tunnels..."
 sleep 10
 wait_for_tunnel "$PANORAMA_PORT" "Panorama"
 wait_for_tunnel "$FW1_PORT" "FW1"
 wait_for_tunnel "$FW2_PORT" "FW2"
-echo "  Wszystkie tunnele gotowe!"
+echo "  All tunnels ready!"
 
 # Get serials from FWs
 echo ""
-echo "[3/6] Odczytywanie numerow seryjnych z FW..."
+echo "[3/6] Reading serial numbers from FWs..."
 FW1_KEY=$(get_api_key "https://127.0.0.1:$FW1_PORT" "$PAN_USER" "$PAN_PASS")
 FW2_KEY=$(get_api_key "https://127.0.0.1:$FW2_PORT" "$PAN_USER" "$PAN_PASS")
 
@@ -174,14 +174,14 @@ echo "  FW1 serial: $FW1_SERIAL"
 echo "  FW2 serial: $FW2_SERIAL"
 
 if [ "$FW1_SERIAL" = "unknown" ] || [ "$FW2_SERIAL" = "unknown" ]; then
-  echo "[BLAD] Nie udalo sie odczytac seriala. Sprawdz czy FW licencja jest aktywna."
+  echo "[ERROR] Failed to read serial. Check if FW license is active."
   exit 1
 fi
 
 # Auto-generate or retrieve auth-key on Panorama if missing
 if [ -z "$VM_AUTH_KEY" ]; then
   echo ""
-  echo "[3.5/6] Pobieranie/generowanie vm-auth-key na Panoramie..."
+  echo "[3.5/6] Fetching/generating vm-auth-key on Panorama..."
   PAN_KEY_TMP=$(get_api_key "https://127.0.0.1:$PANORAMA_PORT" "$PAN_USER" "$PAN_PASS")
 
   # Step A: Try to LIST existing auth keys first
@@ -204,11 +204,11 @@ except: pass
 " 2>/dev/null)
 
   if [ -n "$VM_AUTH_KEY" ]; then
-    echo "  [OK] Istniejacy auth key znaleziony: ${VM_AUTH_KEY:0:30}..."
+    echo "  [OK] Existing auth key found: ${VM_AUTH_KEY:0:30}..."
   else
     # Step B: Generate new key with unique name (timestamp-based)
     KEY_NAME="authkey-$(date +%s)"
-    echo "  Brak istniejacych kluczy, generuje nowy ($KEY_NAME)..."
+    echo "  No existing keys found, generating new ($KEY_NAME)..."
 
     for GEN_TRY in $(seq 1 3); do
       GEN_RESP=$(curl -sk --max-time 60 \
@@ -234,7 +234,7 @@ except Exception as e:
 " 2>/dev/null)
 
       if [ -n "$VM_AUTH_KEY" ] && ! echo "$VM_AUTH_KEY" | grep -q "^ERROR"; then
-        echo "  [OK] Auth key wygenerowany!"
+        echo "  [OK] Auth key generated!"
         break
       fi
       echo "  [$GEN_TRY/3] $VM_AUTH_KEY — czekam 10s..."
@@ -247,23 +247,23 @@ except Exception as e:
   if [ -n "$VM_AUTH_KEY" ] && ! echo "$VM_AUTH_KEY" | grep -q "^ERROR"; then
     echo "  Auth key: ${VM_AUTH_KEY:0:30}..."
     echo "$VM_AUTH_KEY" > "$ROOT_DIR/panorama_vm_auth_key.txt"
-    echo "  Zapisano do: panorama_vm_auth_key.txt"
+    echo "  Saved to: panorama_vm_auth_key.txt"
   else
     VM_AUTH_KEY=""
-    echo "  [WARN] Nie udalo sie pobrac/wygenerowac auth-key."
-    echo "         Wygeneruj recznie: SSH do Panoramy -> request authkey add name authkey1 lifetime 1440 count 2"
+    echo "  [WARN] Failed to fetch/generate auth-key."
+    echo "         Generate manually: SSH to Panorama -> request authkey add name authkey1 lifetime 1440 count 2"
   fi
 fi
 
 # Set auth-key on FWs (if available)
 if [ -n "$VM_AUTH_KEY" ]; then
   echo ""
-  echo "[4/6] Ustawianie auth-key na firewallach..."
+  echo "[4/6] Setting auth-key on firewalls..."
   # CLI: request authkey set KEY
   # XML API: type=op, cmd=<request><authkey><set>KEY</set></authkey></request>
   for fw_info in "FW1:$FW1_PORT:$FW1_KEY" "FW2:$FW2_PORT:$FW2_KEY"; do
     IFS=':' read -r fw_name fw_port fw_key <<< "$fw_info"
-    echo "  $fw_name: ustawianie auth-key..."
+    echo "  $fw_name: setting auth-key..."
     AUTH_RESP=$(curl -sk --max-time 30 "https://127.0.0.1:$fw_port/api/" \
       --data-urlencode "type=op" \
       --data-urlencode "cmd=<request><authkey><set>$VM_AUTH_KEY</set></authkey></request>" \
@@ -272,13 +272,13 @@ if [ -n "$VM_AUTH_KEY" ]; then
   done
 else
   echo ""
-  echo "[4/6] POMINIETO — brak panorama_vm_auth_key.txt"
-  echo "       FW moga nie polaczyc sie z Panorama automatycznie."
+  echo "[4/6] SKIPPED — missing panorama_vm_auth_key.txt"
+  echo "       FWs may not connect to Panorama automatically."
 fi
 
 # Register serials on Panorama
 echo ""
-echo "[5/6] Rejestracja seriali na Panoramie..."
+echo "[5/6] Registering serials on Panorama..."
 PAN_KEY=$(get_api_key "https://127.0.0.1:$PANORAMA_PORT" "$PAN_USER" "$PAN_PASS")
 PAN_URL="https://127.0.0.1:$PANORAMA_PORT/api/"
 
@@ -317,7 +317,7 @@ done
 
 # Commit on Panorama
 echo ""
-echo "[6/6] Commit na Panoramie..."
+echo "[6/6] Committing on Panorama..."
 COMMIT_RESP=$(curl -sk --max-time 90 "$PAN_URL" \
   --data-urlencode "type=commit" \
   --data-urlencode "cmd=<commit></commit>" \
@@ -329,7 +329,7 @@ try:
     root = ET.fromstring(sys.stdin.read())
     status = root.get('status','')
     if status == 'success':
-        print('  [OK] Commit: sukces!')
+        print('  [OK] Commit: success!')
     else:
         msg = root.findtext('.//msg','') or root.findtext('.//line','')
         print('  [WARN] Commit: ' + str(msg))
@@ -339,16 +339,16 @@ except Exception as e:
 
 echo ""
 echo "============================================================"
-echo "  Phase 2b ZAKONCZONA"
+echo "  Phase 2b COMPLETED"
 echo ""
 echo "  FW1 ($FW1_SERIAL) i FW2 ($FW2_SERIAL)"
-echo "  zarejestrowane na Panoramie w:"
+echo "  registered on Panorama in:"
 echo "    Device Group:   $DEVICE_GROUP"
 echo "    Template Stack: $TEMPLATE_STACK"
 echo ""
-echo "  Weryfikacja (SSH do Panoramy):"
+echo "  Verification (SSH to Panorama):"
 echo "    show devices connected"
 echo ""
-echo "  Opcjonalnie — Phase 3 (DC):"
+echo "  Optionally — Phase 3 (DC):"
 echo "    terraform apply -target=module.app2_dc"
 echo "============================================================"

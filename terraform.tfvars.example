@@ -1,14 +1,14 @@
 ###############################################################################
 # terraform.tfvars.example
-# Skopiuj do terraform.tfvars i uzupełnij wartości REPLACE_ME
+# Copy to terraform.tfvars and fill in REPLACE_ME values
 #
 #   cp terraform.tfvars.example terraform.tfvars
 #   nano terraform.tfvars
 ###############################################################################
 
 #------------------------------------------------------------------------------
-# Subskrypcje Azure
-# Dla demo single-subscription: wstaw tę samą subskrypcję w każdym polu
+# Azure Subscriptions
+# For demo single-subscription: use the same subscription in each field
 # az account show --query id -o tsv
 #------------------------------------------------------------------------------
 hub_subscription_id    = "REPLACE_ME_HUB_SUBSCRIPTION_ID"
@@ -16,7 +16,7 @@ spoke1_subscription_id = "REPLACE_ME_SPOKE1_SUBSCRIPTION_ID"
 spoke2_subscription_id = "REPLACE_ME_SPOKE2_SUBSCRIPTION_ID"
 
 #------------------------------------------------------------------------------
-# Lokalizacja i Resource Groups
+# Location and Resource Groups
 #------------------------------------------------------------------------------
 location = "germanywestcentral"
 
@@ -25,50 +25,50 @@ app1_resource_group_name = "rg-app1"
 app2_resource_group_name = "rg-app2-dc"
 
 #------------------------------------------------------------------------------
-# VNet Address Spaces (architektura referencyjna PANW)
+# VNet Address Spaces (PANW reference architecture)
 #------------------------------------------------------------------------------
 management_vnet_address_space = "10.255.0.0/16"
 transit_vnet_address_space    = "10.110.0.0/16"
 app1_vnet_address_space       = "10.112.0.0/16"
 app2_vnet_address_space       = "10.113.0.0/16"
 
-# internal_lb_private_ip – NIE USTAWIAJ (auto-compute z transit CIDR)
-# Terraform oblicza automatycznie: cidrhost(cidrsubnet(transit_vnet_address_space, 8, 0), 21)
-# Przykład: transit=10.110.0.0/16 → snet-private=10.110.0.0/24 → ILB=10.110.0.21
-# Ustaw TYLKO jeśli chcesz nadpisać wartość (musi być w snet-private!)
+# internal_lb_private_ip – DO NOT SET (auto-computed from transit CIDR)
+# Terraform computes automatically: cidrhost(cidrsubnet(transit_vnet_address_space, 8, 0), 21)
+# Example: transit=10.110.0.0/16 → snet-private=10.110.0.0/24 → ILB=10.110.0.21
+# Set ONLY if you want to override (must be in snet-private!)
 # internal_lb_private_ip = ""
 
 #------------------------------------------------------------------------------
-# VM-Series Firewall + Panorama – hasła i rozmiary
+# VM-Series Firewall + Panorama — passwords and sizes
 #------------------------------------------------------------------------------
-fw_vm_size     = "Standard_D8s_v3"   # 8 vCPU (wymagane przez zadanie), 32 GB
+fw_vm_size     = "Standard_D8s_v3"   # 8 vCPU (required), 32 GB
 pan_os_version = "latest"
 
 panorama_vm_size = "Standard_D16s_v3"  # 16 vCPU, 64 GB
 
 admin_username = "panadmin"
-# Min 12 znaków, uppercase+lowercase+digit+special
+# Min 12 chars, uppercase+lowercase+digit+special
 admin_password = "REPLACE_ME_Admin@Password1!"
 
 #------------------------------------------------------------------------------
-# Panorama – dane z CSP Portal (support.paloaltonetworks.com)
+# Panorama — data from CSP Portal (support.paloaltonetworks.com)
 #
-# KOLEJNOŚĆ: panorama_serial_number + panorama_auth_code → KROK 1a
-#            panorama_vm_auth_key → po aktywacji licencji Panoramy → KROK 1b
+# ORDER: panorama_serial_number + panorama_auth_code → STEP 1a
+#        panorama_vm_auth_key → after Panorama license activation → STEP 1b
 #------------------------------------------------------------------------------
 panorama_private_ip    = "10.255.0.4"
 
-# panorama_serial_number i panorama_auth_code PRZENIESIONE do:
+# panorama_serial_number and panorama_auth_code MOVED to:
 #   phase2-panorama-config/terraform.tfvars (panorama_auth_code)
-# Nie ma ich w Phase 1 – aktywacja licencji przez XML API w Phase 2.
+# Not present in Phase 1 — license activation via XML API in Phase 2.
 
 panorama_log_disk_size_gb = 2048   # 2TB Premium SSD
 
-# Panorama Template Stack + Device Group (muszą istnieć zanim wdrożysz FW)
+# Panorama Template Stack + Device Group (must exist before FW deployment)
 panorama_template_stack = "Transit-VNet-Stack"
 panorama_device_group   = "Transit-VNet-DG"
 
-# VM Auth Key – generuj po aktywacji licencji Panoramy:
+# VM Auth Key — generate after Panorama license activation:
 #   az network bastion ssh --name bastion-management \
 #     --resource-group rg-transit-hub \
 #     --target-ip-address 10.255.0.4 \
@@ -77,7 +77,7 @@ panorama_device_group   = "Transit-VNet-DG"
 panorama_vm_auth_key = ""   # Format: 2:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 #------------------------------------------------------------------------------
-# VM-Series FW Licencja
+# VM-Series FW License
 # CSP Portal → Assets → Auth Codes → VM-Series BYOL
 #------------------------------------------------------------------------------
 fw_auth_code = ""   # Format: XXXX-XXXX-XXXX-XXXX
@@ -89,7 +89,7 @@ dc_admin_username    = "dcadmin"
 dc_admin_password    = "REPLACE_ME_DcAdmin@Password1!"
 dc_vm_size           = "Standard_B2s_v2"
 dc_domain_name       = "panw.labs"
-dc_skip_auto_promote = false   # true = pomiń automatyczną promocję DC
+dc_skip_auto_promote = false   # true = skip automatic DC promotion
 
 #------------------------------------------------------------------------------
 # Azure Front Door
@@ -97,11 +97,11 @@ dc_skip_auto_promote = false   # true = pomiń automatyczną promocję DC
 frontdoor_sku = "Premium_AzureFrontDoor"
 
 #------------------------------------------------------------------------------
-# Bootstrap SA – dostęp z maszyny Terraform operatora
-# Azure Policy wymaga ograniczenia dostępu do SA (network_rules.default_action = Deny)
-# Pobierz swój IP: curl -s https://api.ipify.org
+# Bootstrap SA — access from Terraform operator machine
+# Azure Policy requires SA access restriction (network_rules.default_action = Deny)
+# Get your IP: curl -s https://api.ipify.org
 #------------------------------------------------------------------------------
-terraform_operator_ips = ["REPLACE_ME_YOUR_PUBLIC_IP"]  # np. ["203.0.113.10"]
+terraform_operator_ips = ["REPLACE_ME_YOUR_PUBLIC_IP"]  # e.g. ["203.0.113.10"]
 
 #------------------------------------------------------------------------------
 # Tags

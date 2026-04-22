@@ -5,7 +5,7 @@
 #   cp terraform.tfvars.example terraform.tfvars
 #
 # PRZED URUCHOMIENIEM:
-#   1. Phase 1a zakończona (Panorama VM uruchomiona)
+#   1. Phase 1a completed (Panorama VM running)
 #   2. Bastion tunnel w osobnym terminalu:
 #        PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
 #        az network bastion tunnel \
@@ -25,19 +25,19 @@ panorama_password = "REPLACE_ME_Admin@Password1!"
 panorama_target_hostname = "panorama-transit-hub"
 
 # Serial number z CSP Portal (my.paloaltonetworks.com → Assets → Add Product)
-# Puste = pomijamy aktywację licencji
+# Empty = skip license activation
 panorama_serial_number = ""   # np. "007300202012345"
 
 # vm-auth-key lifetime w minutach (1440 = 24h, max 8760 = 365 dni)
 vm_auth_key_lifetime = 1440
 
-# Template & Device Group (muszą zgadzać się z Phase 1 bootstrap init-cfg)
+# Template & Device Group (must match Phase 1 bootstrap init-cfg)
 template_name       = "Transit-VNet-Template"
 template_stack_name = "Transit-VNet-Stack"
 device_group_name   = "Transit-VNet-DG"
 
-# Network CIDRs – domyślne wartości zgadzają się z architekturą referencyjną
-# Zmień TYLKO jeśli zmieniłeś VNet CIDRy w Phase 1
+# Network CIDRs — default values match reference architecture
+# Change ONLY if you modified VNet CIDRs in Phase 1
 trust_subnet_cidr   = "10.110.0.0/24"
 untrust_subnet_cidr = "10.110.129.0/24"
 spoke1_vnet_cidr    = "10.112.0.0/16"

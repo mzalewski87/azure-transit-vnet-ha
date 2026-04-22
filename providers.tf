@@ -2,12 +2,12 @@
 # Terraform & Provider Configuration
 # Azure Transit VNet - VM-Series HA Reference Architecture
 #
-# Phase 1 (ten katalog): azurerm + random ONLY
-# Phase 2 (katalog phase2-panorama-config/): panos provider
+# Phase 1 (this directory): azurerm + random ONLY
+# Phase 2 (phase2-panorama-config/ directory): panos provider
 #
-# Separacja providerów jest wymagana, ponieważ panos provider zawsze próbuje
-# połączyć się z Panoramą podczas terraform plan, nawet jeśli brak zasobów.
-# Rozdzielenie na dwa katalogi eliminuje ten problem.
+# Provider separation is required because panos provider always tries to
+# connect to Panorama during terraform plan, even if no resources exist.
+# Splitting into two directories eliminates this problem.
 ###############################################################################
 
 terraform {

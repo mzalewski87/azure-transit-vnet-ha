@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
 ###############################################################################
 # scripts/fix-drift.sh
-# Naprawa rozbieżności Terraform State (state drift)
+# Fix Terraform State drift
 #
-# KIEDY URUCHAMIAĆ:
-#   Gdy terraform apply zwraca błąd:
+# WHEN TO RUN:
+#   When terraform apply returns error:
 #   "A resource with the ID ... already exists - needs to be imported"
 #
 # WYMAGANIA:
-#   - az CLI zalogowane: az login
-#   - terraform init wykonany w katalogu głównym projektu
-#   - Uruchom z katalogu głównego projektu (azure_ha_project/)
+#   - az CLI logged in: az login
+#   - terraform init executed in project root directory
+#   - Run from project root directory (azure_ha_project/)
 #
-# UŻYCIE:
+# USAGE:
 #   chmod +x scripts/fix-drift.sh
 #   ./scripts/fix-drift.sh
 #
 # Co robi ten skrypt:
-#   1. Importuje azurerm_virtual_machine_extension "dc_promote" do stanu TF
-#      (Extension istnieje w Azure bo DC był już promowany, ale TF tego nie wie)
-#   2. Usuwa stare azurerm_marketplace_agreement ze stanu (jeśli istnieją)
-#      Kod zmieniony na null_resource – stare zasoby w state będą konfliktować
+#   1. Imports azurerm_virtual_machine_extension "dc_promote" into TF state
+#      (Extension exists in Azure because DC was already promoted, but TF does not know)
+#   2. Removes old azurerm_marketplace_agreement from state (if present)
+#      Code changed to null_resource — old resources in state will conflict
 ###############################################################################
 
 set -euo pipefail
 
-# ─── Kolory dla czytelności ──────────────────────────────────────────────────
+# ─── Colors for readability ──────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -35,25 +35,25 @@ info()    { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# ─── Pobierz Subscription ID ─────────────────────────────────────────────────
-info "Pobieranie Subscription ID z aktywnej sesji az..."
+# ─── Fetch Subscription ID ─────────────────────────────────────────────────
+info "Fetching Subscription ID from active az session..."
 SUB_ID=$(az account show --query id -o tsv 2>/dev/null) || {
-  error "Nie można pobrać Subscription ID. Upewnij się że jesteś zalogowany: az login"
+  error "Cannot fetch Subscription ID. Make sure you are logged in: az login"
   exit 1
 }
 info "Subscription ID: ${SUB_ID}"
 
-# Możesz też podać manualnie:
+# You can also set it manually:
 # SUB_ID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
 echo ""
 info "======================================================"
-info " KROK 1: Usunięcie starych azurerm_marketplace_agreement ze stanu"
+info " STEP 1: Remove old azurerm_marketplace_agreement from state"
 info "======================================================"
 info "(Kod zmieniony na null_resource – stary resource type powoduje konflikt)"
 echo ""
 
-# Usuń ze stanu jeśli istnieją (nie rzuca błędu jeśli nie ma)
+# Remove from state if present (no error if missing)
 AGREEMENTS=(
   "module.firewall.azurerm_marketplace_agreement.panos_byol"
   "module.panorama.azurerm_marketplace_agreement.panorama"
@@ -63,7 +63,7 @@ for agreement in "${AGREEMENTS[@]}"; do
   if terraform state list 2>/dev/null | grep -q "^${agreement}$"; then
     warn "Usuwam ze stanu: ${agreement}"
     terraform state rm "${agreement}"
-    info "Usunięto: ${agreement}"
+    info "Removed: ${agreement}"
   else
     info "Nie ma w stanie (OK): ${agreement}"
   fi
@@ -71,43 +71,43 @@ done
 
 echo ""
 info "======================================================"
-info " KROK 2: Import dc_promote extension do stanu"
+info " STEP 2: Import dc_promote extension do stanu"
 info "======================================================"
-info "(Extension istnieje w Azure, DC jest już promowany)"
+info "(Extension exists in Azure, DC is already promoted)"
 echo ""
 
 DC_EXT_ID="/subscriptions/${SUB_ID}/resourceGroups/rg-spoke2-dc/providers/Microsoft.Compute/virtualMachines/vm-spoke2-dc/extensions/promote-to-dc"
 DC_EXT_STATE="module.spoke2_dc.azurerm_virtual_machine_extension.dc_promote"
 
-# Sprawdź czy extension istnieje w Azure
+# Check if extension exists in Azure
 if az vm extension show \
     --resource-group rg-spoke2-dc \
     --vm-name vm-spoke2-dc \
     --name promote-to-dc \
     --query "provisioningState" -o tsv 2>/dev/null | grep -q "Succeeded"; then
 
-  # Sprawdź czy już jest w stanie
+  # Check if already in state
   if terraform state list 2>/dev/null | grep -q "^${DC_EXT_STATE}$"; then
-    info "dc_promote już jest w stanie Terraform – nic do zrobienia"
+    info "dc_promote already in Terraform state — nothing to do"
   else
-    info "Importuję dc_promote extension do stanu Terraform..."
+    info "Importing dc_promote extension into Terraform state..."
     terraform import "${DC_EXT_STATE}" "${DC_EXT_ID}"
-    info "Import zakończony pomyślnie!"
+    info "Import completed successfully!"
   fi
 else
-  warn "Extension promote-to-dc nie istnieje w Azure lub nie jest w stanie Succeeded."
-  warn "Pomiń ten krok lub sprawdź portal: Portal → vm-spoke2-dc → Extensions"
+  warn "Extension promote-to-dc does not exist in Azure or is not in Succeeded state."
+  warn "Skip this step or check portal: Portal → vm-spoke2-dc → Extensions"
 fi
 
 echo ""
 info "======================================================"
-info " KROK 3: Weryfikacja stanu"
+info " STEP 3: State verification"
 info "======================================================"
 echo ""
 terraform state list | grep -E "(spoke2_dc|marketplace|panorama_terms|panos_terms)" || true
 
 echo ""
 info "======================================================"
-info " GOTOWE! Możesz teraz ponowić:"
+info " DONE! You can now retry:"
 info "   terraform plan -out=tfplan && terraform apply tfplan"
 info "======================================================"

@@ -3,7 +3,7 @@
 # generate-vm-auth-key.sh
 # Generuje Device Registration Auth Key z Panoramy przez XML API
 #
-# Wymagania:
+# Requirements:
 #   - Panorama uruchomiona (licencja NIE jest wymagana do wygenerowania klucza)
 #   - Dostep do Panoramy przez Bastion (tunnel lub IpConnect)
 #
@@ -204,7 +204,7 @@ try:
             sys.exit(0)
 
     # 3. Regex fallback – scan ALL element text
-    # WAŻNE: char class zawiera '-' (format klucza: 2:XXXXXX-YYYYYYY)
+    # NOTE: char class contains '-' (format klucza: 2:XXXXXX-YYYYYYY)
     for elem in root.iter():
         if elem.text:
             m = re.search(r'(2:[\w-]{20,})', elem.text)

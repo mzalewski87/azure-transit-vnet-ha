@@ -3,14 +3,14 @@
 # Palo Alto Panorama – Centralized Management (Management VNet, 10.255.0.4)
 #
 # Placement: snet-management (Management VNet), static IP 10.255.0.4
-# Access:    BRAK publicznego IP – wyłącznie przez Bastion (Management VNet)
+# Access:    No public IP — access only via Bastion (Management VNet)
 #            SSH:  az network bastion ssh --target-resource-id <vm-id>
-#                  lub (po re-apply z ip_connect_enabled=true): --target-ip-address 10.255.0.4
+#                  or (after re-apply with ip_connect_enabled=true): --target-ip-address 10.255.0.4
 #            HTTPS: az network bastion tunnel --target-resource-id <vm-id>
-# Bootstrap: BRAK – Panorama startuje bez custom_data (domyślny hostname: localhost.localdomain)
-#            Konfiguracja hostname, licencja, Template Stack, Device Group → Phase 2 (XML API)
-# License:   BYOL – aktywacja przez Phase 2: serial number → commit → request license fetch
-# Internet:  Outbound przez NAT Gateway (natgw-management) w Management VNet
+# Bootstrap: NONE — Panorama starts without custom_data (default hostname: localhost.localdomain)
+#            Hostname, license, Template Stack, Device Group configuration → Phase 2 (XML API)
+# License:   BYOL — activation via Phase 2: serial number → commit → request license fetch
+# Internet:  Outbound via NAT Gateway (natgw-management) in Management VNet
 ###############################################################################
 
 ###############################################################################
@@ -45,7 +45,7 @@ resource "azurerm_network_interface" "panorama" {
 }
 
 ###############################################################################
-# Panorama VM (Standard_D16s_v3 – 16 vCPU / 64 GB RAM, min 32 GB dla PAN-OS 12.x)
+# Panorama VM (Standard_D16s_v3 — 16 vCPU / 64 GB RAM, min 32 GB for PAN-OS 12.x)
 ###############################################################################
 resource "azurerm_linux_virtual_machine" "panorama" {
   name                            = "vm-panorama"
@@ -81,9 +81,9 @@ resource "azurerm_linux_virtual_machine" "panorama" {
     product   = "panorama"
   }
 
-  # Panorama startuje bez custom_data (brak bootstrap).
-  # Konfiguracja: hostname, licencja, Template Stack, Device Group → Phase 2 (XML API).
-  # Uruchom: cd phase2-panorama-config && terraform apply
+  # Panorama starts without custom_data (no bootstrap).
+  # Configuration: hostname, license, Template Stack, Device Group → Phase 2 (XML API).
+  # Run: cd phase2-panorama-config && terraform apply
 
   depends_on = [null_resource.accept_panorama_terms]
 }

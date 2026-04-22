@@ -8,10 +8,10 @@
 #   App1 VNet (10.112.0.0/16)        – Application workloads (Apache Hello World)
 #   App2 VNet (10.113.0.0/16)        – Windows Server 2022 DC
 #
-# WYMAGANA KOLEJNOŚĆ WDROŻENIA (5 faz):
+# REQUIRED DEPLOYMENT ORDER (5 phases):
 #
 # ──────────────────────────────────────────────────────────────────────────────
-# PHASE 1a – Infrastruktura bazowa (bez DC, bez FW):
+# PHASE 1a – Base infrastructure (no DC, no FW):
 #   terraform apply \
 #     -target=azurerm_resource_group.hub \
 #     -target=azurerm_resource_group.app1 \
@@ -20,16 +20,16 @@
 #     -target=module.bootstrap \
 #     -target=module.panorama
 #
-#   → Panorama bootuje ~10-15 min. Bez bootstrap – startuje z domyślnym hostname.
-#   → Aktywacja licencji i konfiguracja: Phase 2a (skrypt).
+#   → Panorama boots ~10-15 min. No bootstrap — starts with default hostname.
+#   → License activation and configuration: Phase 2a (script).
 #
-# PHASE 2a – Konfiguracja Panoramy (automatycznie — jeden skrypt):
+# PHASE 2a – Panorama Configuration (automated — single script):
 #   bash scripts/configure-panorama.sh
 #
-#   → Zarządza Bastion tunnel automatycznie
-#   → Ustawia: hostname, serial number (licencja), vm-auth-key,
-#     Template Stack, Device Group, interfejsy (DHCP), zony, trasy, NAT, security
-#   → Generuje panorama_vm_auth_key.auto.tfvars (auto-wczytywany w Phase 1b)
+#   → Manages Bastion tunnel automatically
+#   → Sets: hostname, serial number (license), vm-auth-key,
+#     Template Stack, Device Group, interfaces (DHCP), zones, routes, NAT, security
+#   → Generates panorama_vm_auth_key.auto.tfvars (auto-loaded in Phase 1b)
 #
 # PHASE 1b – VM-Series FW + Load Balancer + Routing + Front Door + App1:
 #   terraform apply \
@@ -40,32 +40,32 @@
 #     -target=module.frontdoor \
 #     -target=module.app1_app
 #
-#   → vm-auth-key automatycznie wczytany z .auto.tfvars (zero ręcznej edycji!)
-#   → FW bootuje → aktywuje licencję auth codem → łączy się z Panoramą
+#   → vm-auth-key auto-loaded from .auto.tfvars (zero manual editing!)
+#   → FW boots → activates license with auth code → connects to Panorama
 #
-# PHASE 2b – Rejestracja FW na Panoramie (automatycznie — jeden skrypt):
+# PHASE 2b – FW Registration on Panorama (automated — single script):
 #   bash scripts/register-fw-panorama.sh
 #
-#   → Otwiera Bastion tunnele do FW1, FW2, Panoramy
-#   → Odczytuje seriale FW (generowane dynamicznie przy aktywacji)
-#   → Ustawia auth-key na FW, dodaje seriale do Panoramy (mgt-config + DG + TS)
-#   → Commit na Panoramie → FW connected + in sync
+#   → Opens Bastion tunnels to FW1, FW2, Panorama
+#   → Reads FW serials (dynamically generated during activation)
+#   → Sets auth-key on FW, adds serials to Panorama (mgt-config + DG + TS)
+#   → Commit on Panorama → FW connected + in sync
 #
-# PHASE 3 – DC (opcjonalnie, niezależnie):
+# PHASE 3 – DC (optional, independent):
 #   terraform apply -target=module.app2_dc
 #
-# DLACZEGO ta kolejność:
-#   FW init-cfg zawiera tplname= i dgname= które muszą istnieć w Panoramie.
-#   Phase 2a tworzy je. FW próbuje zarejestrować się przy starcie.
-#   Phase 2b dodaje dynamiczne seriale FW do Panoramy po ich aktywacji.
+# WHY this order:
+#   FW init-cfg contains tplname= and dgname= which must exist on Panorama.
+#   Phase 2a creates them. FW tries to register at startup.
+#   Phase 2b adds dynamic FW serials to Panorama after their activation.
 # ──────────────────────────────────────────────────────────────────────────────
 ###############################################################################
 
 #------------------------------------------------------------------------------
 # Locals
-# internal_lb_private_ip obliczany automatycznie z transit_vnet_address_space
-# snet-private = cidrsubnet(transit, 8, 0) → host #21 (np. 10.110.0.21)
-# Można nadpisać zmienną internal_lb_private_ip jeśli wymagana inna wartość
+# internal_lb_private_ip computed automatically from transit_vnet_address_space
+# snet-private = cidrsubnet(transit, 8, 0) → host #21 (e.g. 10.110.0.21)
+# Can override internal_lb_private_ip variable if different value needed
 #------------------------------------------------------------------------------
 locals {
   internal_lb_private_ip = var.internal_lb_private_ip != "" ? var.internal_lb_private_ip : cidrhost(cidrsubnet(var.transit_vnet_address_space, 8, 0), 21)
@@ -129,7 +129,7 @@ module "networking" {
 # Bootstrap Module
 # Creates: Storage Account, FW1+FW2 bootstrap blobs (init-cfg, authcodes),
 #          User Assigned Managed Identity for FW SA access
-# SCOPE: WYŁĄCZNIE dla VM-Series FW. Panorama używa bezpośredniej init-cfg w customData.
+# SCOPE: ONLY for VM-Series FW. Panorama uses direct init-cfg in customData.
 #------------------------------------------------------------------------------
 module "bootstrap" {
   source = "./modules/bootstrap"
@@ -137,7 +137,7 @@ module "bootstrap" {
   location            = var.location
   resource_group_name = azurerm_resource_group.hub.name
 
-  # Panorama IP w Management VNet – trafia do FW init-cfg jako panorama-server=
+  # Panorama IP in Management VNet – goes into FW init-cfg as panorama-server=
   panorama_private_ip     = var.panorama_private_ip
   panorama_template_stack = var.panorama_template_stack
   panorama_device_group   = var.panorama_device_group
@@ -145,13 +145,13 @@ module "bootstrap" {
   fw_auth_code            = var.fw_auth_code
 
   # Azure Policy compliance: SA network_rules.default_action = Deny
-  # Transit FW mgmt subnet ma Microsoft.Storage service endpoint
+  # Transit FW mgmt subnet has Microsoft.Storage service endpoint
   allowed_subnet_ids = [
     module.networking.mgmt_subnet_id,
   ]
 
-  # NAT GW IP wymagany w SA ip_rules – FW wychodzi przez NAT GW podczas bootstrapu
-  # zanim service endpoint jest gotowy. Bez tego SA odrzuca połączenia FW.
+  # NAT GW IP required in SA ip_rules — FW egresses via NAT GW during bootstrap
+  # before service endpoint is ready. Without it SA rejects FW connections.
   nat_gateway_ips        = [module.networking.nat_gateway_transit_mgmt_public_ip]
   terraform_operator_ips = var.terraform_operator_ips
 
@@ -162,9 +162,9 @@ module "bootstrap" {
 
 #------------------------------------------------------------------------------
 # Panorama Module
-# Creates: Panorama VM w Management VNet (10.255.0.4), 2TB data disk
-# Bootstrap: BRAK – Panorama startuje bez custom_data
-#            Hostname, licencja, Template Stack, Device Group → Phase 2 (XML API)
+# Creates: Panorama VM in Management VNet (10.255.0.4), 2TB data disk
+# Bootstrap: NONE — Panorama starts without custom_data
+#            Hostname, license, Template Stack, Device Group → Phase 2 (XML API)
 #------------------------------------------------------------------------------
 module "panorama" {
   source = "./modules/panorama"
@@ -237,15 +237,15 @@ module "firewall" {
 
   tags = var.tags
 
-  # Explicit dependency – bootstrap musi być gotowy (SA + blobs + ip_rules)
-  # ZANIM FW zostanie stworzony. customData/userData jest immutable po create.
+  # Explicit dependency — bootstrap must be ready (SA + blobs + ip_rules)
+  # BEFORE FW is created. customData/userData is immutable after create.
   depends_on = [module.bootstrap]
 }
 
 #------------------------------------------------------------------------------
 # Routing Module
-# Creates: UDR Route Tables dla App1 i App2
-#          0.0.0.0/0 → Internal LB (10.110.0.21), east-west również przez FW
+# Creates: UDR Route Tables for App1 and App2
+#          0.0.0.0/0 → Internal LB (10.110.0.21), east-west also through FW
 #------------------------------------------------------------------------------
 module "routing" {
   source = "./modules/routing"
@@ -310,7 +310,7 @@ module "app1_app" {
 #------------------------------------------------------------------------------
 # App2 DC Module
 # Creates: Windows Server 2022 DC (panw.labs, 10.113.0.4)
-# Bastion: W Management VNet (moduł networking) – nie tutaj
+# Bastion: In Management VNet (networking module) — not here
 #------------------------------------------------------------------------------
 module "app2_dc" {
   source = "./modules/spoke2_dc"

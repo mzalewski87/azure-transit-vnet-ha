@@ -3,11 +3,11 @@
 # Windows Server 2022 Domain Controller
 #
 # Placement: App2 VNet snet-workload (10.113.0.0/24), static IP 10.113.0.4
-# Access:    Azure Bastion Standard (Management VNet) – IpConnect lub RDP
-#            Bastion Standard obsługuje VMs w peeredowanych VNetach
-# Domain:    panw.labs (konfiguracja przez cloud-init PowerShell)
+# Access:    Azure Bastion Standard (Management VNet) — IpConnect or RDP
+#            Bastion Standard supports VMs in peered VNets
+# Domain:    panw.labs (configuration via cloud-init PowerShell)
 #
-# UWAGA: Bastion jest w Management VNet (module.networking), NIE tutaj.
+# NOTE: Bastion is in Management VNet (module.networking), NOT here.
 ###############################################################################
 
 terraform {

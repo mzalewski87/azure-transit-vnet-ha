@@ -31,17 +31,17 @@ locals {
 ###############################################################################
 # Marketplace Terms Acceptance (idempotent via az CLI)
 #
-# Dlaczego null_resource zamiast azurerm_marketplace_agreement:
-#   azurerm_marketplace_agreement rzuca błąd "already exists" jeśli umowa
-#   była już wcześniej zaakceptowana (częściowe apply, manualna akcja).
-#   null_resource + az vm image terms accept jest IDEMPOTENTNY – zawsze
-#   kończy się sukcesem niezależnie od stanu umowy w Azure.
+# Why null_resource instead of azurerm_marketplace_agreement:
+#   azurerm_marketplace_agreement throws error "already exists" if agreement
+#   was already accepted (partial apply, manual action).
+#   null_resource + az vm image terms accept is IDEMPOTENT — always
+#   succeeds regardless of agreement state in Azure.
 #
-# Wymaga: az CLI zalogowanego do właściwej subskrypcji (az login).
+# Requires: az CLI logged into correct subscription (az login).
 ###############################################################################
 resource "null_resource" "accept_panos_terms" {
   triggers = {
-    # Stały trigger – lokalny-exec uruchamia się tylko raz na pierwszym apply
+    # Constant trigger — local-exec runs only once on first apply
     agreement = "paloaltonetworks:vmseries-flex:byol"
   }
 
@@ -70,8 +70,8 @@ resource "azurerm_availability_set" "fw_avset" {
 ###############################################################################
 
 # NIC0 - Management (primary)
-# UWAGA: Brak publicznego IP – dostęp wyłącznie przez Hub Azure Bastion
-# Wychodząca komunikacja (updates, licencje) przez NAT Gateway na snet-mgmt
+# NOTE: No public IP — access only via Hub Azure Bastion
+# Outbound communication (updates, licenses) via NAT Gateway on snet-mgmt
 resource "azurerm_network_interface" "fw1_mgmt" {
   name                = "nic-fw1-mgmt"
   location            = var.location
@@ -144,7 +144,7 @@ resource "azurerm_network_interface" "fw1_ha" {
 # FW2 - Network Interfaces
 ###############################################################################
 
-# NIC0 - Management (private only – dostęp przez Hub Azure Bastion)
+# NIC0 - Management (private only — access via Hub Azure Bastion)
 resource "azurerm_network_interface" "fw2_mgmt" {
   name                = "nic-fw2-mgmt"
   location            = var.location
@@ -290,9 +290,9 @@ resource "azurerm_linux_virtual_machine" "fw1" {
   }
 
   # Bootstrap: points VM-Series to Azure Storage Account bootstrap package
-  # custom_data wysyłane podczas tworzenia VM (pre-boot).
-  # userData (dla PAN-OS 11.x/12.x) ustawiane przez null_resource po dealokacji VM
-  # aby ominąć bug azurerm_linux_virtual_machine nie propagujący user_data dla marketplace VMs.
+  # custom_data sent during VM creation (pre-boot).
+  # userData (for PAN-OS 11.x/12.x) set via null_resource after VM deallocation
+  # to work around azurerm_linux_virtual_machine bug not propagating user_data for marketplace VMs.
   custom_data = var.bootstrap_custom_data_fw1
 
   identity {
@@ -305,11 +305,11 @@ resource "azurerm_linux_virtual_machine" "fw1" {
 
 ###############################################################################
 # FW1 – set userData via az CLI after VM creation
-# Workaround: azurerm_linux_virtual_machine.user_data nie jest propagowane
-# do Azure ARM API dla marketplace VMs z blokiem plan{}.
-# Sekwencja: deallocate (force-stop przed zapisem config przez PAN-OS) →
-#   az vm update --user-data (poprawny single-line base64) →
-#   az vm start (PAN-OS first boot czyta userData z IMDS → bootstrap)
+# Workaround: azurerm_linux_virtual_machine.user_data is not propagated
+# to Azure ARM API for marketplace VMs with plan{} block.
+# Sequence: deallocate (force-stop before PAN-OS config save) →
+#   az vm update --user-data (correct single-line base64) →
+#   az vm start (PAN-OS first boot reads userData from IMDS → bootstrap)
 ###############################################################################
 resource "null_resource" "fw1_set_userdata" {
   triggers = {

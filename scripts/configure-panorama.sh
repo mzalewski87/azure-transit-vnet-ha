@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 ###############################################################################
-# configure-panorama.sh — Phase 2a: Konfiguracja Panoramy (automatyczna)
+# configure-panorama.sh — Phase 2a: Panorama Configuration (automated)
 #
-# Zarządza Bastion tunnel automatycznie, uruchamia Phase 2 Terraform.
+# Manages Bastion tunnel automatically, runs Phase 2 Terraform.
 #
-# Użycie:
+# Usage:
 #   bash scripts/configure-panorama.sh
 #
-# Wymagania:
-#   - Phase 1a zakończona (Panorama VM uruchomiona)
-#   - az CLI zalogowany
-#   - phase2-panorama-config/terraform.tfvars uzupełniony
+# Requirements:
+#   - Phase 1a completed (Panorama VM running)
+#   - az CLI logged in
+#   - phase2-panorama-config/terraform.tfvars filled in
 #
-# Efekt:
-#   - Panorama skonfigurowana (hostname, serial, licencja, vm-auth-key,
-#     Template Stack, Device Group, interfejsy, zony, trasy, NAT, security)
-#   - panorama_vm_auth_key.auto.tfvars utworzony w katalogu root
-#     (automatycznie wczytywany przez Phase 1b)
+# Result:
+#   - Panorama configured (hostname, serial, license, vm-auth-key,
+#     Template Stack, Device Group, interfaces, zones, routes, NAT, security)
+#   - panorama_vm_auth_key.auto.tfvars created in project root
+#     (auto-loaded by Phase 1b)
 ###############################################################################
 
 set -euo pipefail
@@ -29,7 +29,7 @@ LOCAL_PORT=44300
 
 cleanup() {
   echo ""
-  echo "[*] Zamykanie Bastion tunnel..."
+  echo "[*] Closing Bastion tunnel..."
   if [ -n "$TUNNEL_PID" ]; then
     # Kill process group (az + Python subprocesses)
     kill -- -"$TUNNEL_PID" 2>/dev/null || kill "$TUNNEL_PID" 2>/dev/null || true
@@ -44,30 +44,30 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "============================================================"
-echo "  Phase 2a: Konfiguracja Panoramy"
+echo "  Phase 2a: Panorama Configuration"
 echo "============================================================"
 echo ""
 
 # Check prerequisites
 if [ ! -f "$PHASE2_DIR/terraform.tfvars" ]; then
-  echo "[BLAD] Brak pliku: phase2-panorama-config/terraform.tfvars"
+  echo "[ERROR] Missing file: phase2-panorama-config/terraform.tfvars"
   echo "       cp phase2-panorama-config/terraform.tfvars.example phase2-panorama-config/terraform.tfvars"
-  echo "       Uzupelnij: panorama_password, panorama_serial_number, external_lb_public_ip"
+  echo "       Fill in: panorama_password, panorama_serial_number, external_lb_public_ip"
   exit 1
 fi
 
 # Get Panorama VM ID from Terraform output
-echo "[1/4] Pobieranie Panorama VM ID z Terraform output..."
+echo "[1/4] Fetching Panorama VM ID from Terraform output..."
 cd "$ROOT_DIR"
 PANORAMA_ID=$(terraform output -raw panorama_vm_id 2>/dev/null || true)
 if [ -z "$PANORAMA_ID" ]; then
-  echo "[BLAD] Nie mozna pobrac panorama_vm_id. Czy Phase 1a zostala zakonczona?"
+  echo "[ERROR] Cannot fetch panorama_vm_id. Is Phase 1a completed?"
   exit 1
 fi
 echo "       VM ID: $PANORAMA_ID"
 
 # Start Bastion tunnel
-echo "[2/4] Uruchamianie Bastion tunnel (port $LOCAL_PORT -> Panorama:443)..."
+echo "[2/4] Starting Bastion tunnel (port $LOCAL_PORT -> Panorama:443)..."
 az network bastion tunnel \
   --name bastion-management \
   --resource-group rg-transit-hub \
@@ -78,22 +78,22 @@ TUNNEL_PID=$!
 echo "       Tunnel PID: $TUNNEL_PID"
 
 # Wait for tunnel to be ready
-echo "       Czekam na tunnel..."
+echo "       Waiting for tunnel..."
 sleep 10
 for i in $(seq 1 12); do
   if curl -sk --max-time 3 -o /dev/null "https://127.0.0.1:$LOCAL_PORT/php/login.php" 2>/dev/null; then
-    echo "       Tunnel gotowy!"
+    echo "       Tunnel ready!"
     break
   fi
   if [ "$i" -eq 12 ]; then
-    echo "[BLAD] Tunnel nie odpowiada po 60s. Sprawdz Bastion i Panorama VM."
+    echo "[ERROR] Tunnel not responding after 60s. Check Bastion and Panorama VM."
     exit 1
   fi
   sleep 5
 done
 
 # Run Phase 2 Terraform
-echo "[3/4] Uruchamianie Phase 2 Terraform..."
+echo "[3/4] Running Phase 2 Terraform..."
 echo ""
 cd "$PHASE2_DIR"
 terraform init -input=false -no-color 2>&1 | tail -5
@@ -102,20 +102,20 @@ terraform apply -auto-approve -input=false
 
 # Verify output
 echo ""
-echo "[4/4] Weryfikacja..."
+echo "[4/4] Verification..."
 if [ -f "$ROOT_DIR/panorama_vm_auth_key.auto.tfvars" ]; then
   echo "  [OK] panorama_vm_auth_key.auto.tfvars utworzony"
   echo "       Phase 1b automatycznie pobierze vm-auth-key."
 else
-  echo "  [WARN] panorama_vm_auth_key.auto.tfvars NIE zostal utworzony."
-  echo "         Sprawdz output Phase 2 powyzej."
+  echo "  [WARN] panorama_vm_auth_key.auto.tfvars was NOT created."
+  echo "         Check Phase 2 output above."
 fi
 
 echo ""
 echo "============================================================"
-echo "  Phase 2a ZAKONCZONA"
+echo "  Phase 2a COMPLETED"
 echo ""
-echo "  Nastepny krok — Phase 1b (deploy firewalli):"
+echo "  Next step — Phase 1b (deploy firewalls):"
 echo "    cd $ROOT_DIR"
 echo "    terraform apply \\"
 echo "      -target=module.bootstrap \\"

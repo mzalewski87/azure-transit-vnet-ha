@@ -2,15 +2,15 @@
 # Phase 2 – Panorama Configuration (API-based)
 #
 # WYMAGANIA:
-#   1. Panorama VM uruchomiona (Phase 1a zakończona, VM bootuje ~15 min)
-#   2. Bastion tunnel aktywny w OSOBNYM terminalu:
+#   1. Panorama VM running (Phase 1a completed, VM boots ~15 min)
+#   2. Bastion tunnel active in SEPARATE terminal:
 #        PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
 #        az network bastion tunnel \
 #          --name bastion-management \
 #          --resource-group rg-transit-hub \
 #          --target-resource-id "$PANORAMA_ID" \
 #          --resource-port 443 --port 44300
-#   3. terraform.tfvars uzupełniony (hasło, serial_number, CIDRy)
+#   3. terraform.tfvars filled in (password, serial_number, CIDRs)
 #
 # SEKWENCJA:
 #   1. Wait for Panorama API (max 20 min)
@@ -109,7 +109,7 @@ print(root.findtext('.//key',''))
 ###############################################################################
 # Step 3: Set serial number (OPERATIONAL mode) + commit + license fetch
 #
-# Serial number na Panoramie ustawia się komendą operational mode:
+# Serial number on Panorama is set via operational mode command:
 #   set serial-number 000710041165
 #
 # XML API equivalent (potwierdzone debug cli on):
@@ -156,9 +156,9 @@ print(root.findtext('.//key',''))
       # 3a: Set serial number via OPERATIONAL mode
       # CLI: set serial-number 000710041165
       # XML API: type=op, cmd=<set><serial-number>SERIAL</serial-number></set>
-      # UWAGA: Po set serial-number Panorama może zrestartować management service.
-      #        Dlatego max-time=120 i po nim pętla wait na API.
-      echo "  Ustawianie serial number (operational mode)..."
+      # NOTE: After set serial-number Panorama may restart management service.
+      #        Therefore max-time=120 followed by API wait loop.
+      echo "  Setting serial number (operational mode)..."
       SET_RESP=$(curl -sk --max-time 120 "$PANORAMA_URL/api/" \
         --data-urlencode "type=op" \
         --data-urlencode "cmd=<set><serial-number>$SERIAL_NUM</serial-number></set>" \
@@ -189,8 +189,8 @@ except Exception as e:
         echo "  Set serial: OK"
       fi
 
-      # 3a2: Czekaj na API po set serial-number (management service może się restartować)
-      echo "  Czekam na Panorama API po zmianie serial number..."
+      # 3a2: Wait for API after set serial-number (management service may restart)
+      echo "  Waiting for Panorama API after serial number change..."
       sleep 15
       for WAIT_I in $(seq 1 20); do
         WAIT_CODE=$(curl -sk --max-time 10 -o /dev/null -w "%%{http_code}" "$PANORAMA_URL/php/login.php" 2>/dev/null || echo "000")
@@ -205,7 +205,7 @@ except Exception as e:
         sleep 10
       done
 
-      # Nowy API key (stary mógł wygasnąć po restarcie)
+      # New API key (old one may have expired after restart)
       API_KEY=$(curl -sk --max-time 30 \
         "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
         | python3 -c "
@@ -222,7 +222,7 @@ print(root.findtext('.//key',''))
         --data-urlencode "key=$API_KEY" > /dev/null
       echo "  Commit: OK"
 
-      echo "  Czekam 30s na propagację serial number..."
+      echo "  Waiting 30s for serial number propagation..."
       sleep 30
 
       # 3c: License fetch (operational mode, z retry)
@@ -262,9 +262,9 @@ except Exception as e:
         fi
       done
 
-      # 3d: Po license fetch Panorama może PONOWNIE restartować management service
-      # aby zaaplikować nową licencję. Czekamy na stabilne API.
-      echo "  Czekam na stabilne API po license fetch..."
+      # 3d: After license fetch Panorama may AGAIN restart management service
+      # to apply the new license. Waiting for stable API.
+      echo "  Waiting for stable API after license fetch..."
       sleep 20
       for WAIT_L in $(seq 1 15); do
         WAIT_CODE=$(curl -sk --max-time 10 -o /dev/null -w "%%{http_code}" "$PANORAMA_URL/php/login.php" 2>/dev/null || echo "000")
@@ -279,8 +279,8 @@ except Exception as e:
         sleep 10
       done
 
-      # Weryfikacja: czy keygen działa (test credentials)
-      echo "  Weryfikacja API credentials..."
+      # Verification: check if keygen works (test credentials)
+      echo "  Verifying API credentials..."
       for VERIFY in $(seq 1 5); do
         TEST_KEY=$(curl -sk --max-time 15 \
           "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
@@ -332,7 +332,7 @@ resource "null_resource" "panorama_generate_vm_auth_key" {
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
 
-      # Retry keygen — API może być jeszcze niestabilna po license fetch
+      # Retry keygen — API may still be unstable after license fetch
       API_KEY=""
       for KG_TRY in $(seq 1 10); do
         API_KEY=$(curl -sk --max-time 30 \
@@ -359,17 +359,17 @@ except:
         sleep 15
       done
 
-      # Generate key (z retry — Panorama może potrzebować chwili po license fetch)
+      # Generate key (with retry — Panorama may need a moment after license fetch)
       VM_AUTH_KEY=""
       for AUTH_TRY in $(seq 1 5); do
         KEY_RESP=$(curl -sk --max-time 60 \
           "$PANORAMA_URL/api/?type=op&cmd=<request><authkey><add><name>authkey-auto</name><lifetime>$LIFETIME</lifetime><count>10</count></add></authkey></request>&key=$API_KEY" \
           2>/dev/null || echo "")
 
-        # Debug: pokaż raw response (pierwsze 500 znaków)
+        # Debug: show raw response (first 500 chars)
         echo "  [authkey proba $AUTH_TRY] Response length: $(echo "$KEY_RESP" | wc -c | tr -d ' ') bytes"
 
-        # Parser — ZAWSZE exit 0, błędy w stdout prefixowane ERROR:
+        # Parser — ALWAYS exit 0, errors in stdout prefixed ERROR:
         VM_AUTH_KEY=$(echo "$KEY_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET, re
 try:
@@ -415,8 +415,8 @@ except Exception as e:
         echo "[WARN] Nie udalo sie wygenerowac vm-auth-key po 5 probach."
         echo "       Ostatni wynik: $VM_AUTH_KEY"
         echo "       Wygeneruj recznie: admin@panorama> request authkey add name authkey1 lifetime $LIFETIME count 2"
-        echo "       Nastepnie dodaj do terraform.tfvars: panorama_vm_auth_key = \"<klucz>\""
-        # Nie failujemy — reszta Phase 2a (Step 5, 6) może działać
+        echo "       Then add to terraform.tfvars: panorama_vm_auth_key = \"<klucz>\""
+        # Not failing — rest of Phase 2a (Step 5, 6) can still work
         exit 0
       fi
 
@@ -433,7 +433,7 @@ except Exception as e:
       # Auto-inject into root terraform — .auto.tfvars is auto-loaded!
       cat > ../panorama_vm_auth_key.auto.tfvars <<EOF
 # Auto-generated by Phase 2a ($(date -u +%Y-%m-%dT%H:%M:%SZ))
-# vm-auth-key wygenerowany na Panoramie — używany w FW bootstrap init-cfg
+# vm-auth-key generated on Panorama — used in FW bootstrap init-cfg
 panorama_vm_auth_key = "$VM_AUTH_KEY"
 EOF
       echo "  Zapisano do: ../panorama_vm_auth_key.auto.tfvars (auto-loaded by Terraform)"
@@ -447,9 +447,9 @@ EOF
     SCRIPT
   }
 
-  # Step 4 MUSI czekać na Step 3 (serial number + license activation).
-  # Po set serial-number Panorama restartuje management service — Step 4 musi
-  # uruchomić się PO tym, jak API wróci do działania (Step 3 na to czeka).
+  # Step 4 MUST wait for Step 3 (serial number + license activation).
+  # After set serial-number Panorama restarts management service — Step 4 must
+  # start AFTER API comes back up (Step 3 waits for this).
   depends_on = [null_resource.panorama_activate_license]
 }
 

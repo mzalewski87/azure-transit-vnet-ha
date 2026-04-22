@@ -1,8 +1,8 @@
 ###############################################################################
 # Bootstrap Module Variables
 # Storage Account + FW Bootstrap Package (init-cfg.txt, authcodes)
-# UWAGA: Bootstrap SA jest TYLKO dla VM-Series FW.
-#        Panorama używa bezpośredniej treści init-cfg w customData (nie SA pointer).
+# NOTE: Bootstrap SA is ONLY for VM-Series FW.
+#        Panorama uses direct init-cfg content in customData (not SA pointer).
 ###############################################################################
 
 variable "location" {

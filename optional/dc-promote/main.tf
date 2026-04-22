@@ -1,28 +1,28 @@
 ###############################################################################
 # optional/dc-promote/
 #
-# OPCJONALNY krok – promocja Windows Server do Active Directory Domain Controller.
-# Uruchom po zakończeniu Phase 1a i Phase 1b jeśli potrzebujesz AD DS.
+# OPTIONAL step — promote Windows Server to Active Directory Domain Controller.
+# Run after Phase 1a and Phase 1b completion if you need AD DS.
 #
 # WYMAGANIA:
-#   - DC VM (vm-spoke2-dc) musi być uruchomiona (wdrożona w Phase 1a)
-#   - Bastion tunnel lub dostęp do Azure API
+#   - DC VM (vm-spoke2-dc) must be running (deployed in Phase 1a)
+#   - Bastion tunnel or Azure API access
 #
-# UŻYCIE:
+# USAGE:
 #   cd optional/dc-promote/
 #   cp terraform.tfvars.example terraform.tfvars
-#   # Uzupełnij: spoke2_subscription_id, admin_password
+#   # Fill in: spoke2_subscription_id, admin_password
 #   terraform init
 #   terraform apply
-#   # Poczekaj 30-45 min na zakończenie promocji i reboot
+#   # Wait 30-45 min for promotion completion and reboot
 #
 # WERYFIKACJA (przez Azure Bastion → RDP → vm-spoke2-dc):
 #   nltest /sc_verify:panw.labs
 #   Get-ADDomain | Select Name,DomainMode
 #
-# PO PROMOCJI – User-ID Integration:
-#   Skonfiguruj PAN-OS User-ID Agent wskazujący na DC (10.2.0.4)
-#   dla polityk bezpieczeństwa opartych na użytkownikach/grupach.
+# AFTER PROMOTION — User-ID Integration:
+#   Configure PAN-OS User-ID Agent pointing to DC (10.2.0.4)
+#   for user/group-based security policies.
 ###############################################################################
 
 data "azurerm_virtual_machine" "dc" {

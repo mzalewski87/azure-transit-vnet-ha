@@ -354,6 +354,10 @@ azure_ha_project/
 
 ---
 
+## Author
+
+**Michał Zalewski** ([@mzalewski87](https://github.com/mzalewski87))
+
 ## License
 
 MIT – see [LICENSE](LICENSE)
