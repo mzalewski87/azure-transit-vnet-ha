@@ -156,11 +156,13 @@ print(root.findtext('.//key',''))
       # 3a: Set serial number via OPERATIONAL mode
       # CLI: set serial-number 000710041165
       # XML API: type=op, cmd=<set><serial-number>SERIAL</serial-number></set>
+      # UWAGA: Po set serial-number Panorama może zrestartować management service.
+      #        Dlatego max-time=120 i po nim pętla wait na API.
       echo "  Ustawianie serial number (operational mode)..."
-      SET_RESP=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+      SET_RESP=$(curl -sk --max-time 120 "$PANORAMA_URL/api/" \
         --data-urlencode "type=op" \
         --data-urlencode "cmd=<set><serial-number>$SERIAL_NUM</serial-number></set>" \
-        --data-urlencode "key=$API_KEY" 2>/dev/null)
+        --data-urlencode "key=$API_KEY" 2>/dev/null || echo "<response status='timeout'/>")
 
       SET_STATUS=$(echo "$SET_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
@@ -168,6 +170,8 @@ try:
     root = ET.fromstring(sys.stdin.read())
     if root.get('status') == 'success':
         print('OK')
+    elif root.get('status') == 'timeout':
+        print('TIMEOUT')
     else:
         msg = root.findtext('.//msg','') or root.findtext('.//line','')
         print('ERROR: ' + str(msg))
@@ -179,11 +183,40 @@ except Exception as e:
         echo "  [BLAD] Set serial: $SET_STATUS"
         exit 1
       fi
-      echo "  Set serial: OK"
+      if [ "$SET_STATUS" = "TIMEOUT" ]; then
+        echo "  Set serial: timeout (Panorama restartuje management service — to normalne)"
+      else
+        echo "  Set serial: OK"
+      fi
+
+      # 3a2: Czekaj na API po set serial-number (management service może się restartować)
+      echo "  Czekam na Panorama API po zmianie serial number..."
+      sleep 15
+      for WAIT_I in $(seq 1 20); do
+        WAIT_CODE=$(curl -sk --max-time 10 -o /dev/null -w "%%{http_code}" "$PANORAMA_URL/php/login.php" 2>/dev/null || echo "000")
+        if [ "$WAIT_CODE" = "200" ] || [ "$WAIT_CODE" = "302" ]; then
+          echo "  Panorama API gotowa (HTTP $WAIT_CODE, proba $WAIT_I)"
+          break
+        fi
+        if [ "$WAIT_I" -ge 20 ]; then
+          echo "  [WARN] Panorama API nie odpowiada po 20 probach."
+        fi
+        echo "  [$WAIT_I/20] HTTP $WAIT_CODE — czekam 10s..."
+        sleep 10
+      done
+
+      # Nowy API key (stary mógł wygasnąć po restarcie)
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+print(root.findtext('.//key',''))
+" 2>/dev/null)
 
       # 3b: Commit
       echo "  Commit po ustawieniu serial..."
-      curl -sk --max-time 90 "$PANORAMA_URL/api/" \
+      curl -sk --max-time 120 "$PANORAMA_URL/api/" \
         --data-urlencode "type=commit" \
         --data-urlencode "cmd=<commit></commit>" \
         --data-urlencode "key=$API_KEY" > /dev/null
@@ -330,7 +363,10 @@ EOF
     SCRIPT
   }
 
-  depends_on = [null_resource.panorama_set_hostname]
+  # Step 4 MUSI czekać na Step 3 (serial number + license activation).
+  # Po set serial-number Panorama restartuje management service — Step 4 musi
+  # uruchomić się PO tym, jak API wróci do działania (Step 3 na to czeka).
+  depends_on = [null_resource.panorama_activate_license]
 }
 
 ###############################################################################
