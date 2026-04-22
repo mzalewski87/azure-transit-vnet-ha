@@ -324,6 +324,86 @@ az network bastion tunnel --name bastion-management --resource-group rg-transit-
 
 ---
 
+## Testing Traffic Flows
+
+### Inbound: Azure Front Door → FW → Apache
+
+```bash
+# Get Front Door endpoint URL
+AFD_HOST=$(terraform output -raw frontdoor_endpoint_hostname)
+echo "Front Door URL: https://$AFD_HOST"
+
+# Test via Front Door (global L7 LB → ELB → FW DNAT → Apache)
+curl -v "https://$AFD_HOST/"
+
+# Direct test via External LB (bypass AFD)
+ELB_IP=$(terraform output -raw external_lb_public_ip)
+curl -v "http://$ELB_IP/"
+```
+
+Expected: Apache "Hello World" page from Spoke1 VM (10.112.0.4).
+
+### Outbound: DC → Internet (via FW)
+
+```bash
+# SSH to DC via Bastion (RDP tunnel for GUI)
+DC_ID=$(terraform output -raw dc_vm_id)
+az network bastion tunnel --name bastion-management --resource-group rg-transit-hub \
+  --target-resource-id "$DC_ID" --resource-port 3389 --port 33389
+# Then: RDP to localhost:33389, open browser → internet traffic goes through FW
+```
+
+DC outbound traffic flow: `DC (10.113.0.4) → UDR 0/0 → ILB → FW (SNAT) → ELB → Internet`
+
+### East-West: DC ↔ Ubuntu (via FW)
+
+```bash
+# From DC (via RDP/PowerShell):
+Test-NetConnection -ComputerName 10.112.0.4 -Port 80
+
+# From Ubuntu (via Bastion SSH):
+curl http://10.113.0.4
+```
+
+East-west flow: `DC → UDR → ILB → FW (inspect) → ILB → Ubuntu` (and reverse)
+
+### Verify Logs in Panorama
+
+After running traffic tests, check logs on Panorama:
+```
+admin@panorama> show log traffic direction equal forward
+```
+
+Or via Panorama GUI: **Monitor → Traffic** — filter by source/destination.
+
+> **Note:** Logs require Phase 2b completed (FW registered on Panorama) and Log Forwarding Profile
+> configured (done automatically in Phase 2a Step 4b + Step 5).
+
+---
+
+## HA Mode – Active/Passive with Azure LB
+
+This architecture uses **Active/Passive HA** with Azure Standard Load Balancer:
+
+- **Azure LB** (HA Ports mode) distributes traffic to both FWs
+- **PAN-OS HA** is Active/Passive — one FW handles sessions, the other is standby
+- On failover, the passive FW takes over (stateful session sync via HA2 link)
+- **Policies are centrally managed via Panorama** Device Group — changes are pushed to BOTH firewalls simultaneously. No per-FW configuration needed.
+
+To test failover:
+```bash
+# Deallocate active FW
+az vm deallocate --ids $(terraform output -raw fw1_vm_id)
+
+# Traffic should failover to FW2 — test:
+curl "http://$(terraform output -raw external_lb_public_ip)/"
+
+# Start FW1 back
+az vm start --ids $(terraform output -raw fw1_vm_id)
+```
+
+---
+
 ## Troubleshooting
 
 ### Bootstrap fails (Media Detection Failed)

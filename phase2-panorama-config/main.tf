@@ -454,8 +454,82 @@ EOF
 }
 
 ###############################################################################
+# Step 4b: Configure Panorama as Log Collector
+# Panorama must have a Collector Group to receive logs from managed firewalls.
+# Without this, even with Log Forwarding Profile on FWs, logs won't be stored.
+###############################################################################
+resource "null_resource" "panorama_configure_collector_group" {
+  triggers = {
+    collector_group = "default"
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
+      PAN_USER="${var.panorama_username}"
+
+      echo "=== [Step 4b] Configuring Panorama Log Collector Group ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR: keygen failed', file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
+" 2>/dev/null)
+
+      if [ -z "$API_KEY" ]; then
+        echo "[ERROR] Failed to get API key"
+        exit 1
+      fi
+
+      # Configure default Collector Group with log forwarding enabled
+      echo "  Creating Collector Group 'default'..."
+      RESP=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=/config/panorama/collector-group/entry[@name='default']" \
+        --data-urlencode "element=<logfwd-setting><disabled>no</disabled></logfwd-setting>" \
+        --data-urlencode "key=$API_KEY" 2>/dev/null)
+
+      STATUS=$(echo "$RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(root.get('status','error'))
+except: print('error')
+" 2>/dev/null)
+
+      if [ "$STATUS" = "success" ]; then
+        echo "  [OK] Collector Group 'default' configured"
+      else
+        echo "  [WARN] Collector Group config response: $STATUS"
+        echo "  This may need manual setup: Panorama → Managed Collectors → Add Collector Group"
+      fi
+
+      # Commit to apply Collector Group
+      echo "  Committing Collector Group config..."
+      curl -sk --max-time 90 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=commit" \
+        --data-urlencode "cmd=<commit></commit>" \
+        --data-urlencode "key=$API_KEY" >/dev/null 2>&1
+
+      echo "  [OK] Collector Group commit submitted"
+      sleep 10
+    SCRIPT
+  }
+
+  depends_on = [null_resource.panorama_generate_vm_auth_key]
+}
+
+###############################################################################
 # Step 5: Panorama Config via panos provider
 # Template Stack, Device Group, Interfaces, Zones, VR, Routes, NAT, Security
+# Log Forwarding Profile with send_to_panorama=true for all security rules
 ###############################################################################
 module "panorama_config" {
   source = "../modules/panorama_config"
@@ -476,7 +550,11 @@ module "panorama_config" {
   apache_server_ip      = var.apache_server_ip
   external_lb_public_ip = var.external_lb_public_ip
 
-  depends_on = [null_resource.panorama_activate_license, null_resource.panorama_set_hostname]
+  depends_on = [
+    null_resource.panorama_activate_license,
+    null_resource.panorama_set_hostname,
+    null_resource.panorama_configure_collector_group,
+  ]
 }
 
 ###############################################################################

@@ -284,7 +284,43 @@ resource "panos_panorama_nat_rule_group" "inbound" {
 }
 
 ###############################################################################
+# Log Forwarding Profile (in Device Group)
+# Required for FW traffic logs to reach Panorama.
+# Without this, log_end=true in rules only logs locally on FW — not forwarded.
+###############################################################################
+
+resource "panos_panorama_log_forwarding_profile" "default" {
+  name         = "default-logging"
+  device_group = panos_panorama_device_group.transit.name
+  description  = "Forward all logs to Panorama log collector"
+
+  match_list {
+    name             = "traffic-to-panorama"
+    log_type         = "traffic"
+    send_to_panorama = true
+    filter           = "All Logs"
+  }
+
+  match_list {
+    name             = "threat-to-panorama"
+    log_type         = "threat"
+    send_to_panorama = true
+    filter           = "All Logs"
+  }
+
+  match_list {
+    name             = "url-to-panorama"
+    log_type         = "url"
+    send_to_panorama = true
+    filter           = "All Logs"
+  }
+
+  depends_on = [panos_panorama_device_group.transit]
+}
+
+###############################################################################
 # Security Rules (in Device Group)
+# All rules use log_setting = Log Forwarding Profile to send logs to Panorama
 ###############################################################################
 
 resource "panos_panorama_security_rule_group" "transit" {
@@ -310,7 +346,8 @@ resource "panos_panorama_security_rule_group" "transit" {
 
     action = "allow"
 
-    log_end = true
+    log_setting = panos_panorama_log_forwarding_profile.default.name
+    log_end     = true
   }
 
   rule {
@@ -332,7 +369,8 @@ resource "panos_panorama_security_rule_group" "transit" {
 
     action = "allow"
 
-    log_end = true
+    log_setting = panos_panorama_log_forwarding_profile.default.name
+    log_end     = true
   }
 
   rule {
@@ -354,7 +392,8 @@ resource "panos_panorama_security_rule_group" "transit" {
 
     action = "allow"
 
-    log_end = true
+    log_setting = panos_panorama_log_forwarding_profile.default.name
+    log_end     = true
   }
 
   rule {
@@ -376,7 +415,8 @@ resource "panos_panorama_security_rule_group" "transit" {
 
     action = "allow"
 
-    log_end = true
+    log_setting = panos_panorama_log_forwarding_profile.default.name
+    log_end     = true
   }
 
   rule {
@@ -398,11 +438,13 @@ resource "panos_panorama_security_rule_group" "transit" {
 
     action = "deny"
 
-    log_end = true
+    log_setting = panos_panorama_log_forwarding_profile.default.name
+    log_end     = true
   }
 
   depends_on = [
     panos_panorama_device_group.transit,
     panos_panorama_nat_rule_group.inbound,
+    panos_panorama_log_forwarding_profile.default,
   ]
 }
