@@ -33,21 +33,21 @@ resource "null_resource" "panorama_wait_for_api" {
     command = <<-SCRIPT
       set -e
       PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
-      echo "=== Czekam na Panorama API: $PANORAMA_URL ==="
+      echo "=== Waiting for Panorama API: $PANORAMA_URL ==="
       ATTEMPTS=0
       MAX_ATTEMPTS=40
       while true; do
         ATTEMPTS=$((ATTEMPTS + 1))
         HTTP_CODE=$(curl -sk --max-time 10 -o /dev/null -w "%%{http_code}" "$PANORAMA_URL/php/login.php" 2>/dev/null || echo "000")
         if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "301" ]; then
-          echo "[OK] Panorama API odpowiada (HTTP $HTTP_CODE) po $ATTEMPTS probach."
+          echo "[OK] Panorama API responds (HTTP $HTTP_CODE) after $ATTEMPTS attempts."
           break
         fi
         if [ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then
-          echo "[BLAD] Panorama API nie odpowiada po $MAX_ATTEMPTS probach."
+          echo "[ERROR] Panorama API stil not responding after $MAX_ATTEMPTS attempts."
           exit 1
         fi
-        echo "  [$ATTEMPTS/$MAX_ATTEMPTS] HTTP $HTTP_CODE – czekam 30s..."
+        echo "  [$ATTEMPTS/$MAX_ATTEMPTS] HTTP $HTTP_CODE – waiting 30s..."
         sleep 30
       done
     SCRIPT
@@ -69,7 +69,7 @@ resource "null_resource" "panorama_set_hostname" {
       PAN_USER="${var.panorama_username}"
       TARGET_HOST="${var.panorama_target_hostname}"
 
-      echo "=== [Step 2] Ustawiam hostname: $TARGET_HOST ==="
+      echo "=== [Step 2] Setting hostname: $TARGET_HOST ==="
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
       API_KEY=$(curl -sk --max-time 30 \
@@ -83,7 +83,7 @@ print(root.findtext('.//key',''))
 " 2>&1)
 
       if echo "$API_KEY" | grep -q "^ERROR:"; then
-        echo "[BLAD] API key: $API_KEY"; exit 1
+        echo "[ERROR] API key: $API_KEY"; exit 1
       fi
       echo "  API key: OK"
 
@@ -99,7 +99,7 @@ print(root.findtext('.//key',''))
         --data-urlencode "cmd=<commit></commit>" \
         --data-urlencode "key=$API_KEY" > /dev/null
 
-      echo "  Hostname '$TARGET_HOST' ustawiony + commit OK"
+      echo "  Hostname '$TARGET_HOST' set + commit OK"
     SCRIPT
   }
 
@@ -112,10 +112,10 @@ print(root.findtext('.//key',''))
 # Serial number on Panorama is set via operational mode command:
 #   set serial-number 000710041165
 #
-# XML API equivalent (potwierdzone debug cli on):
+# XML API equivalent (confirmed with debug cli on):
 #   type=op&cmd=<set><serial-number>SERIAL</serial-number></set>
 #
-# Sekwencja:
+# Sequence:
 #   1. Set serial via operational mode (type=op)
 #   2. Commit
 #   3. request license fetch (operational)
@@ -134,7 +134,7 @@ resource "null_resource" "panorama_activate_license" {
       PAN_USER="${var.panorama_username}"
       SERIAL_NUM="${var.panorama_serial_number}"
 
-      echo "=== [Step 3] Serial number + aktywacja licencji ==="
+      echo "=== [Step 3] Serial number + license activation ==="
       echo "    Serial: $SERIAL_NUM"
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
@@ -149,7 +149,7 @@ print(root.findtext('.//key',''))
 " 2>&1)
 
       if echo "$API_KEY" | grep -q "^ERROR:"; then
-        echo "[BLAD] API key: $API_KEY"; exit 1
+        echo "[ERROR] API key: $API_KEY"; exit 1
       fi
       echo "  API key: OK"
 
@@ -180,11 +180,11 @@ except Exception as e:
 " 2>/dev/null)
 
       if echo "$SET_STATUS" | grep -q "^ERROR:"; then
-        echo "  [BLAD] Set serial: $SET_STATUS"
+        echo "  [ERROR] Set serial: $SET_STATUS"
         exit 1
       fi
       if [ "$SET_STATUS" = "TIMEOUT" ]; then
-        echo "  Set serial: timeout (Panorama restartuje management service — to normalne)"
+        echo "  Set serial: timeout (Panorama restarts management service — it's normal)"
       else
         echo "  Set serial: OK"
       fi
@@ -195,13 +195,13 @@ except Exception as e:
       for WAIT_I in $(seq 1 20); do
         WAIT_CODE=$(curl -sk --max-time 10 -o /dev/null -w "%%{http_code}" "$PANORAMA_URL/php/login.php" 2>/dev/null || echo "000")
         if [ "$WAIT_CODE" = "200" ] || [ "$WAIT_CODE" = "302" ]; then
-          echo "  Panorama API gotowa (HTTP $WAIT_CODE, proba $WAIT_I)"
+          echo "  Panorama API ready (HTTP $WAIT_CODE, attempt $WAIT_I)"
           break
         fi
         if [ "$WAIT_I" -ge 20 ]; then
-          echo "  [WARN] Panorama API nie odpowiada po 20 probach."
+          echo "  [WARN] Panorama API is not responding after 20 attempts."
         fi
-        echo "  [$WAIT_I/20] HTTP $WAIT_CODE — czekam 10s..."
+        echo "  [$WAIT_I/20] HTTP $WAIT_CODE — waiting 10s..."
         sleep 10
       done
 
@@ -215,7 +215,7 @@ print(root.findtext('.//key',''))
 " 2>/dev/null)
 
       # 3b: Commit
-      echo "  Commit po ustawieniu serial..."
+      echo "  Commit after setting serial number..."
       curl -sk --max-time 120 "$PANORAMA_URL/api/" \
         --data-urlencode "type=commit" \
         --data-urlencode "cmd=<commit></commit>" \
@@ -225,8 +225,8 @@ print(root.findtext('.//key',''))
       echo "  Waiting 30s for serial number propagation..."
       sleep 30
 
-      # 3c: License fetch (operational mode, z retry)
-      echo "  Pobieranie licencji (request license fetch)..."
+      # 3c: License fetch (operational mode, with retry)
+      echo "  Downloading licenses (request license fetch)..."
       MAX_RETRIES=5
       for i in $(seq 1 $MAX_RETRIES); do
         LIC_RESP=$(curl -sk --max-time 120 "$PANORAMA_URL/api/" \
@@ -249,16 +249,16 @@ except Exception as e:
 " 2>/dev/null)
 
         if [ "$LIC_STATUS" = "OK" ]; then
-          echo "  [OK] Licencja pobrana pomyslnie!"
+          echo "  [OK] License installed succesfully!"
           break
         fi
 
         if [ "$i" -lt "$MAX_RETRIES" ]; then
-          echo "  [$i/$MAX_RETRIES] $LIC_STATUS – czekam 30s..."
+          echo "  [$i/$MAX_RETRIES] $LIC_STATUS – waiting 30s..."
           sleep 30
         else
-          echo "  [WARN] License fetch nie powiodl sie po $MAX_RETRIES probach: $LIC_STATUS"
-          echo "  Sprawdz: CSP Portal, NAT Gateway, dostep do internetu"
+          echo "  [WARN] License fetch failed after $MAX_RETRIES attempts: $LIC_STATUS"
+          echo "  Please check: CSP Portal, NAT Gateway, Internet Access"
         fi
       done
 
@@ -269,13 +269,13 @@ except Exception as e:
       for WAIT_L in $(seq 1 15); do
         WAIT_CODE=$(curl -sk --max-time 10 -o /dev/null -w "%%{http_code}" "$PANORAMA_URL/php/login.php" 2>/dev/null || echo "000")
         if [ "$WAIT_CODE" = "200" ] || [ "$WAIT_CODE" = "302" ]; then
-          echo "  Panorama API stabilna (HTTP $WAIT_CODE, proba $WAIT_L)"
+          echo "  Panorama API stable (HTTP $WAIT_CODE, attempt $WAIT_L)"
           break
         fi
         if [ "$WAIT_L" -ge 15 ]; then
-          echo "  [WARN] Panorama API niestabilna po 15 probach — kontynuuje..."
+          echo "  [WARN] Panorama API still unstable after 15 attempts — I will still continue..."
         fi
-        echo "  [$WAIT_L/15] HTTP $WAIT_CODE — czekam 10s..."
+        echo "  [$WAIT_L/15] HTTP $WAIT_CODE — waiting 10s..."
         sleep 10
       done
 
@@ -296,11 +296,11 @@ except: print('RETRY')
           echo "  Credentials: OK"
           break
         fi
-        echo "  [$VERIFY/5] Credentials not ready — czekam 15s..."
+        echo "  [$VERIFY/5] Credentials not ready — waitng 15s..."
         sleep 15
       done
 
-      echo "  [Step 3] Gotowe."
+      echo "  [Step 3] Ready."
     SCRIPT
   }
 
@@ -310,11 +310,11 @@ except: print('RETRY')
 ###############################################################################
 # Step 4: Generate vm-auth-key automatically via XML API
 #
-# Generuje Device Registration Auth Key na Panoramie.
-# Klucz jest potrzebny w FW init-cfg do automatycznej rejestracji.
-# Licencja Panoramy NIE jest wymagana do wygenerowania klucza.
+# Generates the Device Registration Auth Key on Panorama.
+# The key is required in the FW init-cfg for automatic registration.
+# A Panorama license is NOT required to generate the key.
 #
-# Output: klucz zapisywany do pliku ../panorama_vm_auth_key.txt
+# Output: the key is saved to the ../panorama_vm_auth_key.txt file
 ###############################################################################
 resource "null_resource" "panorama_generate_vm_auth_key" {
   triggers = {
@@ -349,13 +349,13 @@ except:
     print('ERROR')
 " 2>/dev/null)
         if [ -n "$API_KEY" ] && [ "$API_KEY" != "ERROR" ]; then
-          echo "  API key: OK (proba $KG_TRY)"
+          echo "  API key: OK (attempt $KG_TRY)"
           break
         fi
         if [ "$KG_TRY" -ge 10 ]; then
-          echo "[BLAD] API key: nie udalo sie po 10 probach"; exit 1
+          echo "[ERROR] API key: failure after 10 attempts"; exit 1
         fi
-        echo "  [$KG_TRY/10] API key nie gotowy — czekam 15s..."
+        echo "  [$KG_TRY/10] API key not ready yet — waiting 15s..."
         sleep 15
       done
 
@@ -398,13 +398,13 @@ except Exception as e:
 
         # Check if key was found
         if echo "$VM_AUTH_KEY" | grep -q "^2:"; then
-          echo "  [OK] vm-auth-key wygenerowany!"
+          echo "  [OK] vm-auth-key generated!"
           break
         fi
 
         echo "  [$AUTH_TRY/5] $VM_AUTH_KEY"
         if [ "$AUTH_TRY" -lt 5 ]; then
-          echo "  Czekam 20s przed kolejna proba..."
+          echo "  Waiting 20s before the next attempt..."
           sleep 20
         fi
       done
@@ -412,10 +412,10 @@ except Exception as e:
       # Final check
       if ! echo "$VM_AUTH_KEY" | grep -q "^2:"; then
         echo ""
-        echo "[WARN] Nie udalo sie wygenerowac vm-auth-key po 5 probach."
-        echo "       Ostatni wynik: $VM_AUTH_KEY"
-        echo "       Wygeneruj recznie: admin@panorama> request authkey add name authkey1 lifetime $LIFETIME count 2"
-        echo "       Then add to terraform.tfvars: panorama_vm_auth_key = \"<klucz>\""
+        echo "[WARN] Failed to generate the vm-auth-key after 5 attempts."
+        echo "       Last result: $VM_AUTH_KEY"
+        echo "        Generate manually: admin@panorama> request authkey add name authkey1 lifetime $LIFETIME count 2"
+        echo "       Then add to terraform.tfvars: panorama_vm_auth_key = \"<key>\""
         # Not failing — rest of Phase 2a (Step 5, 6) can still work
         exit 0
       fi
@@ -428,7 +428,7 @@ except Exception as e:
 
       # Save to .txt (backup)
       echo "$VM_AUTH_KEY" > ../panorama_vm_auth_key.txt
-      echo "  Zapisano do: ../panorama_vm_auth_key.txt"
+      echo "  Saved to: ../panorama_vm_auth_key.txt"
 
       # Auto-inject into root terraform — .auto.tfvars is auto-loaded!
       cat > ../panorama_vm_auth_key.auto.tfvars <<EOF
@@ -436,10 +436,10 @@ except Exception as e:
 # vm-auth-key generated on Panorama — used in FW bootstrap init-cfg
 panorama_vm_auth_key = "$VM_AUTH_KEY"
 EOF
-      echo "  Zapisano do: ../panorama_vm_auth_key.auto.tfvars (auto-loaded by Terraform)"
+      echo "  Saved to: ../panorama_vm_auth_key.auto.tfvars (auto-loaded by Terraform)"
       echo ""
-      echo "  Phase 1b automatycznie pobierze vm-auth-key."
-      echo "  Uruchom w glownym katalogu:"
+      echo "  Phase 1b automatically downloads vm-auth-key."
+      echo "  Run it in ROOT directory:"
       echo "    cd .."
       echo "    terraform apply -target=module.bootstrap \\"
       echo "      -target=module.loadbalancer -target=module.firewall \\"
@@ -496,7 +496,7 @@ resource "null_resource" "panorama_commit" {
       PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       PAN_USER="${var.panorama_username}"
 
-      echo "=== [Step 6] Final Commit Panoramy ==="
+      echo "=== [Step 6] Final Commit on Panorama ==="
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
       API_KEY=$(curl -sk --max-time 30 "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
@@ -520,14 +520,14 @@ try:
     status = root.get('status','')
     code = root.get('code','')
     if status == 'success':
-        print('[OK] Commit: sukces!')
+        print('[OK] Commit: success!')
     elif code == '19':
-        print('[OK] Brak zmian do commitowania.')
+        print('[OK] Nothing to commit.')
     else:
         msg = root.findtext('.//msg','') or root.findtext('.//line','')
         print('[WARN] Commit: status=' + status + ' msg=' + str(msg))
 except Exception as e:
-    print('[WARN] Blad: ' + str(e))
+    print('[WARN] Error ' + str(e))
 " 2>/dev/null
     SCRIPT
   }

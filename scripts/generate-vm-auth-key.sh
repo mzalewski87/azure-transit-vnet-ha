@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 ###############################################################################
 # generate-vm-auth-key.sh
-# Generuje Device Registration Auth Key z Panoramy przez XML API
+# Generates Device Registration Auth Key from Panorama via XML API
 #
 # Requirements:
-#   - Panorama uruchomiona (licencja NIE jest wymagana do wygenerowania klucza)
-#   - Dostep do Panoramy przez Bastion (tunnel lub IpConnect)
+#   - Panorama up & running (license is NOT reqiored to auth key generation)
+#   - Access to Panorama via Bastion (tunnel or IpConnect)
 #
-# Uzycie:
+# Usage:
 #   ./scripts/generate-vm-auth-key.sh [--panorama-ip <IP>] [--username <user>]
 #
-# Wynik: klucz wyswietlany na ekranie i zapisywany do panorama_vm_auth_key.txt
+# Result: key displayed on screen and saved to panorama_vm_auth_key.txt
 #
-# ALTERNATYWA – recznie przez Bastion SSH do Panoramy:
+# ALTERNATIVE – manually via Bastion SSH to Panorama:
 #
-#   Metoda A (wymaga ip_connect_enabled=true):
+#   Method A (requires ip_connect_enabled=true):
 #     az network bastion ssh \
 #       --name bastion-management \
 #       --resource-group rg-transit-hub \
 #       --target-ip-address 10.255.0.4 \
 #       --auth-type password --username panadmin
 #
-#   Metoda B (zawsze dziala, pobiera VM resource ID):
+#   Method B (always works, downloads VM resource ID):
 #     PANORAMA_ID=$(terraform output -raw panorama_vm_id)
 #     az network bastion ssh \
 #       --name bastion-management \
@@ -29,9 +29,9 @@
 #       --target-resource-id "$PANORAMA_ID" \
 #       --auth-type password --username panadmin
 #
-#   Po zalogowaniu do Panoramy:
+#   After logging to Panorama:
 #     admin@panorama> request authkey add name authkey1 lifetime 60 count 2
-#     (lifetime w minutach; count = liczba FW ktore moga uzyc tego klucza)
+#     (lifetime in minutes; count = number of FW which can use this key)
 ###############################################################################
 
 set -euo pipefail
@@ -39,7 +39,7 @@ set -euo pipefail
 PANORAMA_IP="${PANORAMA_IP:-10.255.0.4}"
 PANORAMA_USER="${PANORAMA_USER:-panadmin}"
 PANORAMA_PORT="${PANORAMA_PORT:-443}"
-LIFETIME="${LIFETIME:-1440}"   # 1440 min = 24h (max dopuszczalny przez PAN-OS)
+LIFETIME="${LIFETIME:-1440}"   # 1440 min = 24h (max allowed by PAN-OS)
 
 usage() {
   echo "Usage: $0 [--panorama-ip <IP>] [--username <user>] [--password <pass>] [--lifetime <minutes>]"
@@ -138,7 +138,7 @@ fi
 echo "      Login: OK"
 
 ###############################################################################
-# STEP 2: Show system info (informacyjnie – nie blokuje generowania klucza)
+# STEP 2: Show system info (informational – does not blocks key generation)
 ###############################################################################
 echo "[2/3] Checking Panorama system info..."
 
@@ -166,11 +166,11 @@ MODEL=$(echo "$SYSINFO" | cut -d'|' -f3)
 echo "      Model:   ${MODEL}"
 echo "      Version: ${SW_VER}"
 echo "      Serial:  ${SERIAL_NUM}"
-echo "      (licencja nie jest wymagana do wygenerowania klucza)"
+echo "      (license is not required to generate auth key)"
 
 ###############################################################################
 # STEP 3: Generate Device Registration Auth Key
-# Komenda CLI: request authkey add name authkey1 lifetime 60 count 2
+# CLI: request authkey add name authkey1 lifetime 60 count 2
 ###############################################################################
 echo "[3/3] Generating Device Registration Auth Key (lifetime: ${LIFETIME} min)..."
 
@@ -204,7 +204,7 @@ try:
             sys.exit(0)
 
     # 3. Regex fallback – scan ALL element text
-    # NOTE: char class contains '-' (format klucza: 2:XXXXXX-YYYYYYY)
+    # NOTE: char class contains '-' (key format: 2:XXXXXX-YYYYYYY)
     for elem in root.iter():
         if elem.text:
             m = re.search(r'(2:[\w-]{20,})', elem.text)
@@ -259,7 +259,7 @@ echo "$VM_AUTH_KEY" > "$OUTPUT_FILE"
 echo "  Saved to: ${OUTPUT_FILE}"
 echo ""
 
-echo "  Add to ROOT terraform.tfvars (w glownym katalogu projektu!):"
+echo "  Add to ROOT terraform.tfvars (in projects ROOT directory!):"
 echo "  panorama_vm_auth_key = \"${VM_AUTH_KEY}\""
 echo ""
 echo "  Then re-run bootstrap module to update FW init-cfg:"

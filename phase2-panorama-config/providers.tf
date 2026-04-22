@@ -1,10 +1,10 @@
 ###############################################################################
 # Phase 2 – Panorama Configuration via panos provider
 #
-# Provider panos laczy sie z Panorama przez aktywny Bastion Tunnel.
-# Panorama NIE ma publicznego IP – dostep tylko przez Spoke2 Bastion.
+# The panos provider connects to Panorama via an active Bastion Tunnel.
+# Panorama does NOT have a public IP – access is only via the Spoke2 Bastion.
 #
-# KROK 1 (terminal 1) – uruchom tunel HTTPS do Panoramy (pozostaw otwarty):
+# STEP 1 (terminal 1) – start an HTTPS tunnel to Panorama (leave it open):
 #   PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
 #   az network bastion tunnel \
 #     --name bastion-spoke2 \
@@ -13,11 +13,11 @@
 #     --resource-port 443 \
 #     --port 44300
 #
-# UWAGA: --target-resource-id (nie --target-ip-address) bo port 443
-#   IpConnect dozwala tylko portow 22 i 3389.
-#   Tunneling przez --target-resource-id nie ma ograniczen portow.
+# NOTE: --target-resource-id (not --target-ip-address) because of port 443
+#   IpConnect only allows ports 22 and 3389.
+#   Tunneling via --target-resource-id has no port restrictions.
 #
-# KROK 2 (terminal 2) – uruchom Phase 2 (tunel musi byc aktywny):
+# STEP 2 (terminal 2) – start Phase 2 (the tunnel must be active):
 #   cd phase2-panorama-config/
 #   cp terraform.tfvars.example terraform.tfvars
 #   # Ustaw: panorama_hostname = "127.0.0.1", panorama_port = 44300
@@ -39,10 +39,10 @@ terraform {
   }
 }
 
-# Provider panos laczy sie przez lokalny tunel Bastion (127.0.0.1:44300)
+# The panos provider connects via the local Bastion tunnel (127.0.0.1:44300)
 provider "panos" {
   hostname = var.panorama_hostname  # 127.0.0.1
-  port     = var.panorama_port      # 44300 (match --port w az bastion tunnel)
+  port     = var.panorama_port      # 44300 (match --port from az bastion tunnel)
   username = var.panorama_username
   password = var.panorama_password
 }

@@ -4,9 +4,9 @@
 #
 #   cp terraform.tfvars.example terraform.tfvars
 #
-# PRZED URUCHOMIENIEM:
+# BEFORE DEPLOYMENT:
 #   1. Phase 1a completed (Panorama VM running)
-#   2. Bastion tunnel w osobnym terminalu:
+#   2. Bastion tunnel in separate terminal:
 #        PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
 #        az network bastion tunnel \
 #          --name bastion-management --resource-group rg-transit-hub \
@@ -21,14 +21,14 @@ panorama_port     = 44300
 panorama_username = "panadmin"
 panorama_password = "REPLACE_ME_Admin@Password1!"
 
-# Hostname ustawiany na Panoramie
+# Hostname configured on Panorama
 panorama_target_hostname = "panorama-transit-hub"
 
-# Serial number z CSP Portal (my.paloaltonetworks.com → Assets → Add Product)
+# Serial number from CSP Portal (my.paloaltonetworks.com → Assets → Add Product)
 # Empty = skip license activation
 panorama_serial_number = ""   # np. "007300202012345"
 
-# vm-auth-key lifetime w minutach (1440 = 24h, max 8760 = 365 dni)
+# vm-auth-key lifetime in minutes (1440 = 24h, max 8760 = 365 dni)
 vm_auth_key_lifetime = 1440
 
 # Template & Device Group (must match Phase 1 bootstrap init-cfg)

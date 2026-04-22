@@ -21,8 +21,8 @@
 #
 # USAGE:
 #   ./scripts/check-panorama.sh           → checks status + shows commands
-#   ./scripts/check-panorama.sh --tunnel  → otwiera HTTPS tunel do Panoramy (port 44300)
-#   ./scripts/check-panorama.sh --rdp     → otwiera RDP tunel do DC (port 33389)
+#   ./scripts/check-panorama.sh --tunnel  → opens HTTPS tunnel to Panorama (port 44300)
+#   ./scripts/check-panorama.sh --rdp     → opens RDP tunnel to DC (port 33389)
 ###############################################################################
 
 set -euo pipefail
@@ -58,7 +58,7 @@ if ! az account show &>/dev/null; then
 fi
 
 ###############################################################################
-# Pobierz VM resource IDs z terraform output
+# Fetch VM resource IDs from terraform output
 ###############################################################################
 echo -e "${YELLOW}[INFO]${NC} Fetching resource info (terraform output)..."
 
@@ -83,7 +83,7 @@ fi
 ###############################################################################
 # Check Panorama status
 ###############################################################################
-echo -e "${YELLOW}[INFO]${NC} Sprawdzam status VM Panoramy ($PANORAMA_VM w $PANORAMA_RG)..."
+echo -e "${YELLOW}[INFO]${NC} Checking Panorama VM status ($PANORAMA_VM w $PANORAMA_RG)..."
 echo ""
 
 VM_STATE=$(az vm get-instance-view \
@@ -101,7 +101,7 @@ fi
 echo ""
 
 ###############################################################################
-# TRYB: --tunnel → otwiera HTTPS tunel do Panoramy (Phase 2 / panos provider)
+# MODE: --tunnel → opens HTTPS tunnel to Panorama (Phase 2 / panos provider)
 ###############################################################################
 if [[ "$MODE" == "--tunnel" ]]; then
   if [[ -z "$PANORAMA_ID" ]]; then
@@ -116,11 +116,11 @@ if [[ "$MODE" == "--tunnel" ]]; then
   echo ""
   echo -e "${YELLOW}BLOCKING terminal — do not close! Open a NEW terminal.${NC}"
   echo ""
-  echo "  W NOWYM terminalu uruchom Phase 2:"
+  echo "  Run Phase 2 in NEW TERMINAL window:"
   echo "    cd phase2-panorama-config/"
   echo "    terraform apply"
   echo ""
-  echo "  Lub generuj vm-auth-key:"
+  echo "  Or generate vm-auth-key:"
   echo "    PANORAMA_IP=127.0.0.1 PANORAMA_PORT=${HTTPS_TUNNEL_PORT} \\"
   echo "    ./scripts/generate-vm-auth-key.sh"
   echo ""
@@ -135,7 +135,7 @@ if [[ "$MODE" == "--tunnel" ]]; then
 fi
 
 ###############################################################################
-# TRYB: --rdp → otwiera RDP tunel do DC
+# MODE: --rdp → opens RDP tunnel to DC
 ###############################################################################
 if [[ "$MODE" == "--rdp" ]]; then
   if [[ -z "$DC_ID" ]]; then
@@ -144,21 +144,21 @@ if [[ "$MODE" == "--rdp" ]]; then
   fi
 
   echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}  RDP Tunel do DC (${DC_IP}:3389 → localhost:${RDP_TUNNEL_PORT}) ${NC}"
+  echo -e "${CYAN}  RDP Tunnel to DC (${DC_IP}:3389 → localhost:${RDP_TUNNEL_PORT}) ${NC}"
   echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
   echo ""
   echo -e "${YELLOW}BLOCKING terminal — do not close! Open a NEW terminal.${NC}"
   echo ""
-  echo "  DALSZE KROKI (NOWY terminal):"
+  echo "  NEXT STEPS (NEW terminal):"
   echo "    Windows: mstsc /v:localhost:${RDP_TUNNEL_PORT}"
   echo "    macOS:   Microsoft Remote Desktop → Add PC → localhost:${RDP_TUNNEL_PORT}"
   echo "    Login:   dcadmin | Password: dc_admin_password from terraform.tfvars"
   echo ""
-  echo "  Na DC (Chrome/Edge) → Panorama GUI:"
+  echo "  On DC (Edge Browser) → Panorama GUI:"
   echo "    https://${PANORAMA_IP}     ← Panorama"
   echo "    https://10.110.255.4      ← FW1 (mgmt)"
   echo "    https://10.110.255.5      ← FW2 (mgmt)"
-  echo "    Kliknij: ADVANCED → Proceed (certyfikat self-signed)"
+  echo "    Click: ADVANCED → Proceed (self-signed certificate)"
   echo ""
 
   az network bastion tunnel \
@@ -191,7 +191,7 @@ else
   echo '      --target-resource-id "$PANORAMA_ID" --auth-type password --username panadmin'
 fi
 echo ""
-echo -e "  ${YELLOW}Metoda B – po 'terraform apply -target=module.networking' (ip_connect_enabled=true):${NC}"
+echo -e "  ${YELLOW}Method B – after 'terraform apply -target=module.networking' (ip_connect_enabled=true):${NC}"
 echo "    az network bastion ssh --name $BASTION_NAME --resource-group $BASTION_RG \\"
 echo "      --target-ip-address $PANORAMA_IP --auth-type password --username panadmin"
 echo ""
@@ -241,18 +241,18 @@ echo ""
 
 # Phase 2
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}  PHASE 2 – Panorama Configuration przez XML API          ${NC}"
+echo -e "${CYAN}  PHASE 2 – Panorama Configuration via XML API          ${NC}"
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
 echo ""
-echo "  Terminal 1 (HTTPS tunel – zostaw otwarty):"
+echo "  Terminal 1 (HTTPS tunel – keep it open):"
 echo "    ./scripts/check-panorama.sh --tunnel"
 echo ""
 echo "  Terminal 2 (Phase 2 apply):"
 echo "    cd phase2-panorama-config/"
 echo "    # Fill in terraform.tfvars (password, auth_code, CIDRs)"
 echo "    terraform apply"
-echo "    # Terraform automatycznie:"
-echo "    #   1. Czeka na Panorama API (max 20 min)"
+echo "    # Terraform automates:"
+echo "    #   1. Waits for Panorama API (max 20 min)"
 echo "    #   2. Sets hostname via XML API"
 echo "    #   3. Activates license via XML API (if auth_code provided)"
 echo "    #   4. Configures Template Stack, Device Group, policies (panos provider)"
@@ -261,17 +261,17 @@ echo ""
 
 # VM Auth Key
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}  VM AUTH KEY – po aktywacji licencji Panoramy            ${NC}"
+echo -e "${CYAN}  VM AUTH KEY – after Panorama activation          ${NC}"
 echo -e "${CYAN}══════════════════════════════════════════════════════════${NC}"
 echo ""
-echo "  Automatycznie (przez HTTPS tunel, port $HTTPS_TUNNEL_PORT):"
+echo "  Automatically (via HTTPS tunel, port $HTTPS_TUNNEL_PORT):"
 echo "    PANORAMA_IP=127.0.0.1 PANORAMA_PORT=$HTTPS_TUNNEL_PORT \\"
 echo "    ./scripts/generate-vm-auth-key.sh"
 echo ""
-echo "  Lub w Panoramie przez GUI:"
+echo "  Or in Panorama via GUI:"
 echo "    https://127.0.0.1:$HTTPS_TUNNEL_PORT → Panorama → Devices → VM Auth Key → Generate"
 echo ""
-echo "  Po uzyskaniu klucza → terraform.tfvars:"
+echo "  AFter obtaining the auth key → terraform.tfvars:"
 echo "    panorama_vm_auth_key = \"2:XXXXXX...\""
 echo "  Then:"
 echo "    terraform apply -target=module.bootstrap  # updates FW init-cfg"

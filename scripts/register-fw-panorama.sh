@@ -2,12 +2,12 @@
 ###############################################################################
 # register-fw-panorama.sh — Phase 2b: FW Registration on Panorama
 #
-# Automatycznie:
-#   1. Otwiera Bastion tunnele do FW1, FW2 i Panoramy
-#   2. Odczytuje numery seryjne FW z XML API
-#   3. Ustawia auth-key na FW (request authkey set)
-#   4. Dodaje seriale do Panoramy (mgt-config, device-group, template-stack)
-#   5. Commit na Panoramie
+# Automatically:
+#   1. Opens Bastion tunnels to FW1, FW2, and Panorama
+#   2. Reads FW serial numbers via the XML API
+#   3. Sets the auth-key on the FWs (request authkey set)
+#   4. Adds the serials to Panorama (mgt-config, device-group, template-stack)
+#   5. Commits to Panorama
 #
 # Usage:
 #   bash scripts/register-fw-panorama.sh
@@ -17,7 +17,7 @@
 #   - Phase 2a completed (Panorama configured, vm-auth-key generated)
 #   - az CLI logged in
 #
-# Komendy XML API (potwierdzone debug cli on na Panoramie):
+# XML API commands (confirmed by debug cli on Panorama):
 #   set mgt-config devices SERIAL →
 #     type=config&action=set&xpath=/config/mgt-config/devices&element=<entry name='SERIAL'/>
 #   set device-group DG devices SERIAL →

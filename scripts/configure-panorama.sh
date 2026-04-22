@@ -105,7 +105,7 @@ echo ""
 echo "[4/4] Verification..."
 if [ -f "$ROOT_DIR/panorama_vm_auth_key.auto.tfvars" ]; then
   echo "  [OK] panorama_vm_auth_key.auto.tfvars utworzony"
-  echo "       Phase 1b automatycznie pobierze vm-auth-key."
+  echo "       Phase 1b automatically gets vm-auth-key."
 else
   echo "  [WARN] panorama_vm_auth_key.auto.tfvars was NOT created."
   echo "         Check Phase 2 output above."
