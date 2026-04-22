@@ -151,7 +151,8 @@ Phase 2a automatically:
 2. ✅ Sets hostname via XML API + commit
 3. ✅ Sets serial number + commit + `request license fetch`
 4. ✅ **Generates vm-auth-key** → saved to `panorama_vm_auth_key.txt`
-5. ✅ Creates Template Stack, Device Group, interfaces, zones, routes, NAT, security policies
+4b. ✅ **Configures Panorama as Log Collector** (Collector Group via XML API)
+5. ✅ Creates Template Stack, Device Group, interfaces, zones, routes, NAT, security policies + **Log Forwarding Profile** (sends traffic/threat/URL logs to Panorama)
 6. ✅ Final commit
 
 ### Phase 1b: Deploy Firewalls + Load Balancers + Routing
@@ -261,7 +262,8 @@ Network access: FW management subnet has `Microsoft.Storage` service endpoint + 
 | Phase 2 Step 2 | XML API (config mode) | Sets hostname + commit |
 | Phase 2 Step 3 | XML API (config mode) | Sets serial number + commit + `request license fetch` |
 | Phase 2 Step 4 | XML API (operational) | Generates vm-auth-key (saved to file) |
-| Phase 2 Step 5 | panos provider | Template Stack, Device Group, interfaces, zones, routes, policies |
+| Phase 2 Step 4b | XML API (config mode) | Configures Collector Group for log collection |
+| Phase 2 Step 5 | panos provider | Template Stack, Device Group, interfaces, zones, routes, policies, **Log Forwarding Profile** |
 | Phase 2 Step 6 | XML API | Final commit |
 
 **Serial number activation** uses config mode (not operational `request serial-number set`), which is more reliable across PAN-OS versions:
