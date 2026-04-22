@@ -237,7 +237,7 @@ except Exception as e:
         echo "  [OK] Auth key generated!"
         break
       fi
-      echo "  [$GEN_TRY/3] $VM_AUTH_KEY — czekam 10s..."
+      echo "  [$GEN_TRY/3] $VM_AUTH_KEY — waiting 10s..."
       VM_AUTH_KEY=""
       sleep 10
     done
@@ -337,17 +337,81 @@ except Exception as e:
     print('  [WARN] ' + str(e))
 " 2>/dev/null
 
+# Wait for FWs to connect to Panorama
+echo ""
+echo "[7/8] Waiting for firewalls to connect to Panorama..."
+CONNECTED_COUNT=0
+for WAIT_CONN in $(seq 1 30); do
+  CONN_RESP=$(curl -sk --max-time 30 "$PAN_URL" \
+    --data-urlencode "type=op" \
+    --data-urlencode "cmd=<show><devices><connected></connected></devices></show>" \
+    --data-urlencode "key=$PAN_KEY" 2>/dev/null || echo "")
+
+  CONNECTED_COUNT=$(echo "$CONN_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    devices = root.findall('.//entry')
+    print(len(devices))
+except:
+    print(0)
+" 2>/dev/null)
+
+  if [ "$CONNECTED_COUNT" -ge 2 ]; then
+    echo "  [OK] $CONNECTED_COUNT firewalls connected to Panorama!"
+    break
+  fi
+
+  if [ "$WAIT_CONN" -ge 30 ]; then
+    echo "  [WARN] Only $CONNECTED_COUNT FW(s) connected after 5 min."
+    echo "         Commit & Push will proceed anyway (FWs will sync when connected)."
+  fi
+
+  echo "  [$WAIT_CONN/30] $CONNECTED_COUNT FW(s) connected — waiting 10s..."
+  sleep 10
+done
+
+# Commit & Push to Device Group (pushes config to managed firewalls)
+echo ""
+echo "[8/8] Commit & Push to Device Group ($DEVICE_GROUP)..."
+PUSH_RESP=$(curl -sk --max-time 120 "$PAN_URL" \
+  --data-urlencode "type=commit" \
+  --data-urlencode "action=all" \
+  --data-urlencode "cmd=<commit-all><shared-policy><device-group><entry name='$DEVICE_GROUP'/></device-group></shared-policy></commit-all>" \
+  --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+
+echo "$PUSH_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    status = root.get('status','')
+    if status == 'success':
+        job = root.findtext('.//job','')
+        if job:
+            print('  [OK] Commit & Push submitted (job ' + job + ')')
+        else:
+            print('  [OK] Commit & Push submitted')
+    else:
+        msg = root.findtext('.//msg','') or root.findtext('.//line','')
+        print('  [WARN] Commit & Push: ' + str(msg))
+except Exception as e:
+    print('  [WARN] ' + str(e))
+" 2>/dev/null
+
 echo ""
 echo "============================================================"
 echo "  Phase 2b COMPLETED"
 echo ""
-echo "  FW1 ($FW1_SERIAL) i FW2 ($FW2_SERIAL)"
+echo "  FW1 ($FW1_SERIAL) and FW2 ($FW2_SERIAL)"
 echo "  registered on Panorama in:"
 echo "    Device Group:   $DEVICE_GROUP"
 echo "    Template Stack: $TEMPLATE_STACK"
 echo ""
+echo "  Config pushed to devices via Commit & Push."
+echo ""
 echo "  Verification (SSH to Panorama):"
 echo "    show devices connected"
+echo "    show log config direction equal forward"
 echo ""
 echo "  Optionally — Phase 3 (DC):"
 echo "    terraform apply -target=module.app2_dc"

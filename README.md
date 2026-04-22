@@ -195,7 +195,9 @@ This script automatically:
 1. Opens Bastion tunnels to FW1, FW2, and Panorama
 2. Reads FW serial numbers (dynamically generated during license activation)
 3. Registers FW serials on Panorama (mgt-config + Device Group + Template Stack)
-4. Commits on Panorama → FW status changes to **connected + in sync**
+4. Commits on Panorama
+5. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min)
+6. **Commit & Push to Device Group** — pushes policies + config to both firewalls
 
 > **Without this step, firewalls will NOT appear as managed devices in Panorama.**
 
@@ -337,7 +339,7 @@ az network bastion tunnel --name bastion-management --resource-group rg-transit-
 
 ```bash
 # Get Front Door endpoint URL
-AFD_HOST=$(terraform output -raw frontdoor_endpoint_hostname)
+AFD_HOST=$(terraform output -raw frontdoor_endpoint)
 echo "Front Door URL: https://$AFD_HOST"
 
 # Test via Front Door (global L7 LB → ELB → FW DNAT → Apache)
