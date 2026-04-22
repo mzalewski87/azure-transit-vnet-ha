@@ -412,7 +412,8 @@ for WAIT_CONN in $(seq 1 30); do
 import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
-    devices = root.findall('.//entry')
+    # Count only top-level device entries (not nested vsys/cert entries)
+    devices = root.findall('./result/devices/entry')
     print(len(devices))
 except:
     print(0)
