@@ -183,6 +183,10 @@ FW bootstrap process:
 
 > **Note:** FW registration on Panorama is NOT complete after this phase.
 > Phase 2b is required to register FW serial numbers on Panorama.
+>
+> **Wait ~10–15 min** for FW bootstrap to complete (PAN-OS boot + license activation)
+> before running Phase 2b. The script will wait automatically, but starting too early
+> adds unnecessary delay.
 
 ### Phase 2b: Register Firewalls on Panorama (automated)
 

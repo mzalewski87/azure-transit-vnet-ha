@@ -169,12 +169,64 @@ wait_for_tunnel "$FW1_PORT" "FW1"
 wait_for_tunnel "$FW2_PORT" "FW2"
 echo "  All tunnels ready!"
 
-# Get serials from FWs
+# Wait for FWs to be ready (API responsive) before reading serials
 echo ""
-echo "[3/6] Reading serial numbers from FWs..."
-FW1_KEY=$(get_api_key "https://127.0.0.1:$FW1_PORT" "$PAN_USER" "$PAN_PASS")
-FW2_KEY=$(get_api_key "https://127.0.0.1:$FW2_PORT" "$PAN_USER" "$PAN_PASS")
+echo "[3/6] Waiting for firewalls to be ready..."
+echo "       FWs need ~10-15 min after deployment to fully boot (PAN-OS + license activation)."
+echo ""
 
+FW1_KEY=""
+FW2_KEY=""
+MAX_FW_WAIT=30  # 30 x 30s = 15 min
+
+for FW_WAIT in $(seq 1 $MAX_FW_WAIT); do
+  # Try FW1
+  if [ -z "$FW1_KEY" ]; then
+    FW1_KEY=$(get_api_key "https://127.0.0.1:$FW1_PORT" "$PAN_USER" "$PAN_PASS" 2>/dev/null || echo "")
+    if [ -n "$FW1_KEY" ] && ! echo "$FW1_KEY" | grep -q "^ERROR"; then
+      echo "  [OK] FW1 API ready (attempt $FW_WAIT)"
+    else
+      FW1_KEY=""
+    fi
+  fi
+
+  # Try FW2
+  if [ -z "$FW2_KEY" ]; then
+    FW2_KEY=$(get_api_key "https://127.0.0.1:$FW2_PORT" "$PAN_USER" "$PAN_PASS" 2>/dev/null || echo "")
+    if [ -n "$FW2_KEY" ] && ! echo "$FW2_KEY" | grep -q "^ERROR"; then
+      echo "  [OK] FW2 API ready (attempt $FW_WAIT)"
+    else
+      FW2_KEY=""
+    fi
+  fi
+
+  # Both ready?
+  if [ -n "$FW1_KEY" ] && [ -n "$FW2_KEY" ]; then
+    echo "  Both firewalls are ready!"
+    break
+  fi
+
+  if [ "$FW_WAIT" -ge "$MAX_FW_WAIT" ]; then
+    echo ""
+    echo "[ERROR] Firewalls not ready after 15 min."
+    [ -z "$FW1_KEY" ] && echo "  FW1: NOT responding"
+    [ -z "$FW2_KEY" ] && echo "  FW2: NOT responding"
+    echo ""
+    echo "  FWs may still be booting. Wait a few more minutes and re-run:"
+    echo "    bash scripts/register-fw-panorama.sh"
+    exit 1
+  fi
+
+  STATUS=""
+  [ -z "$FW1_KEY" ] && STATUS="FW1: waiting"
+  [ -z "$FW2_KEY" ] && STATUS="${STATUS:+$STATUS, }FW2: waiting"
+  echo "  [$FW_WAIT/$MAX_FW_WAIT] $STATUS — retrying in 30s..."
+  sleep 30
+done
+
+# Read serials
+echo ""
+echo "  Reading serial numbers..."
 FW1_SERIAL=$(get_serial "https://127.0.0.1:$FW1_PORT" "$FW1_KEY")
 FW2_SERIAL=$(get_serial "https://127.0.0.1:$FW2_PORT" "$FW2_KEY")
 
@@ -183,6 +235,7 @@ echo "  FW2 serial: $FW2_SERIAL"
 
 if [ "$FW1_SERIAL" = "unknown" ] || [ "$FW2_SERIAL" = "unknown" ]; then
   echo "[ERROR] Failed to read serial. Check if FW license is active."
+  echo "        SSH to FW: show system info | match serial"
   exit 1
 fi
 
