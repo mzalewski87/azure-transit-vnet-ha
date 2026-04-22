@@ -125,7 +125,7 @@ echo ""
 if [ -z "${PAN_PASS:-}" ]; then
   if [ -f "$ROOT_DIR/terraform.tfvars" ]; then
     PAN_PASS=$(grep -E '^\s*admin_password\s*=' "$ROOT_DIR/terraform.tfvars" \
-      | head -1 | sed 's/.*=\s*"\(.*\)".*/\1/')
+      | head -1 | sed 's/.*=[[:space:]]*"\(.*\)".*/\1/')
   fi
   if [ -z "${PAN_PASS:-}" ]; then
     echo -n "Admin password (panadmin): "

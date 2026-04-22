@@ -123,7 +123,7 @@ if [ -f "$ROOT_DIR/panorama_vm_auth_key.txt" ]; then
   # Auto-inject into terraform.tfvars (replace empty or existing value)
   if [ -f "$ROOT_DIR/terraform.tfvars" ] && [ -n "$VM_KEY" ]; then
     if grep -q 'panorama_vm_auth_key' "$ROOT_DIR/terraform.tfvars"; then
-      sed -i '' "s|panorama_vm_auth_key\s*=\s*\"[^\"]*\"|panorama_vm_auth_key = \"$VM_KEY\"|" "$ROOT_DIR/terraform.tfvars"
+      sed -i '' "s|panorama_vm_auth_key[[:space:]]*=[[:space:]]*\"[^\"]*\"|panorama_vm_auth_key = \"$VM_KEY\"|" "$ROOT_DIR/terraform.tfvars"
       echo "  [OK] panorama_vm_auth_key updated in terraform.tfvars"
     else
       echo "" >> "$ROOT_DIR/terraform.tfvars"
