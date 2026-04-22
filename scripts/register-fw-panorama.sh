@@ -379,29 +379,54 @@ except:
   sleep 10
 done
 
-# Commit & Push to Device Group (pushes config to managed firewalls)
+# Push Template Stack to devices (interfaces, management profile, zones, VR, routes)
 echo ""
-echo "[8/8] Commit & Push to Device Group ($DEVICE_GROUP)..."
-PUSH_RESP=$(curl -sk --max-time 120 "$PAN_URL" \
+echo "[8/9] Push Template Stack ($TEMPLATE_STACK) to devices..."
+TPL_PUSH_RESP=$(curl -sk --max-time 120 "$PAN_URL" \
   --data-urlencode "type=commit" \
   --data-urlencode "action=all" \
-  --data-urlencode "cmd=<commit-all><shared-policy><device-group><entry name='$DEVICE_GROUP'/></device-group></shared-policy></commit-all>" \
+  --data-urlencode "cmd=<commit-all><template-stack><name>$TEMPLATE_STACK</name></template-stack></commit-all>" \
   --data-urlencode "key=$PAN_KEY" 2>/dev/null)
 
-echo "$PUSH_RESP" | python3 -c "
+echo "$TPL_PUSH_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
     status = root.get('status','')
     if status == 'success':
         job = root.findtext('.//job','')
-        if job:
-            print('  [OK] Commit & Push submitted (job ' + job + ')')
-        else:
-            print('  [OK] Commit & Push submitted')
+        print('  [OK] Template push submitted' + (' (job ' + job + ')' if job else ''))
     else:
         msg = root.findtext('.//msg','') or root.findtext('.//line','')
-        print('  [WARN] Commit & Push: ' + str(msg))
+        print('  [WARN] Template push: ' + str(msg))
+except Exception as e:
+    print('  [WARN] ' + str(e))
+" 2>/dev/null
+
+# Wait for Template push to complete before Device Group push
+echo "  Waiting 30s for Template push to apply..."
+sleep 30
+
+# Push Device Group to devices (security policies, NAT rules)
+echo ""
+echo "[9/9] Push Device Group ($DEVICE_GROUP) to devices..."
+DG_PUSH_RESP=$(curl -sk --max-time 120 "$PAN_URL" \
+  --data-urlencode "type=commit" \
+  --data-urlencode "action=all" \
+  --data-urlencode "cmd=<commit-all><shared-policy><device-group><entry name='$DEVICE_GROUP'/></device-group></shared-policy></commit-all>" \
+  --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+
+echo "$DG_PUSH_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    status = root.get('status','')
+    if status == 'success':
+        job = root.findtext('.//job','')
+        print('  [OK] Device Group push submitted' + (' (job ' + job + ')' if job else ''))
+    else:
+        msg = root.findtext('.//msg','') or root.findtext('.//line','')
+        print('  [WARN] Device Group push: ' + str(msg))
 except Exception as e:
     print('  [WARN] ' + str(e))
 " 2>/dev/null

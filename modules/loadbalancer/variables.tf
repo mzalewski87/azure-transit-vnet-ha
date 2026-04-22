@@ -33,11 +33,8 @@ variable "internal_lb_private_ip" {
   default     = "10.0.2.100"
 }
 
-variable "health_probe_port" {
-  description = "TCP port used by LB health probes to check VM-Series liveness"
-  type        = number
-  default     = 22
-}
+# Health probe port is hardcoded to 443 (HTTPS) in main.tf.
+# PAN-OS responds to /php/login.php when Management Profile with HTTPS is enabled.
 
 variable "tags" {
   description = "Tags to apply to all resources"

@@ -45,7 +45,7 @@ resource "azurerm_lb_backend_address_pool" "external" {
 # When FW fails or data plane is down, probe fails → LB stops sending traffic.
 # Ref: https://github.com/PaloAltoNetworks/azure-terraform-vmseries-fast-ha-failover
 resource "azurerm_lb_probe" "external" {
-  name                = "probe-fw-ssh"
+  name                = "probe-fw-https"
   loadbalancer_id     = azurerm_lb.external.id
   protocol            = "Https"
   port                = 443
@@ -128,7 +128,7 @@ resource "azurerm_lb_backend_address_pool" "internal" {
 
 # Health probe for internal LB — same HTTPS mechanism as external
 resource "azurerm_lb_probe" "internal" {
-  name                = "probe-fw-ssh"
+  name                = "probe-fw-https"
   loadbalancer_id     = azurerm_lb.internal.id
   protocol            = "Https"
   port                = 443
