@@ -49,9 +49,19 @@ cleanup() {
   echo ""
   echo "[*] Zamykanie Bastion tunneli..."
   for pid in "${TUNNEL_PIDS[@]}"; do
-    kill "$pid" 2>/dev/null || true
+    # Kill process group (az + Python subprocesses)
+    kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  done
+  sleep 1
+  # Force kill any survivors
+  for pid in "${TUNNEL_PIDS[@]}"; do
+    kill -9 "$pid" 2>/dev/null || true
   done
   wait 2>/dev/null || true
+  # Ensure all ports are freed
+  for port in "$PANORAMA_PORT" "$FW1_PORT" "$FW2_PORT"; do
+    lsof -ti:"$port" 2>/dev/null | xargs kill -9 2>/dev/null || true
+  done
 }
 trap cleanup EXIT INT TERM
 

@@ -130,7 +130,7 @@ resource "panos_panorama_zone" "trust" {
 ###############################################################################
 
 resource "panos_panorama_virtual_router" "default" {
-  name     = "default"
+  name     = "transit-vr"
   template = panos_panorama_template.transit.name
   interfaces = [
     panos_panorama_ethernet_interface.untrust.name,

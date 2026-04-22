@@ -28,12 +28,18 @@ TUNNEL_PID=""
 LOCAL_PORT=44300
 
 cleanup() {
-  if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
-    echo ""
-    echo "[*] Zamykanie Bastion tunnel (PID $TUNNEL_PID)..."
-    kill "$TUNNEL_PID" 2>/dev/null || true
+  echo ""
+  echo "[*] Zamykanie Bastion tunnel..."
+  if [ -n "$TUNNEL_PID" ]; then
+    # Kill process group (az + Python subprocesses)
+    kill -- -"$TUNNEL_PID" 2>/dev/null || kill "$TUNNEL_PID" 2>/dev/null || true
+    sleep 1
+    # Force kill if still alive
+    kill -9 "$TUNNEL_PID" 2>/dev/null || true
     wait "$TUNNEL_PID" 2>/dev/null || true
   fi
+  # Ensure port is freed (az bastion may leave orphan listeners)
+  lsof -ti:"$LOCAL_PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
