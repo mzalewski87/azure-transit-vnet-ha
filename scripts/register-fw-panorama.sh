@@ -128,11 +128,13 @@ echo "       Panorama: $PANORAMA_ID"
 echo "       FW1:      $FW1_ID"
 echo "       FW2:      $FW2_ID"
 
-# Read vm-auth-key
+# Read vm-auth-key (will auto-generate after tunnels are up if missing)
 VM_AUTH_KEY=""
 if [ -f "$ROOT_DIR/panorama_vm_auth_key.txt" ]; then
   VM_AUTH_KEY=$(cat "$ROOT_DIR/panorama_vm_auth_key.txt" | tr -d '[:space:]')
   echo "       Auth key: ${VM_AUTH_KEY:0:20}..."
+else
+  echo "       Auth key: brak pliku — zostanie wygenerowany w kroku 3.5"
 fi
 
 # Start tunnels
@@ -164,6 +166,58 @@ echo "  FW2 serial: $FW2_SERIAL"
 if [ "$FW1_SERIAL" = "unknown" ] || [ "$FW2_SERIAL" = "unknown" ]; then
   echo "[BLAD] Nie udalo sie odczytac seriala. Sprawdz czy FW licencja jest aktywna."
   exit 1
+fi
+
+# Auto-generate auth-key on Panorama if missing
+if [ -z "$VM_AUTH_KEY" ]; then
+  echo ""
+  echo "[3.5/6] Generowanie vm-auth-key na Panoramie..."
+  PAN_KEY_TMP=$(get_api_key "https://127.0.0.1:$PANORAMA_PORT" "$PAN_USER" "$PAN_PASS")
+
+  for GEN_TRY in $(seq 1 5); do
+    GEN_RESP=$(curl -sk --max-time 60 \
+      "https://127.0.0.1:$PANORAMA_PORT/api/?type=op&cmd=<request><authkey><add><name>authkey-auto</name><lifetime>1440</lifetime><count>10</count></add></authkey></request>&key=$PAN_KEY_TMP" \
+      2>/dev/null || echo "")
+
+    VM_AUTH_KEY=$(echo "$GEN_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET, re
+try:
+    data = sys.stdin.read()
+    if not data: print(''); sys.exit(0)
+    root = ET.fromstring(data)
+    if root.get('status') != 'success':
+        msg = root.findtext('.//msg','') or root.findtext('.//line','')
+        print('ERROR: ' + str(msg)); sys.exit(0)
+    for elem in root.iter():
+        if elem.text:
+            m = re.search(r'(2:[\w-]{20,})', elem.text)
+            if m: print(m.group(1)); sys.exit(0)
+    # Try without 2: prefix — some versions return plain key
+    for elem in root.iter():
+        if elem.text and len(elem.text.strip()) > 20:
+            print(elem.text.strip()); sys.exit(0)
+    print('ERROR: key not found'); sys.exit(0)
+except Exception as e:
+    print('ERROR: ' + str(e)); sys.exit(0)
+" 2>/dev/null)
+
+    if [ -n "$VM_AUTH_KEY" ] && ! echo "$VM_AUTH_KEY" | grep -q "^ERROR"; then
+      echo "  [OK] Auth key: ${VM_AUTH_KEY:0:30}..."
+      # Save for future use
+      echo "$VM_AUTH_KEY" > "$ROOT_DIR/panorama_vm_auth_key.txt"
+      echo "  Zapisano do: panorama_vm_auth_key.txt"
+      break
+    fi
+
+    echo "  [$GEN_TRY/5] $VM_AUTH_KEY — czekam 15s..."
+    VM_AUTH_KEY=""
+    sleep 15
+  done
+
+  if [ -z "$VM_AUTH_KEY" ]; then
+    echo "  [WARN] Nie udalo sie wygenerowac auth-key."
+    echo "         Wygeneruj recznie: SSH do Panoramy -> request authkey add name authkey1 lifetime 1440 count 2"
+  fi
 fi
 
 # Set auth-key on FWs (if available)
