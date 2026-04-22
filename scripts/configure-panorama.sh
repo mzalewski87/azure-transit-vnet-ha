@@ -113,14 +113,28 @@ terraform init -input=false -no-color 2>&1 | tail -5
 echo ""
 terraform apply -auto-approve -input=false
 
-# Verify output
+# Verify output and auto-inject vm-auth-key into terraform.tfvars
 echo ""
 echo "[4/4] Verification..."
-if [ -f "$ROOT_DIR/panorama_vm_auth_key.auto.tfvars" ]; then
-  echo "  [OK] panorama_vm_auth_key.auto.tfvars created"
-  echo "       Phase 1b automatically gets vm-auth-key."
+if [ -f "$ROOT_DIR/panorama_vm_auth_key.txt" ]; then
+  VM_KEY=$(cat "$ROOT_DIR/panorama_vm_auth_key.txt" | tr -d '[:space:]')
+  echo "  [OK] vm-auth-key generated: ${VM_KEY:0:20}..."
+
+  # Auto-inject into terraform.tfvars (replace empty or existing value)
+  if [ -f "$ROOT_DIR/terraform.tfvars" ] && [ -n "$VM_KEY" ]; then
+    if grep -q 'panorama_vm_auth_key' "$ROOT_DIR/terraform.tfvars"; then
+      sed -i '' "s|panorama_vm_auth_key\s*=\s*\"[^\"]*\"|panorama_vm_auth_key = \"$VM_KEY\"|" "$ROOT_DIR/terraform.tfvars"
+      echo "  [OK] panorama_vm_auth_key updated in terraform.tfvars"
+    else
+      echo "" >> "$ROOT_DIR/terraform.tfvars"
+      echo "panorama_vm_auth_key = \"$VM_KEY\"" >> "$ROOT_DIR/terraform.tfvars"
+      echo "  [OK] panorama_vm_auth_key added to terraform.tfvars"
+    fi
+  fi
+
+  echo "       Phase 1b will use this key automatically."
 else
-  echo "  [WARN] panorama_vm_auth_key.auto.tfvars was NOT created."
+  echo "  [WARN] panorama_vm_auth_key.txt was NOT created."
   echo "         Check Phase 2 output above."
 fi
 

@@ -39,13 +39,13 @@ Terraform IaC for **Palo Alto Networks Azure Transit VNet** reference architectu
   │        │  NAT GW (license/updates)                                   │
   └────────┼─────────────────────────────────────────────────────────────┘
            │                    │ peering              │ peering
-           │         ┌──────────▼──────────┐  ┌───────▼───────────────┐
-           │         │  Internal LB (Std)  │  │  Management VNet      │
-           │         │  10.110.0.100       │  │  (10.255.0.0/16)      │
-           │         │  HA Ports (All/0)   │  │                       │
-           │         │  HC: TCP 22 (5s/2)  │  │  Panorama 10.255.0.4  │
-           │         └──────────┬──────────┘  │  NAT GW (license)     │
-           │                    │              │  Bastion Standard    │
+           │         ┌──────────▼──────────┐   ┌──────▼───────────────┐
+           │         │  Internal LB (Std)  │   │  Management VNet     │
+           │         │  10.110.0.100       │   │  (10.255.0.0/16)     │
+           │         │  HA Ports (All/0)   │   │                      │
+           │         │  HC: TCP 22 (5s/2)  │   │  Panorama 10.255.0.4 │
+           │         └──────────┬──────────┘   │  NAT GW (license)    │
+           │                    │              │   Bastion Standard   │
            │         next-hop=VirtualAppliance │  (tunnel + IpConnect)│
            │                    │              └───┬────────┬─────────┘
   ┌────────▼────────────────────▼───┐              │peer    │peer
@@ -163,8 +163,7 @@ Phase 2a automatically:
 ### Phase 1b: Deploy Firewalls + Load Balancers + Routing
 
 ```bash
-# Add the auto-generated vm-auth-key to terraform.tfvars:
-#   panorama_vm_auth_key = "<key from panorama_vm_auth_key.txt>"
+# vm-auth-key was auto-injected into terraform.tfvars by Phase 2a script
 
 terraform apply -target=module.bootstrap    # update init-cfg with vm-auth-key
 terraform apply \
