@@ -748,43 +748,18 @@ resource "azurerm_network_security_group" "app1_workload" {
   resource_group_name = var.app1_resource_group_name
   tags                = var.tags
 
-  # Allow HTTP/HTTPS from all internal sources (10.0.0.0/8)
-  # East-west traffic: FW does NOT SNAT trust→trust, so source IP is original
-  # spoke IP (e.g. 10.113.0.4 from Spoke2), not FW trust subnet IP.
-  # Security inspection is enforced by VM-Series — NSG just needs to permit internal.
+  # Allow ALL internal traffic (10.0.0.0/8) — all protocols, all ports
+  # VM-Series firewall enforces security policy, NSGs must not filter
+  # internal traffic (east-west keeps original source IP — no SNAT)
   security_rule {
-    name                       = "Allow-HTTP-From-Internal"
+    name                       = "Allow-All-From-Internal"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
-    protocol                   = "Tcp"
+    protocol                   = "*"
     source_port_range          = "*"
-    destination_port_range     = "80"
+    destination_port_range     = "*"
     source_address_prefix      = "10.0.0.0/8"
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "Allow-HTTPS-From-Internal"
-    priority                   = 110
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "443"
-    source_address_prefix      = "10.0.0.0/8"
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "Allow-SSH-From-Management"
-    priority                   = 120
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefix      = var.management_vnet_address_space
     destination_address_prefix = "*"
   }
 

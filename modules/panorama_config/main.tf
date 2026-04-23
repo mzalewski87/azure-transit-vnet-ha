@@ -429,6 +429,10 @@ resource "panos_panorama_security_rule_group" "transit" {
   device_group     = panos_panorama_device_group.transit.name
   position_keyword = "top"
 
+  # PAN-OS security policy with DNAT uses:
+  #   source zone = original (untrust - from internet)
+  #   destination zone = POST-NAT (trust - where Apache 10.112.0.4 lives)
+  #   destination address = PRE-NAT (External LB public IP)
   rule {
     name        = "Allow-Inbound-Web"
     description = "Allow HTTP/HTTPS from internet to Apache server via DNAT"
@@ -439,7 +443,7 @@ resource "panos_panorama_security_rule_group" "transit" {
     source_users     = ["any"]
     hip_profiles     = ["any"]
 
-    destination_zones     = [panos_panorama_zone.untrust.name]
+    destination_zones     = [panos_panorama_zone.trust.name]
     destination_addresses = [var.external_lb_public_ip]
 
     applications = ["web-browsing", "ssl"]
