@@ -287,7 +287,21 @@ resource "panos_panorama_static_route_ipv4" "int_default" {
 
 ###############################################################################
 # NAT Rules (in Device Group)
-# DNAT: External LB IP port 80/443 → Apache server 10.1.0.4
+# DNAT: External LB IP port 80/443 → Apache server 10.112.0.4
+#
+# CRITICAL: Source NAT must use TRUST interface (ethernet1/2), NOT untrust!
+#
+# Why: After DNAT, packet exits FW trust interface → VNet peering → Apache.
+# Apache responds to the SNAT source IP. If SNAT = untrust IP (10.110.129.x):
+#   - Azure routes 10.110.129.0/24 via VNet peering (system route, /16)
+#   - SYN-ACK arrives at FW UNTRUST NIC, but session expects it on TRUST
+#   - FW drops response → asymmetric routing → connection fails
+#
+# With SNAT = trust IP (10.110.0.x):
+#   - SYN-ACK goes to 10.110.0.x → VNet peering → FW TRUST NIC ✅
+#   - FW matches session on correct interface → processes response
+#
+# Ref: PANW Azure Transit VNet reference architecture
 ###############################################################################
 
 resource "panos_panorama_nat_rule_group" "inbound" {
@@ -296,7 +310,7 @@ resource "panos_panorama_nat_rule_group" "inbound" {
 
   rule {
     name        = "DNAT-Inbound-HTTP-Apache"
-    description = "DNAT: External LB port 80 → Apache server Spoke1 (10.1.0.4)"
+    description = "DNAT: External LB port 80 → Apache server Spoke1 (SNAT to trust)"
 
     original_packet {
       source_zones          = [panos_panorama_zone.untrust.name]
@@ -311,7 +325,7 @@ resource "panos_panorama_nat_rule_group" "inbound" {
       source {
         dynamic_ip_and_port {
           interface_address {
-            interface = panos_panorama_ethernet_interface.untrust.name
+            interface = panos_panorama_ethernet_interface.trust.name
           }
         }
       }
@@ -326,7 +340,7 @@ resource "panos_panorama_nat_rule_group" "inbound" {
 
   rule {
     name        = "DNAT-Inbound-HTTPS-Apache"
-    description = "DNAT: External LB port 443 → Apache server Spoke1 port 80 (no SSL on backend)"
+    description = "DNAT: External LB port 443 → Apache server Spoke1 port 80 (SNAT to trust)"
 
     original_packet {
       source_zones          = [panos_panorama_zone.untrust.name]
@@ -341,7 +355,7 @@ resource "panos_panorama_nat_rule_group" "inbound" {
       source {
         dynamic_ip_and_port {
           interface_address {
-            interface = panos_panorama_ethernet_interface.untrust.name
+            interface = panos_panorama_ethernet_interface.trust.name
           }
         }
       }
@@ -676,5 +690,106 @@ print(root.findtext('.//key',''))
   depends_on = [
     panos_panorama_template.transit,
     panos_panorama_security_rule_group.transit,
+  ]
+}
+
+###############################################################################
+# Panorama Log Collector Group (via XML API)
+#
+# The panos Terraform provider has no native resource for Collector Groups.
+# Panorama must be configured as a local log collector with a Collector Group
+# for FW logs to flow from firewalls to Panorama.
+#
+# Steps performed:
+#   1. Get Panorama serial number (identifies the local collector)
+#   2. Create Collector Group "default" with the local Panorama as member
+#   3. Assign log disk(s) to the collector
+#   4. Configure log forwarding from Device Group to this Collector Group
+#
+# After terraform apply, you still need to:
+#   - Commit to Panorama
+#   - Commit to Collector Group "default"
+#   - Push to devices
+###############################################################################
+
+resource "null_resource" "collector_group_config" {
+  triggers = {
+    device_group = panos_panorama_device_group.transit.name
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PAN_USER="${var.panorama_username}"
+
+      echo "=== Configuring Panorama Log Collector Group ==="
+
+      # Get API key
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR', file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
+" 2>&1)
+
+      if [ -z "$API_KEY" ] || echo "$API_KEY" | grep -q "ERROR"; then
+        echo "[ERROR] API key retrieval failed"; exit 1
+      fi
+
+      # Step 1: Get Panorama serial number
+      SERIAL=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=op&cmd=<show><system><info></info></system></show>&key=$API_KEY" \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+print(root.findtext('.//serial',''))
+" 2>&1)
+
+      if [ -z "$SERIAL" ]; then
+        echo "[ERROR] Could not get Panorama serial number"; exit 1
+      fi
+      echo "  Panorama serial: $SERIAL"
+
+      # Step 2: Configure Collector Group "default" with Panorama as member
+      CG_XPATH="/config/devices/entry[@name='localhost.localdomain']/log-collector-group/entry[@name='default']"
+
+      # Set collector group with the local Panorama as log collector member
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$CG_XPATH/logfwd-setting/collectors" \
+        --data-urlencode "element=<entry name='$SERIAL'/>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Collector Group 'default': added Panorama ($SERIAL) as collector"
+
+      # Step 3: Set log forwarding preferences for this Collector Group
+      # Forward all Device Group logs to this collector group
+      DG_NAME="${panos_panorama_device_group.transit.name}"
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$CG_XPATH/logfwd-setting/lf" \
+        --data-urlencode "element=<entry name='$DG_NAME'><filter>All Logs</filter><collectors><entry name='$SERIAL'/></collectors></entry>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Log forwarding: Device Group '$DG_NAME' → Collector Group 'default'"
+
+      echo "  [OK] Collector Group configured"
+      echo ""
+      echo "  NEXT STEPS (manual):"
+      echo "    1. Panorama GUI: Commit to Panorama"
+      echo "    2. Panorama GUI: Commit > Commit and Push > Collector Group 'default'"
+      echo "    3. Panorama GUI: Commit > Push to Devices (Device Group '$DG_NAME')"
+    SCRIPT
+  }
+
+  depends_on = [
+    panos_panorama_device_group.transit,
+    panos_panorama_log_forwarding_profile.default,
+    null_resource.fw_template_system_settings,
   ]
 }
