@@ -107,9 +107,10 @@ resource "panos_panorama_ethernet_interface" "ha2" {
 ###############################################################################
 
 resource "panos_panorama_management_profile" "health_probe" {
-  name     = "allow-health-probe"
-  template = panos_panorama_template.transit.name
-  https    = true
+  name          = "Azure-Health-Probe"
+  template      = panos_panorama_template.transit.name
+  https         = true
+  permitted_ips = ["168.63.129.16"]  # Azure LB health probe source IP only
 
   depends_on = [panos_panorama_template.transit]
 }
@@ -435,6 +436,32 @@ resource "panos_panorama_security_rule_group" "transit" {
 
     log_setting = panos_panorama_log_forwarding_profile.default.name
     log_end     = true
+  }
+
+  # Azure LB health probes come from 168.63.129.16 on port 443 (HTTPS).
+  # In sandwich topology, probes hit BOTH untrust and trust interfaces.
+  # Without this rule, probes are denied by Deny-All → LB marks FWs unhealthy.
+  # Ref: https://knowledgebase.paloaltonetworks.com/KCSArticleDetail?id=kA14u000000saSxCAI
+  rule {
+    name        = "Allow-Azure-LB-Probes"
+    description = "Allow Azure LB health probes (168.63.129.16) on HTTPS port 443"
+    type        = "universal"
+
+    source_zones     = ["any"]
+    source_addresses = ["168.63.129.16"]
+    source_users     = ["any"]
+    hip_profiles     = ["any"]
+
+    destination_zones     = ["any"]
+    destination_addresses = ["any"]
+
+    applications = ["any"]
+    services     = ["service-https"]
+    categories   = ["any"]
+
+    action = "allow"
+
+    log_end = true
   }
 
   rule {
