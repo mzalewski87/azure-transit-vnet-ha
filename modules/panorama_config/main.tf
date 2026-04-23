@@ -501,7 +501,7 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_addresses = ["any"]
 
     applications = ["any"]
-    services     = ["service-https"]
+    services     = ["any"]
     categories   = ["any"]
 
     action = "allow"
