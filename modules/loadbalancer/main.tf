@@ -55,7 +55,12 @@ resource "azurerm_lb_probe" "external" {
 }
 
 # HTTP rule – forwards port 80 to VM-Series untrust interfaces
-# PAN-OS NAT policy handles DNAT: 80 → Apache 10.1.0.4:80
+# PAN-OS NAT policy handles DNAT: 80 → Apache 10.112.0.4:80
+# enable_floating_ip = true: Azure LB preserves frontend public IP as
+# destination on the packet. Required for PAN-OS DNAT rules to match on
+# destination_addresses = [external_lb_public_ip]. Without floating IP,
+# LB translates dst to backend NIC private IP → DNAT rule never matches.
+# Ref: PANW Azure Reference Architecture for inbound traffic via LB
 resource "azurerm_lb_rule" "external_http" {
   name                           = "rule-http-inbound"
   loadbalancer_id                = azurerm_lb.external.id
@@ -65,14 +70,14 @@ resource "azurerm_lb_rule" "external_http" {
   frontend_ip_configuration_name = "fe-external-lb"
   backend_address_pool_ids       = [azurerm_lb_backend_address_pool.external.id]
   probe_id                       = azurerm_lb_probe.external.id
-  enable_floating_ip             = false
+  enable_floating_ip             = true
   idle_timeout_in_minutes        = 4
   load_distribution              = "Default"
   disable_outbound_snat          = true
 }
 
 # HTTPS rule – forwards port 443 to VM-Series untrust interfaces
-# PAN-OS NAT policy handles DNAT: 443 → Apache 10.1.0.4:443 (or SSL offload)
+# PAN-OS NAT policy handles DNAT: 443 → Apache 10.112.0.4:80 (no SSL backend)
 resource "azurerm_lb_rule" "external_https" {
   name                           = "rule-https-inbound"
   loadbalancer_id                = azurerm_lb.external.id
@@ -82,7 +87,7 @@ resource "azurerm_lb_rule" "external_https" {
   frontend_ip_configuration_name = "fe-external-lb"
   backend_address_pool_ids       = [azurerm_lb_backend_address_pool.external.id]
   probe_id                       = azurerm_lb_probe.external.id
-  enable_floating_ip             = false
+  enable_floating_ip             = true
   idle_timeout_in_minutes        = 4
   load_distribution              = "Default"
   disable_outbound_snat          = true
