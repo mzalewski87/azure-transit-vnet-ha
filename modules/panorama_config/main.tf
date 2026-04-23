@@ -326,7 +326,7 @@ resource "panos_panorama_nat_rule_group" "inbound" {
 
   rule {
     name        = "DNAT-Inbound-HTTPS-Apache"
-    description = "DNAT: External LB port 443 → Apache server Spoke1 (10.1.0.4)"
+    description = "DNAT: External LB port 443 → Apache server Spoke1 port 80 (no SSL on backend)"
 
     original_packet {
       source_zones          = [panos_panorama_zone.untrust.name]
@@ -348,7 +348,7 @@ resource "panos_panorama_nat_rule_group" "inbound" {
       destination {
         static_translation {
           address = var.apache_server_ip
-          port    = 443
+          port    = 80
         }
       }
     }

@@ -49,7 +49,7 @@ resource "azurerm_cdn_frontdoor_origin_group" "main" {
   health_probe {
     interval_in_seconds = var.health_probe_interval_seconds
     path                = var.health_probe_path
-    protocol            = "Https"
+    protocol            = "Http"       # Probe via HTTP 80 (matches forwarding_protocol)
     request_type        = "HEAD"
   }
 
@@ -100,8 +100,8 @@ resource "azurerm_cdn_frontdoor_route" "main" {
   cdn_frontdoor_rule_set_ids    = [azurerm_cdn_frontdoor_rule_set.main.id]
 
   enabled                = true
-  forwarding_protocol    = "HttpsOnly" # Forward to origin over HTTPS
-  https_redirect_enabled = true        # Redirect HTTP clients to HTTPS
+  forwarding_protocol    = "HttpOnly"  # Forward to origin over HTTP (Apache has no SSL)
+  https_redirect_enabled = true        # Redirect HTTP clients to HTTPS (AFD terminates TLS)
   patterns_to_match      = ["/*"]
   supported_protocols    = ["Http", "Https"]
 
