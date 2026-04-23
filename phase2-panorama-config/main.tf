@@ -87,19 +87,51 @@ print(root.findtext('.//key',''))
       fi
       echo "  API key: OK"
 
+      SYSTEM_XPATH="/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system"
+
+      # 2a: Set hostname
       curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=set" \
-        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system" \
+        --data-urlencode "xpath=$SYSTEM_XPATH" \
         --data-urlencode "element=<hostname>$TARGET_HOST</hostname>" \
         --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Hostname: $TARGET_HOST"
 
+      # 2b: Set timezone to Europe/Warsaw
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$SYSTEM_XPATH" \
+        --data-urlencode "element=<timezone>Europe/Warsaw</timezone>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Timezone: Europe/Warsaw"
+
+      # 2c: Set NTP servers (Europe pool)
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$SYSTEM_XPATH/ntp-servers" \
+        --data-urlencode "element=<primary-ntp-server><ntp-server-address>0.europe.pool.ntp.org</ntp-server-address></primary-ntp-server><secondary-ntp-server><ntp-server-address>1.europe.pool.ntp.org</ntp-server-address></secondary-ntp-server>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  NTP: 0.europe.pool.ntp.org, 1.europe.pool.ntp.org"
+
+      # 2d: Enable telemetry/statistics service (EU region)
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$SYSTEM_XPATH/update-schedule/statistics-service" \
+        --data-urlencode "element=<application-reports>yes</application-reports><threat-prevention-reports>yes</threat-prevention-reports><threat-prevention-pcap>yes</threat-prevention-pcap><passive-dns-monitoring>yes</passive-dns-monitoring><url-reports>yes</url-reports><health-performance-reports>yes</health-performance-reports><file-identification-reports>yes</file-identification-reports>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Telemetry: enabled (EU statistics service)"
+
+      # Commit all system settings
       curl -sk --max-time 60 "$PANORAMA_URL/api/" \
         --data-urlencode "type=commit" \
         --data-urlencode "cmd=<commit></commit>" \
         --data-urlencode "key=$API_KEY" > /dev/null
 
-      echo "  Hostname '$TARGET_HOST' set + commit OK"
+      echo "  System settings (hostname, timezone, NTP, telemetry) committed OK"
     SCRIPT
   }
 

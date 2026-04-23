@@ -576,3 +576,85 @@ resource "panos_panorama_security_rule_group" "transit" {
     panos_panorama_log_forwarding_profile.default,
   ]
 }
+
+###############################################################################
+# FW Template: Timezone, NTP, Telemetry (via XML API)
+#
+# The panos provider has no native resource for timezone/NTP/telemetry in
+# Panorama Templates. We set these via XML API config mode calls targeting
+# the Template's deviceconfig/system path.
+#
+# Settings:
+#   - Timezone: Europe/Warsaw (CEST/CET)
+#   - NTP: 0.europe.pool.ntp.org, 1.europe.pool.ntp.org
+#   - Telemetry: EU statistics service enabled
+###############################################################################
+
+resource "null_resource" "fw_template_system_settings" {
+  triggers = {
+    template_name = panos_panorama_template.transit.name
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PAN_USER="${var.panorama_username}"
+      TEMPLATE_NAME="${panos_panorama_template.transit.name}"
+
+      echo "=== Setting FW Template system settings (timezone, NTP, telemetry) ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR', file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
+" 2>&1)
+
+      if [ -z "$API_KEY" ] || echo "$API_KEY" | grep -q "ERROR"; then
+        echo "[ERROR] API key failed"; exit 1
+      fi
+
+      # XPath for Template deviceconfig/system
+      TPL_XPATH="/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system"
+
+      # Timezone
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$TPL_XPATH" \
+        --data-urlencode "element=<timezone>Europe/Warsaw</timezone>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Timezone: Europe/Warsaw"
+
+      # NTP
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$TPL_XPATH/ntp-servers" \
+        --data-urlencode "element=<primary-ntp-server><ntp-server-address>0.europe.pool.ntp.org</ntp-server-address></primary-ntp-server><secondary-ntp-server><ntp-server-address>1.europe.pool.ntp.org</ntp-server-address></secondary-ntp-server>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  NTP: 0.europe.pool.ntp.org, 1.europe.pool.ntp.org"
+
+      # Telemetry (EU statistics service)
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$TPL_XPATH/update-schedule/statistics-service" \
+        --data-urlencode "element=<application-reports>yes</application-reports><threat-prevention-reports>yes</threat-prevention-reports><threat-prevention-pcap>yes</threat-prevention-pcap><passive-dns-monitoring>yes</passive-dns-monitoring><url-reports>yes</url-reports><health-performance-reports>yes</health-performance-reports><file-identification-reports>yes</file-identification-reports>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Telemetry: EU statistics service enabled"
+
+      echo "  [OK] FW Template system settings applied (will take effect after commit + push)"
+    SCRIPT
+  }
+
+  depends_on = [
+    panos_panorama_template.transit,
+    panos_panorama_security_rule_group.transit,
+  ]
+}
