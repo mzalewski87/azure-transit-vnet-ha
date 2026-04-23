@@ -324,10 +324,13 @@ resource "panos_panorama_pbf_rule_group" "internal_probe" {
     source {
       interfaces = [panos_panorama_ethernet_interface.trust.name]
       addresses  = ["168.63.129.16/32"]
+      users      = ["any"]
     }
 
     destination {
-      addresses = ["any"]
+      addresses    = ["any"]
+      applications = ["any"]
+      services     = ["any"]
     }
 
     forwarding {
