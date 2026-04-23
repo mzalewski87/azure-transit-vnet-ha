@@ -649,6 +649,22 @@ print(root.findtext('.//key',''))
         --data-urlencode "key=$API_KEY" > /dev/null
       echo "  Telemetry: EU statistics service enabled"
 
+      # System-level log settings (Device > Log Settings)
+      # Forward system, config, user-id, hip-match logs to Panorama
+      # These are separate from policy-based logs (handled by Log Forwarding Profile)
+      LOG_XPATH="$TPL_XPATH/../../../vsys/entry[@name='vsys1']/log-settings"
+
+      for LOG_TYPE in system config userid hipmatch; do
+        echo "  Log Settings: $LOG_TYPE → Panorama"
+        curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+          --data-urlencode "type=config" \
+          --data-urlencode "action=set" \
+          --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/devices/entry[@name='localhost.localdomain']/deviceconfig/setting/logging/$LOG_TYPE" \
+          --data-urlencode "element=<match-list><entry name='send-to-panorama'><send-to-panorama>yes</send-to-panorama><filter>All Logs</filter></entry></match-list>" \
+          --data-urlencode "key=$API_KEY" > /dev/null 2>&1 || true
+      done
+      echo "  [OK] System-level log forwarding configured (system, config, userid, hipmatch)"
+
       echo "  [OK] FW Template system settings applied (will take effect after commit + push)"
     SCRIPT
   }

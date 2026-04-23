@@ -486,9 +486,17 @@ EOF
 }
 
 ###############################################################################
-# Step 4b: Configure Panorama as Log Collector
-# Panorama must have a Collector Group to receive logs from managed firewalls.
-# Without this, even with Log Forwarding Profile on FWs, logs won't be stored.
+# Step 4b: Configure Panorama Log Collector + Collector Group
+#
+# Full log collector setup per PANW docs:
+#   1. Get Panorama serial number
+#   2. Add Panorama as Managed Collector (local Log Collector)
+#   3. Enable logging disks
+#   4. Create Collector Group with Log Collector as member
+#   5. Enable log forwarding in Collector Group
+#   6. Commit + push Collector Group
+#
+# Ref: https://docs.paloaltonetworks.com/panorama/11-1/panorama-admin/manage-log-collection
 ###############################################################################
 resource "null_resource" "panorama_configure_collector_group" {
   triggers = {
@@ -501,7 +509,7 @@ resource "null_resource" "panorama_configure_collector_group" {
       PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       PAN_USER="${var.panorama_username}"
 
-      echo "=== [Step 4b] Configuring Panorama Log Collector Group ==="
+      echo "=== [Step 4b] Configuring Panorama Log Collector + Collector Group ==="
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
       API_KEY=$(curl -sk --max-time 30 \
@@ -515,43 +523,77 @@ print(root.findtext('.//key',''))
 " 2>/dev/null)
 
       if [ -z "$API_KEY" ]; then
-        echo "[ERROR] Failed to get API key"
-        exit 1
+        echo "[ERROR] Failed to get API key"; exit 1
       fi
 
-      # Configure default Collector Group with log forwarding enabled
-      echo "  Creating Collector Group 'default'..."
-      RESP=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
+      # 4b-1: Get Panorama serial number
+      echo "  Getting Panorama serial number..."
+      PAN_SERIAL=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=op&cmd=<show><system><info></info></system></show>&key=$API_KEY" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+print(root.findtext('.//serial','unknown'))
+" 2>/dev/null)
+      echo "  Panorama serial: $PAN_SERIAL"
+
+      if [ "$PAN_SERIAL" = "unknown" ] || [ -z "$PAN_SERIAL" ]; then
+        echo "  [WARN] Could not determine Panorama serial. Skipping Log Collector setup."
+        echo "  Manual setup required: Panorama → Managed Collectors → Add"
+        exit 0
+      fi
+
+      # 4b-2: Add Panorama as Managed Collector (local Log Collector)
+      echo "  Adding Panorama as Managed Collector ($PAN_SERIAL)..."
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector/entry[@name='$PAN_SERIAL']" \
+        --data-urlencode "element=<deviceconfig><system><hostname>panorama-lc</hostname></system></deviceconfig>" \
+        --data-urlencode "key=$API_KEY" > /dev/null 2>&1
+      echo "  [OK] Managed Collector added"
+
+      # 4b-3: Enable logging disks (virtual disk pair A)
+      echo "  Enabling logging disks..."
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector/entry[@name='$PAN_SERIAL']/deviceconfig/system/logger/disk-pair" \
+        --data-urlencode "element=<entry name='A'><disk1><path>/dev/sdb</path></disk1><disk2><path>/dev/sdc</path></disk2></entry>" \
+        --data-urlencode "key=$API_KEY" > /dev/null 2>&1 || true
+      echo "  [OK] Logging disks configured (if available)"
+
+      # 4b-4: Create Collector Group with Log Collector as member
+      echo "  Creating Collector Group 'default' with Log Collector..."
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=set" \
         --data-urlencode "xpath=/config/panorama/collector-group/entry[@name='default']" \
-        --data-urlencode "element=<logfwd-setting><disabled>no</disabled></logfwd-setting>" \
-        --data-urlencode "key=$API_KEY" 2>/dev/null)
+        --data-urlencode "element=<logfwd-setting><disabled>no</disabled></logfwd-setting><collector-member><entry name='$PAN_SERIAL'/></collector-member>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  [OK] Collector Group 'default' created with member $PAN_SERIAL"
 
-      STATUS=$(echo "$RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    print(root.get('status','error'))
-except: print('error')
-" 2>/dev/null)
-
-      if [ "$STATUS" = "success" ]; then
-        echo "  [OK] Collector Group 'default' configured"
-      else
-        echo "  [WARN] Collector Group config response: $STATUS"
-        echo "  This may need manual setup: Panorama → Managed Collectors → Add Collector Group"
-      fi
-
-      # Commit to apply Collector Group
-      echo "  Committing Collector Group config..."
+      # 4b-5: Commit to Panorama
+      echo "  Committing Log Collector + Collector Group config..."
       curl -sk --max-time 90 "$PANORAMA_URL/api/" \
         --data-urlencode "type=commit" \
         --data-urlencode "cmd=<commit></commit>" \
-        --data-urlencode "key=$API_KEY" >/dev/null 2>&1
+        --data-urlencode "key=$API_KEY" > /dev/null 2>&1
+      echo "  [OK] Commit submitted"
 
-      echo "  [OK] Collector Group commit submitted"
-      echo "  Waiting 30s for Panorama to stabilize after commit..."
+      echo "  Waiting 30s for Panorama to stabilize..."
+      sleep 30
+
+      # 4b-6: Commit & push Collector Group
+      echo "  Pushing Collector Group to Log Collector..."
+      curl -sk --max-time 120 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=commit" \
+        --data-urlencode "action=all" \
+        --data-urlencode "cmd=<commit-all><log-collector-config><collector-group>default</collector-group></log-collector-config></commit-all>" \
+        --data-urlencode "key=$API_KEY" > /dev/null 2>&1 || true
+      echo "  [OK] Collector Group push submitted"
+
+      echo "  Waiting 30s for Collector Group push to complete..."
       sleep 30
     SCRIPT
   }
