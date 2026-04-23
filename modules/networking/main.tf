@@ -748,27 +748,31 @@ resource "azurerm_network_security_group" "app1_workload" {
   resource_group_name = var.app1_resource_group_name
   tags                = var.tags
 
+  # Allow HTTP/HTTPS from all internal sources (10.0.0.0/8)
+  # East-west traffic: FW does NOT SNAT trust→trust, so source IP is original
+  # spoke IP (e.g. 10.113.0.4 from Spoke2), not FW trust subnet IP.
+  # Security inspection is enforced by VM-Series — NSG just needs to permit internal.
   security_rule {
-    name                       = "Allow-HTTP-From-Trust"
+    name                       = "Allow-HTTP-From-Internal"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "80"
-    source_address_prefix      = local.transit_private_cidr
+    source_address_prefix      = "10.0.0.0/8"
     destination_address_prefix = "*"
   }
 
   security_rule {
-    name                       = "Allow-HTTPS-From-Trust"
+    name                       = "Allow-HTTPS-From-Internal"
     priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "443"
-    source_address_prefix      = local.transit_private_cidr
+    source_address_prefix      = "10.0.0.0/8"
     destination_address_prefix = "*"
   }
 
@@ -844,27 +848,17 @@ resource "azurerm_network_security_group" "app2_workload" {
     destination_address_prefix = "*"
   }
 
+  # Allow all internal traffic (10.0.0.0/8) — FW enforces security policy,
+  # east-west traffic keeps original source IP (no SNAT on trust→trust)
   security_rule {
-    name                       = "Allow-Domain-From-Trust"
+    name                       = "Allow-All-From-Internal"
     priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "*"
     source_port_range          = "*"
     destination_port_range     = "*"
-    source_address_prefix      = local.transit_private_cidr
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "Allow-Domain-From-App1"
-    priority                   = 120
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = var.app1_vnet_address_space
+    source_address_prefix      = "10.0.0.0/8"
     destination_address_prefix = "*"
   }
 
