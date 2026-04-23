@@ -303,6 +303,48 @@ resource "panos_panorama_nat_rule_group" "inbound" {
 }
 
 ###############################################################################
+# Policy Based Forwarding – Fix asymmetric routing for Internal LB health probes
+#
+# Problem: Azure ILB sends health probe to FW trust interface (eth1/2) from
+# 168.63.129.16. FW default route (0/0) points to untrust gateway (eth1/1).
+# Response goes out wrong interface → Azure drops it (asymmetric routing).
+#
+# Fix: PBF rule forces probe responses arriving on trust interface back out
+# through the trust subnet gateway, ensuring symmetric path.
+###############################################################################
+
+resource "panos_panorama_pbf_rule_group" "internal_probe" {
+  device_group     = panos_panorama_device_group.transit.name
+  position_keyword = "top"
+
+  rule {
+    name        = "Respond-to-Internal-Probe"
+    description = "Fix asymmetric routing: ILB health probes must respond via trust gateway"
+
+    source {
+      interfaces = [panos_panorama_ethernet_interface.trust.name]
+      addresses  = ["168.63.129.16/32"]
+    }
+
+    destination {
+      addresses = ["any"]
+    }
+
+    forwarding {
+      action           = "forward"
+      egress_interface = panos_panorama_ethernet_interface.trust.name
+      next_hop_type    = "ip-address"
+      next_hop_value   = cidrhost(var.trust_subnet_cidr, 1)
+    }
+  }
+
+  depends_on = [
+    panos_panorama_device_group.transit,
+    panos_panorama_ethernet_interface.trust,
+  ]
+}
+
+###############################################################################
 # Log Forwarding Profile (in Device Group)
 # Required for FW traffic logs to reach Panorama.
 # Without this, log_end=true in rules only logs locally on FW — not forwarded.
