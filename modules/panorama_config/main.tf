@@ -144,62 +144,145 @@ resource "panos_panorama_zone" "trust" {
 }
 
 ###############################################################################
-# Virtual Router + Static Routes (in Template)
-# Gateways are first usable IPs of each subnet (/24 → .1)
+# Multi-Virtual Router Architecture (in Template)
+#
+# Required for Azure LB sandwich topology: both External and Internal LBs
+# use 168.63.129.16 as health probe source. With a single VR, the ILB probe
+# response exits via the untrust gateway (asymmetric) → Azure drops it.
+#
+# Solution: Two VRs, each with their own 168.63.129.16/32 route pointing
+# to their own gateway → symmetric health probe responses on both interfaces.
+#
+# Inter-VR routing connects VR-External ↔ VR-Internal for data traffic.
+#
+# Ref: PANW KB kA14u000000saSxCAI
+# Ref: https://github.com/PaloAltoNetworks/terraform-azurerm-swfw-modules
 ###############################################################################
 
-resource "panos_panorama_virtual_router" "default" {
-  name     = "transit-vr"
+# VR-External: untrust interface (ethernet1/1) — faces External LB + internet
+resource "panos_panorama_virtual_router" "external" {
+  name     = "VR-External"
   template = panos_panorama_template.transit.name
   interfaces = [
     panos_panorama_ethernet_interface.untrust.name,
+  ]
+
+  depends_on = [panos_panorama_ethernet_interface.untrust]
+}
+
+# VR-External: default route → internet via untrust gateway
+resource "panos_panorama_static_route_ipv4" "ext_default" {
+  name           = "default-internet"
+  template       = panos_panorama_template.transit.name
+  virtual_router = panos_panorama_virtual_router.external.name
+  destination    = "0.0.0.0/0"
+  next_hop       = cidrhost(var.untrust_subnet_cidr, 1)
+  metric         = 10
+  interface      = panos_panorama_ethernet_interface.untrust.name
+
+  depends_on = [panos_panorama_virtual_router.external]
+}
+
+# VR-External: Azure health probe return → untrust gateway (symmetric)
+resource "panos_panorama_static_route_ipv4" "ext_azure_probe" {
+  name           = "Azure-Probe-Return"
+  template       = panos_panorama_template.transit.name
+  virtual_router = panos_panorama_virtual_router.external.name
+  destination    = "168.63.129.16/32"
+  next_hop       = cidrhost(var.untrust_subnet_cidr, 1)
+  metric         = 10
+  interface      = panos_panorama_ethernet_interface.untrust.name
+
+  depends_on = [panos_panorama_virtual_router.external]
+}
+
+# VR-External: spoke1 traffic → forward to VR-Internal (inter-VR)
+resource "panos_panorama_static_route_ipv4" "ext_to_spoke1" {
+  name           = "spoke1-via-internal"
+  template       = panos_panorama_template.transit.name
+  virtual_router = panos_panorama_virtual_router.external.name
+  destination    = var.spoke1_vnet_cidr
+  type           = "next-vr"
+  next_hop       = panos_panorama_virtual_router.internal.name
+  metric         = 10
+
+  depends_on = [panos_panorama_virtual_router.external, panos_panorama_virtual_router.internal]
+}
+
+# VR-External: spoke2 traffic → forward to VR-Internal (inter-VR)
+resource "panos_panorama_static_route_ipv4" "ext_to_spoke2" {
+  name           = "spoke2-via-internal"
+  template       = panos_panorama_template.transit.name
+  virtual_router = panos_panorama_virtual_router.external.name
+  destination    = var.spoke2_vnet_cidr
+  type           = "next-vr"
+  next_hop       = panos_panorama_virtual_router.internal.name
+  metric         = 10
+
+  depends_on = [panos_panorama_virtual_router.external, panos_panorama_virtual_router.internal]
+}
+
+# VR-Internal: trust interface (ethernet1/2) — faces Internal LB + spokes
+resource "panos_panorama_virtual_router" "internal" {
+  name     = "VR-Internal"
+  template = panos_panorama_template.transit.name
+  interfaces = [
     panos_panorama_ethernet_interface.trust.name,
   ]
 
-  depends_on = [
-    panos_panorama_ethernet_interface.untrust,
-    panos_panorama_ethernet_interface.trust,
-  ]
+  depends_on = [panos_panorama_ethernet_interface.trust]
 }
 
-# Default route: internet-bound traffic → untrust gateway
-resource "panos_panorama_static_route_ipv4" "default_internet" {
-  name           = "default-internet"
+# VR-Internal: Azure health probe return → trust gateway (symmetric)
+resource "panos_panorama_static_route_ipv4" "int_azure_probe" {
+  name           = "Azure-Probe-Return"
   template       = panos_panorama_template.transit.name
-  virtual_router = panos_panorama_virtual_router.default.name
-  destination    = "0.0.0.0/0"
-  # Untrust subnet gateway = first host in subnet (10.0.1.1 for 10.0.1.0/24)
-  next_hop  = cidrhost(var.untrust_subnet_cidr, 1)
-  metric    = 10
-  interface = panos_panorama_ethernet_interface.untrust.name
+  virtual_router = panos_panorama_virtual_router.internal.name
+  destination    = "168.63.129.16/32"
+  next_hop       = cidrhost(var.trust_subnet_cidr, 1)
+  metric         = 10
+  interface      = panos_panorama_ethernet_interface.trust.name
 
-  depends_on = [panos_panorama_virtual_router.default]
+  depends_on = [panos_panorama_virtual_router.internal]
 }
 
-# Spoke1 route: traffic to Spoke1 → trust gateway
-resource "panos_panorama_static_route_ipv4" "spoke1" {
+# VR-Internal: spoke1 traffic → trust gateway
+resource "panos_panorama_static_route_ipv4" "int_spoke1" {
   name           = "route-to-spoke1"
   template       = panos_panorama_template.transit.name
-  virtual_router = panos_panorama_virtual_router.default.name
+  virtual_router = panos_panorama_virtual_router.internal.name
   destination    = var.spoke1_vnet_cidr
   next_hop       = cidrhost(var.trust_subnet_cidr, 1)
   metric         = 10
   interface      = panos_panorama_ethernet_interface.trust.name
 
-  depends_on = [panos_panorama_virtual_router.default]
+  depends_on = [panos_panorama_virtual_router.internal]
 }
 
-# Spoke2 route: traffic to Spoke2 → trust gateway
-resource "panos_panorama_static_route_ipv4" "spoke2" {
+# VR-Internal: spoke2 traffic → trust gateway
+resource "panos_panorama_static_route_ipv4" "int_spoke2" {
   name           = "route-to-spoke2"
   template       = panos_panorama_template.transit.name
-  virtual_router = panos_panorama_virtual_router.default.name
+  virtual_router = panos_panorama_virtual_router.internal.name
   destination    = var.spoke2_vnet_cidr
   next_hop       = cidrhost(var.trust_subnet_cidr, 1)
   metric         = 10
   interface      = panos_panorama_ethernet_interface.trust.name
 
-  depends_on = [panos_panorama_virtual_router.default]
+  depends_on = [panos_panorama_virtual_router.internal]
+}
+
+# VR-Internal: default route → forward to VR-External (inter-VR, for internet)
+resource "panos_panorama_static_route_ipv4" "int_default" {
+  name           = "Default-Route-to-External"
+  template       = panos_panorama_template.transit.name
+  virtual_router = panos_panorama_virtual_router.internal.name
+  destination    = "0.0.0.0/0"
+  type           = "next-vr"
+  next_hop       = panos_panorama_virtual_router.external.name
+  metric         = 10
+
+  depends_on = [panos_panorama_virtual_router.internal, panos_panorama_virtual_router.external]
 }
 
 ###############################################################################
@@ -299,51 +382,6 @@ resource "panos_panorama_nat_rule_group" "inbound" {
     panos_panorama_device_group.transit,
     panos_panorama_zone.untrust,
     panos_panorama_zone.trust,
-  ]
-}
-
-###############################################################################
-# Policy Based Forwarding – Fix asymmetric routing for Internal LB health probes
-#
-# Problem: Azure ILB sends health probe to FW trust interface (eth1/2) from
-# 168.63.129.16. FW default route (0/0) points to untrust gateway (eth1/1).
-# Response goes out wrong interface → Azure drops it (asymmetric routing).
-#
-# Fix: PBF rule forces probe responses arriving on trust interface back out
-# through the trust subnet gateway, ensuring symmetric path.
-###############################################################################
-
-resource "panos_panorama_pbf_rule_group" "internal_probe" {
-  device_group     = panos_panorama_device_group.transit.name
-  position_keyword = "top"
-
-  rule {
-    name        = "Respond-to-Internal-Probe"
-    description = "Fix asymmetric routing: ILB health probes must respond via trust gateway"
-
-    source {
-      interfaces = [panos_panorama_ethernet_interface.trust.name]
-      addresses  = ["168.63.129.16/32"]
-      users      = ["any"]
-    }
-
-    destination {
-      addresses    = ["any"]
-      applications = ["any"]
-      services     = ["any"]
-    }
-
-    forwarding {
-      action           = "forward"
-      egress_interface = panos_panorama_ethernet_interface.trust.name
-      next_hop_type    = "ip-address"
-      next_hop_value   = cidrhost(var.trust_subnet_cidr, 1)
-    }
-  }
-
-  depends_on = [
-    panos_panorama_device_group.transit,
-    panos_panorama_ethernet_interface.trust,
   ]
 }
 
