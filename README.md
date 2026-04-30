@@ -101,7 +101,7 @@ python3 >= 3.8
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
-# Edit: subscription IDs, admin_password, fw_auth_code, terraform_operator_ips
+# Edit: subscription IDs, admin_password, fw_auth_code
 
 terraform init
 terraform apply \
@@ -153,11 +153,27 @@ terraform init && terraform apply
 
 Phase 2a automatically:
 1. ⏳ Waits for Panorama API (max 20 min)
-2. ✅ Sets hostname via XML API + commit
+2. ✅ Sets hostname via XML API + commit (also: timezone Europe/Warsaw, NTP, EU telemetry)
 3. ✅ Sets serial number + commit + `request license fetch`
-4. ✅ **Generates vm-auth-key** → saved to `panorama_vm_auth_key.txt`
+4. ✅ **Generates vm-auth-key** → saved to `panorama_vm_auth_key.txt` and auto-injected
+   into root via `panorama_vm_auth_key.auto.tfvars`
 4b. ✅ **Configures Panorama as Log Collector** (Collector Group via XML API)
-5. ✅ Creates Template Stack, Device Group, interfaces, zones, routes, NAT, security policies + **Log Forwarding Profile** (sends traffic/threat/URL logs to Panorama)
+5. ✅ Creates **Template + Template Stack + Device Group** with the full data-plane
+   config: ethernet interfaces (DHCP), security zones, **multi-VR architecture**
+   (VR-External + VR-Internal for Azure LB sandwich), static routes, **Log Forwarding
+   Profile**, App-ID-aware security rules, NAT rules (DNAT inbound + SNAT outbound).
+5b. ✅ **Pushes HA configuration to Template** (group-id=1, active-passive, HA1 on
+   management interface, HA2 on ethernet1/3) plus declares Template Variables
+   `$ha-peer-ip` and `$ha-priority` with placeholders. Per-device overrides happen
+   in Phase 2b after FW serials are known.
+5c. ✅ **Creates Zone Protection Profiles**: `Azure-Internet-Protection` (untrust:
+   SYN/UDP/ICMP flood + TCP/UDP port-scan + host-sweep + packet-based defenses)
+   and `Azure-Internal-Protection` (trust: packet-based defenses only). Attached
+   to zones via XML API.
+5d. ✅ **Administrative-access hardening** on FW Template: password complexity (12+
+   chars + upper/lower/digit/special, 90-day rotation, 10-password history),
+   15-minute idle timeout, login banner. Note: GUI sessions will idle out — this
+   is intentional, not a bug.
 6. ✅ Final commit
 
 ### Phase 1b: Deploy Firewalls + Load Balancers + Routing
@@ -196,13 +212,22 @@ bash scripts/register-fw-panorama.sh
 
 This script automatically:
 1. Opens Bastion tunnels to FW1, FW2, and Panorama
-2. Reads FW serial numbers (dynamically generated during license activation)
+2. Reads FW serial numbers (dynamically generated during license activation) and
+   their management IPs from `terraform output`
 3. Registers FW serials on Panorama (mgt-config + Device Group + Template Stack)
-4. Commits on Panorama
-5. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min)
-6. **Commit & Push to Device Group** — pushes policies + config to both firewalls
+4. **Sets per-device HA Template Variable overrides** — FW1 (active) gets
+   `$ha-peer-ip = <FW2 mgmt IP>/24` + `$ha-priority = 100`; FW2 (passive) gets
+   `$ha-peer-ip = <FW1 mgmt IP>/24` + `$ha-priority = 200`. This is what makes HA
+   actually form — without it the placeholder peer-ip from Phase 2a Step 5b means
+   HA never establishes.
+5. Commits on Panorama
+6. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min)
+7. **Push Template Stack to devices** (interfaces, zones, VR, routes, HA config)
+8. **Push Device Group to devices** (security policies, NAT rules)
+9. Push Collector Group (Device Log Forwarding mapping)
 
-> **Without this step, firewalls will NOT appear as managed devices in Panorama.**
+> **Without this step, firewalls will NOT appear as managed devices in Panorama
+> AND HA will not form** (peer-ip stays as the placeholder default from Step 5b).
 
 ### Phase 3: Domain Controller (optional)
 
@@ -272,12 +297,16 @@ future. It carries no role assignments today.
 | Step | Method | Action |
 |------|--------|--------|
 | Phase 1a | Terraform (azurerm) | Creates Panorama VM – boots with default hostname |
-| Phase 2 Step 2 | XML API (config mode) | Sets hostname + commit |
-| Phase 2 Step 3 | XML API (config mode) | Sets serial number + commit + `request license fetch` |
-| Phase 2 Step 4 | XML API (operational) | Generates vm-auth-key (saved to file) |
-| Phase 2 Step 4b | XML API (config mode) | Configures Collector Group for log collection |
-| Phase 2 Step 5 | panos provider | Template Stack, Device Group, interfaces, zones, routes, policies, **Log Forwarding Profile** |
+| Phase 2 Step 2 | XML API (config mode) | Sets hostname + timezone + NTP + EU telemetry + commit |
+| Phase 2 Step 3 | XML API (operational) | Sets serial number + commit + `request license fetch` |
+| Phase 2 Step 4 | XML API (operational) | Generates vm-auth-key (saved to file + auto.tfvars) |
+| Phase 2 Step 4b | XML API (config mode) | Configures Panorama as Managed Collector + Collector Group |
+| Phase 2 Step 5 | panos provider | Template + Template Stack + Device Group + interfaces + zones + multi-VR + routes + NAT + App-ID-aware security rules + Log Forwarding Profile |
+| Phase 2 Step 5b | XML API (config mode) | **HA configuration in Template** + Template Variables `$ha-peer-ip`, `$ha-priority` |
+| Phase 2 Step 5c | XML API (config mode) | **Zone Protection Profiles** (`Azure-Internet-Protection` on untrust, `Azure-Internal-Protection` on trust) |
+| Phase 2 Step 5d | XML API (config mode) | **Admin hardening**: password complexity, idle timeout, login banner |
 | Phase 2 Step 6 | XML API | Final commit |
+| Phase 2b Step 4 | XML API (config mode) | **Per-device HA variable overrides** — FW1 priority 100 + peer FW2; FW2 priority 200 + peer FW1 |
 
 **Serial number activation** uses config mode (not operational `request serial-number set`), which is more reliable across PAN-OS versions:
 ```
@@ -401,10 +430,43 @@ This architecture uses **Active/Passive HA** with Azure Standard Load Balancer:
 
 - **Azure LB** (HA Ports mode) distributes traffic to both FWs
 - **PAN-OS HA** is Active/Passive — one FW handles sessions, the other is standby
+- HA1 (control plane) heartbeat over the management interface (eth0)
+- HA2 (state sync) over the dedicated `snet-ha` subnet (ethernet1/3)
 - On failover, the passive FW takes over (stateful session sync via HA2 link)
 - **Policies are centrally managed via Panorama** Device Group — changes are pushed to BOTH firewalls simultaneously. No per-FW configuration needed.
 
-To test failover:
+### HA Configuration — How It's Wired
+
+The HA template lives in the FW Template, but `peer-ip` and `device-priority`
+differ per FW. They are exposed as Template Variables (`$ha-peer-ip`,
+`$ha-priority`) with placeholder defaults — actual values are set per FW serial
+in **Phase 2b Step 4** (`scripts/register-fw-panorama.sh`):
+
+| FW | Role | Device Priority | `$ha-peer-ip` |
+|----|------|-----------------|---------------|
+| FW1 | active | 100 (lower wins election) | FW2 management IP / 24 |
+| FW2 | passive | 200 | FW1 management IP / 24 |
+
+Preemption is **off** — once FW2 takes over, it stays active until a manual
+fail-back. This avoids flapping during maintenance.
+
+### Verify HA after deployment
+
+```bash
+# SSH to FW1 via Bastion, then on the PAN-OS CLI:
+admin@fw1> show high-availability state
+# Expected: "State: active", "Peer state: passive"
+
+admin@fw1> show high-availability state-synchronization
+# HA2 link should show "Connection: up", "ha2-keep-alive: enabled"
+
+# Same on FW2 — should be the mirror image:
+admin@fw2> show high-availability state
+# Expected: "State: passive", "Peer state: active"
+```
+
+### Test failover
+
 ```bash
 # Deallocate active FW
 az vm deallocate --ids $(terraform output -raw fw1_vm_id)
@@ -412,7 +474,10 @@ az vm deallocate --ids $(terraform output -raw fw1_vm_id)
 # Traffic should failover to FW2 — test:
 curl "http://$(terraform output -raw external_lb_public_ip)/"
 
-# Start FW1 back
+# Verify FW2 is now active (via Bastion SSH):
+admin@fw2> show high-availability state    # should now show "State: active"
+
+# Start FW1 back — it will rejoin as passive (preemption is OFF)
 az vm start --ids $(terraform output -raw fw1_vm_id)
 ```
 
@@ -462,6 +527,55 @@ admin@fw1> show system bootstrap status
 admin@fw1> less mp-log bootstrap.log
 ```
 
+### HA does not form (both FWs show as active, or both as passive)
+
+Almost always caused by Phase 2b skipping the per-device variable override.
+Symptoms: `show high-availability state` on each FW shows the placeholder
+peer-ip (10.0.0.254 by default) or both FWs report "active".
+
+```bash
+# Re-run Phase 2b — it is idempotent:
+bash scripts/register-fw-panorama.sh
+
+# Verify the per-device variables landed in Panorama:
+#   Panorama GUI -> Panorama -> Managed Devices -> <serial> -> "Variables" tab
+# Should show: $ha-peer-ip = <other FW mgmt IP>/24, $ha-priority = 100 or 200
+
+# After fixing, push the Template Stack so each FW pulls the new variable:
+#   Panorama GUI -> Commit -> Push to Devices -> Template Stack
+```
+
+### Traffic blocked unexpectedly by Deny-All
+
+The `Allow-East-West-*` and `Allow-Outbound-Internet` rules use **explicit
+App-IDs** (web-browsing, ssl, ssh, dns, kerberos, ldap, ms-ds-smb, ms-rdp,
+ntp-base, ms-update, ...). Anything not on the list hits the Deny-All catch-all
+and is logged.
+
+```bash
+# Find what was denied:
+#   Panorama GUI -> Monitor -> Traffic
+#   filter: ( rule eq 'Deny-All' ) and ( src in <YOUR_SOURCE> )
+# The "Application" column tells you which App-ID PAN-OS resolved.
+# Add it to the relevant rule's applications list in
+#   modules/panorama_config/main.tf -> panos_panorama_security_rule_group.transit
+# then re-apply Phase 2 + push Device Group.
+```
+
+### GUI session keeps logging me out
+
+By design — `null_resource.fw_template_admin_hardening` sets a 15-minute idle
+timeout per the PANW Administrative Access Best Practices. To change the value
+edit the `idle-timeout` element in `modules/panorama_config/main.tf` and re-push
+the Template Stack.
+
+### Admin password rotation prompt every 90 days
+
+Same source — password complexity policy enforces 90-day rotation with a
+7-day warning and a 3-day post-expiration grace period. Adjust the
+`expiration-period` element in the same null_resource if you need a different
+cadence.
+
 ---
 
 ## Project Structure
@@ -470,19 +584,24 @@ admin@fw1> less mp-log bootstrap.log
 azure_ha_project/
 ├── main.tf / variables.tf / outputs.tf    Root module
 ├── modules/
-│   ├── bootstrap/          SA + Azure File Share + init-cfg.txt
+│   ├── bootstrap/          init-cfg renderer (base64 -> custom_data via IMDS) + UAMI
 │   ├── panorama/           Panorama VM (no bootstrap)
-│   ├── panorama_config/    panos provider: Template, DG, policies
-│   ├── firewall/           VM-Series HA pair + userData workaround
+│   ├── panorama_config/    panos provider + XML API: Template, DG, HA, Zone Protection, App-ID rules
+│   ├── firewall/           VM-Series HA pair (for_each over fw_names) + userData workaround
 │   ├── networking/         VNets, subnets, NSGs, peerings, Bastion, NAT GW
-│   ├── loadbalancer/       External + Internal Standard LB
-│   ├── routing/            UDR Route Tables
+│   ├── loadbalancer/       External + Internal Standard LB (HA Ports rule)
+│   ├── routing/            UDR Route Tables for spokes
 │   ├── frontdoor/          Azure Front Door Premium
 │   ├── spoke1_app/         Ubuntu + Apache
 │   └── spoke2_dc/          Windows Server DC
-├── phase2-panorama-config/ Separate workspace: Panorama API config
-├── scripts/                Helper scripts (check-panorama, generate-vm-auth-key)
-└── optional/dc-promote/    Manual DC promotion
+├── phase2-panorama-config/ Separate workspace: Panorama API config (panos + XML API)
+├── scripts/                Helper scripts (check-panorama, register-fw-panorama, ...)
+├── optional/dc-promote/    Manual DC promotion
+└── docs/
+    ├── ROADMAP-swfw-modules-migration.md   Future v2 plan (partial swfw-modules adoption)
+    └── reference/
+        ├── links.md        Curated PANW + Azure + Terraform URLs
+        └── pdfs/           Vendor PDFs (gitignored, see INDEX.md catalogue)
 ```
 
 ---

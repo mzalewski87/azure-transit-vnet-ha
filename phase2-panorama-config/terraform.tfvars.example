@@ -24,11 +24,11 @@ panorama_password = "REPLACE_ME_Admin@Password1!"
 # Hostname configured on Panorama
 panorama_target_hostname = "panorama-transit-hub"
 
-# Serial number from CSP Portal (my.paloaltonetworks.com → Assets → Add Product)
+# Serial number from CSP Portal (my.paloaltonetworks.com -> Assets -> Add Product)
 # Empty = skip license activation
-panorama_serial_number = ""   # np. "007300202012345"
+panorama_serial_number = ""   # e.g. "007300202012345"
 
-# vm-auth-key lifetime in minutes (1440 = 24h, max 8760 = 365 dni)
+# vm-auth-key lifetime in minutes (1440 = 24h, max 8760 = 365 days)
 vm_auth_key_lifetime = 1440
 
 # Template & Device Group (must match Phase 1 bootstrap init-cfg)

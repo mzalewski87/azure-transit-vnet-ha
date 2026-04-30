@@ -106,22 +106,22 @@ variable "ha_subnet_cidr" {
 }
 
 #------------------------------------------------------------------------------
-# Bootstrap (Azure Storage Account via Managed Identity)
+# Bootstrap (init-cfg as base64 custom_data, read by PAN-OS via Azure IMDS)
 #------------------------------------------------------------------------------
 variable "bootstrap_custom_data_fw1" {
-  description = "base64-encoded custom_data for FW1 pointing to bootstrap storage container"
+  description = "base64-encoded init-cfg.txt for FW1 (PAN-OS reads via Azure IMDS userData)"
   type        = string
   sensitive   = true
 }
 
 variable "bootstrap_custom_data_fw2" {
-  description = "base64-encoded custom_data for FW2 pointing to bootstrap storage container"
+  description = "base64-encoded init-cfg.txt for FW2 (PAN-OS reads via Azure IMDS userData)"
   type        = string
   sensitive   = true
 }
 
 variable "fw_managed_identity_id" {
-  description = "User Assigned Managed Identity resource ID for bootstrap storage access"
+  description = "User Assigned Managed Identity resource ID attached to FW VMs (future Azure-service auth — Key Vault, Storage, Monitor)"
   type        = string
 }
 
