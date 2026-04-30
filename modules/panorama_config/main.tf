@@ -674,13 +674,20 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_zones     = [panos_panorama_zone.untrust.name]
     destination_addresses = ["any"]
 
-    # Conservative outbound list — guaranteed-valid App-IDs in PAN-OS 9.0+.
+    # Outbound list — guaranteed-valid App-IDs in PAN-OS 11.x.
+    # apt-get/yum are MUST-HAVE for cloud-init package install on Linux VMs
+    # (Apache spoke server fails to bootstrap without apt-get since PAN-OS
+    # App-ID classifies traffic to *.archive.ubuntu.com as 'apt-get', not
+    # 'web-browsing' — application-default service then doesn't match).
     # ssl covers HTTPS to APIs/package repos before App-ID resolves further.
-    # If something legitimate gets denied (Monitor -> Traffic, rule = Deny-All),
-    # add the resolved App-ID here after verifying it via
+    # If something else legitimate gets denied (Monitor -> Traffic, rule =
+    # Deny-All), add the resolved App-ID here after verifying it via
     #   admin@panorama> show application all | match <name>
     applications = [
-      "web-browsing", "ssl", "dns", "ntp-base", "icmp", "ms-update",
+      "web-browsing", "ssl", "dns", "ntp-base", "icmp",
+      "apt-get", "yum",
+      "ms-update", "ms-windows-update",
+      "github", "git",
     ]
     services   = ["application-default"]
     categories = ["any"]
