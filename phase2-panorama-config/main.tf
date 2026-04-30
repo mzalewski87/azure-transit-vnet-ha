@@ -602,6 +602,100 @@ print(root.findtext('.//serial','unknown'))
 }
 
 ###############################################################################
+# Step 4c: Wait for all pending Panorama jobs to finish
+#
+# `commit` and `commit-all` over the XML API are asynchronous — they return a
+# job ID immediately while Panorama processes the change in the background.
+# The background commit holds a config lock; the first panos provider call
+# (panos_panorama_template) needs that lock and times out if it arrives too
+# early. Symptoms: 'context deadline exceeded' on the very first panos resource.
+#
+# This step polls `show jobs all` and waits until no PEND/ACT jobs remain, then
+# probes the API with a no-op to confirm the lock is free. Only then does
+# module.panorama_config (Step 5) start.
+###############################################################################
+resource "null_resource" "panorama_wait_jobs_idle" {
+  triggers = {
+    after_collector_group = null_resource.panorama_configure_collector_group.id
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
+      PAN_USER="${var.panorama_username}"
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+print(root.findtext('.//key',''))
+" 2>/dev/null)
+
+      if [ -z "$API_KEY" ]; then
+        echo "[ERROR] Could not get API key for jobs-idle wait"; exit 1
+      fi
+
+      echo "=== [Step 4c] Waiting for Panorama to be idle (no pending jobs) ==="
+      MAX=60   # 60 x 5s = 5 min hard cap
+      for ATTEMPT in $(seq 1 $MAX); do
+        JOBS_RESP=$(curl -sk --max-time 15 \
+          "$PANORAMA_URL/api/?type=op&cmd=<show><jobs><all></all></jobs></show>&key=$API_KEY" 2>/dev/null || echo "")
+
+        # Count jobs whose status is ACT or PEND (running or pending) regardless of result
+        ACTIVE=$(echo "$JOBS_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    pending = 0
+    for j in root.findall('.//job'):
+        status = (j.findtext('status','') or '').upper()
+        if status in ('ACT','PEND','PEN'):
+            pending += 1
+    print(pending)
+except Exception:
+    print(0)
+" 2>/dev/null)
+
+        if [ -z "$ACTIVE" ]; then ACTIVE=0; fi
+
+        if [ "$ACTIVE" = "0" ]; then
+          # Probe with a cheap op call to confirm config lock is free
+          PROBE=$(curl -sk --max-time 15 \
+            "$PANORAMA_URL/api/?type=op&cmd=<show><config><running></running></config></show>&key=$API_KEY" 2>/dev/null \
+            | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    print(ET.fromstring(sys.stdin.read()).get('status',''))
+except Exception:
+    print('')
+" 2>/dev/null)
+
+          if [ "$PROBE" = "success" ]; then
+            echo "  [OK] Panorama idle and config-lock free (attempt $ATTEMPT)"
+            exit 0
+          fi
+          echo "  [$ATTEMPT/$MAX] No active jobs but probe not yet OK — waiting 5s..."
+        else
+          echo "  [$ATTEMPT/$MAX] Active jobs: $ACTIVE — waiting 5s..."
+        fi
+
+        sleep 5
+      done
+
+      echo "  [WARN] Pending jobs still present after $((MAX*5))s — proceeding anyway"
+      echo "         If the next resource fails with 'context deadline exceeded',"
+      echo "         re-run terraform apply (idempotent)."
+      exit 0
+    SCRIPT
+  }
+
+  depends_on = [null_resource.panorama_configure_collector_group]
+}
+
+###############################################################################
 # Step 5: Panorama Config via panos provider
 # Template Stack, Device Group, Interfaces, Zones, VR, Routes, NAT, Security
 # Log Forwarding Profile with send_to_panorama=true for all security rules
@@ -629,6 +723,7 @@ module "panorama_config" {
     null_resource.panorama_activate_license,
     null_resource.panorama_set_hostname,
     null_resource.panorama_configure_collector_group,
+    null_resource.panorama_wait_jobs_idle,
   ]
 }
 

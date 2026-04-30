@@ -39,13 +39,19 @@ terraform {
   }
 }
 
-# The panos provider connects via the local Bastion tunnel (127.0.0.1:44300)
-# timeout increased from default 10s — Bastion tunnel adds latency, and
-# Panorama API may be slow after license activation or Collector Group commit.
+# The panos provider connects via the local Bastion tunnel (127.0.0.1:44300).
+# Default panos timeout is 10s; we extend to 180s because:
+#   - Bastion tunnel adds ~1-2s of latency per request
+#   - Panorama may still be processing background commits (commit-all on the
+#     Collector Group, license activation restart) when the first panos call
+#     arrives — those hold a config lock that panos has to wait on
+#   - 60s previously was not enough; 180s covers a full commit cycle worst-case
+# null_resource.panorama_wait_jobs_idle in main.tf also blocks until pending
+# Panorama jobs finish, but timeout=180 gives the actual API call breathing room.
 provider "panos" {
   hostname = var.panorama_hostname # 127.0.0.1
   port     = var.panorama_port     # 44300 (match --port from az bastion tunnel)
   username = var.panorama_username
   password = var.panorama_password
-  timeout  = 60
+  timeout  = 180
 }
