@@ -384,22 +384,23 @@ register_fw() {
   echo "    OK (registration)"
 }
 
-# Push HA config DIRECTLY to a single FW via target=<serial>. The candidate
-# config on the FW is updated; commit happens in push_ha_commit() below.
+# Push HA config DIRECTLY to one FW via its own Bastion tunnel (NOT via
+# Panorama target=<serial>, because PAN-OS API target= is supported for
+# type=op and type=commit but NOT for type=config — earlier attempts with
+# target= silently no-oped, leaving HA off).
 push_ha_config() {
-  local serial="$1" peer_ip="$2" priority="$3" label="$4"
-  echo "  $label  HA: peer-ip=$peer_ip, device-priority=$priority"
+  local fw_url="$1" fw_key="$2" peer_ip="$3" priority="$4" label="$5"
+  echo "  $label  HA: peer-ip=$peer_ip, device-priority=$priority (via $fw_url)"
 
   HA_XPATH="/config/devices/entry[@name='localhost.localdomain']/deviceconfig/high-availability"
   HA_ELEMENT="<enabled>yes</enabled><group><group-id>1</group-id><description>Azure VM-Series Active/Passive HA</description><peer-ip>$peer_ip</peer-ip><mode><active-passive><passive-link-state>auto</passive-link-state></active-passive></mode><configuration-synchronization><enabled>yes</enabled></configuration-synchronization><election-option><device-priority>$priority</device-priority><preemptive>no</preemptive></election-option></group><interface><ha1><port>management</port></ha1><ha2><port>ethernet1/3</port></ha2></interface>"
 
-  HA_RESP=$(curl -sk --max-time 30 "$PAN_URL" \
+  HA_RESP=$(curl -sk --max-time 30 "$fw_url/api/" \
     --data-urlencode "type=config" \
     --data-urlencode "action=set" \
     --data-urlencode "xpath=$HA_XPATH" \
     --data-urlencode "element=$HA_ELEMENT" \
-    --data-urlencode "target=$serial" \
-    --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+    --data-urlencode "key=$fw_key" 2>/dev/null)
 
   HA_STATUS=$(echo "$HA_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
@@ -421,36 +422,38 @@ try:
 except: print('unparseable')
 " 2>/dev/null)
     echo "    [WARN] HA set returned status=$HA_STATUS msg=$MSG"
+    echo "    Raw response (first 400 chars): $(echo "$HA_RESP" | head -c 400)"
   fi
 }
 
-# Commit the FW's candidate config so the HA settings take effect
+# Commit the FW's local candidate config (where the HA settings now live).
+# Direct to FW via its own tunnel — same reasoning as push_ha_config above.
 commit_on_fw() {
-  local serial="$1" label="$2"
-  echo "  $label  Committing on FW (target=$serial)..."
+  local fw_url="$1" fw_key="$2" label="$3"
+  echo "  $label  Committing on FW (direct via $fw_url)..."
 
-  COMMIT_RESP=$(curl -sk --max-time 90 "$PAN_URL" \
+  COMMIT_RESP=$(curl -sk --max-time 90 "$fw_url/api/" \
     --data-urlencode "type=commit" \
     --data-urlencode "cmd=<commit></commit>" \
-    --data-urlencode "target=$serial" \
-    --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+    --data-urlencode "key=$fw_key" 2>/dev/null)
 
-  COMMIT_JOB=$(echo "$COMMIT_RESP" | python3 -c "
+  COMMIT_RESULT=$(echo "$COMMIT_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
     if root.get('status') == 'success':
-        print(root.findtext('.//job','submitted'))
+        print('OK:' + root.findtext('.//job','submitted'))
     else:
         msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'unknown'
         print('FAIL: ' + str(msg))
 except: print('parse-error')
 " 2>/dev/null)
 
-  if echo "$COMMIT_JOB" | grep -q "^FAIL"; then
-    echo "    [WARN] FW commit: $COMMIT_JOB"
+  if echo "$COMMIT_RESULT" | grep -q "^FAIL"; then
+    echo "    [WARN] FW commit: $COMMIT_RESULT"
+    echo "    Raw response (first 400 chars): $(echo "$COMMIT_RESP" | head -c 400)"
   else
-    echo "    OK (FW commit job $COMMIT_JOB submitted)"
+    echo "    OK (FW commit job $(echo "$COMMIT_RESULT" | sed 's/^OK://') submitted)"
   fi
 }
 
@@ -630,21 +633,37 @@ echo ""
 echo "  Waiting 30s for Panorama pushes to settle on the FWs..."
 sleep 30
 
-# Push HA configuration directly to each FW via target=<serial>. The previous
-# Template Variable approach proved unreliable for the <peer-ip> field, so each
-# FW now receives a complete HA config with its actual peer IP and priority
-# baked in. This goes into the FW's LOCAL candidate config — committed below.
+# Push HA configuration directly to each FW via its own Bastion tunnel. Each
+# FW gets a complete HA config with its actual peer IP and priority baked in.
+# This goes into the FW's LOCAL candidate config — committed below.
 echo ""
 echo "[9.7/9] Pushing HA configuration directly to each FW..."
-push_ha_config "$FW1_SERIAL" "$FW2_MGMT_IP" "100" "FW1 (active)"
-push_ha_config "$FW2_SERIAL" "$FW1_MGMT_IP" "200" "FW2 (passive)"
+
+# Refresh API keys on each FW — they were obtained ~5-10 min ago at step [3/6]
+# and a long Phase 2b run can hit Panorama-side commits that occasionally
+# invalidate FW-side admin sessions.
+echo "  Refreshing FW API keys..."
+FW1_KEY=$(get_api_key "https://127.0.0.1:$FW1_PORT" "$PAN_USER" "$PAN_PASS" 2>/dev/null)
+FW2_KEY=$(get_api_key "https://127.0.0.1:$FW2_PORT" "$PAN_USER" "$PAN_PASS" 2>/dev/null)
+if [ -z "$FW1_KEY" ] || echo "$FW1_KEY" | grep -q "^ERROR"; then
+  echo "  [ERROR] Could not refresh FW1 API key — HA push will be skipped."
+  echo "          Re-run scripts/register-fw-panorama.sh."
+  exit 1
+fi
+if [ -z "$FW2_KEY" ] || echo "$FW2_KEY" | grep -q "^ERROR"; then
+  echo "  [ERROR] Could not refresh FW2 API key — HA push will be skipped."
+  exit 1
+fi
+
+push_ha_config "https://127.0.0.1:$FW1_PORT" "$FW1_KEY" "$FW2_MGMT_IP" "100" "FW1 (active)"
+push_ha_config "https://127.0.0.1:$FW2_PORT" "$FW2_KEY" "$FW1_MGMT_IP" "200" "FW2 (passive)"
 
 # Commit on each FW so the HA candidate config becomes running config — HA
 # only forms after both peers have committed and brought up the HA1 link.
 echo ""
 echo "[9.8/9] Committing HA config on each FW..."
-commit_on_fw "$FW1_SERIAL" "FW1"
-commit_on_fw "$FW2_SERIAL" "FW2"
+commit_on_fw "https://127.0.0.1:$FW1_PORT" "$FW1_KEY" "FW1"
+commit_on_fw "https://127.0.0.1:$FW2_PORT" "$FW2_KEY" "FW2"
 
 echo ""
 echo "  HA negotiation typically takes 30-60s after both FWs commit."
