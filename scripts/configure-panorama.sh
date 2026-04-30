@@ -106,12 +106,18 @@ for i in $(seq 1 12); do
 done
 
 # Run Phase 2 Terraform
-echo "[3/4] Running Phase 2 Terraform..."
+#
+# parallelism=4 (default is 10): reduces concurrent panos provider API calls
+# through the single Bastion tunnel. Higher concurrency causes Panorama to
+# return "Session timed out" mid-apply when too many parallel admin sessions
+# pile up against the same Bastion endpoint. 4 is empirically reliable while
+# keeping apply time reasonable.
+echo "[3/4] Running Phase 2 Terraform (parallelism=4)..."
 echo ""
 cd "$PHASE2_DIR"
 terraform init -input=false -no-color 2>&1 | tail -5
 echo ""
-terraform apply -auto-approve -input=false
+terraform apply -auto-approve -input=false -parallelism=4
 
 # Verify output and auto-inject vm-auth-key into terraform.tfvars
 echo ""
