@@ -437,18 +437,57 @@ This architecture uses **Active/Passive HA** with Azure Standard Load Balancer:
 
 ### HA Configuration — How It's Wired
 
-The HA template lives in the FW Template, but `peer-ip` and `device-priority`
-differ per FW. They are exposed as Template Variables (`$ha-peer-ip`,
-`$ha-priority`) with placeholder defaults — actual values are set per FW serial
-in **Phase 2b Step 4** (`scripts/register-fw-panorama.sh`):
+HA configuration is pushed **directly to each FW** (not via Panorama Template)
+in **Phase 2b Steps 9.7/9.8** (`scripts/register-fw-panorama.sh`). The script
+opens a Bastion tunnel to each FW (`127.0.0.1:44301` for FW1, `:44302` for
+FW2), waits until both FWs have no pending commits, then pushes the complete
+HA config to each FW via XML API and commits locally on each FW:
 
-| FW | Role | Device Priority | `$ha-peer-ip` |
-|----|------|-----------------|---------------|
-| FW1 | active | 100 (lower wins election) | FW2 management IP / 24 |
-| FW2 | passive | 200 | FW1 management IP / 24 |
+| FW | Role | Device Priority | `peer-ip` (HA1) |
+|----|------|-----------------|-----------------|
+| FW1 | active | 100 (lower wins election) | FW2 management IP |
+| FW2 | passive | 200 | FW1 management IP |
 
 Preemption is **off** — once FW2 takes over, it stays active until a manual
 fail-back. This avoids flapping during maintenance.
+
+> **Why direct push to FW instead of Panorama Template?** PAN-OS API
+> `target=<serial>` parameter is supported for `type=op` and `type=commit`
+> but NOT for `type=config&action=set`. Template Variables of type `ip-netmask`
+> also have unreliable substitution into `<peer-ip>` fields (which expect a
+> plain IP, not CIDR). Direct per-FW push bypasses both pitfalls.
+
+### Manual HA setup (recovery — if Phase 2b script fails)
+
+If `register-fw-panorama.sh` fails to push HA (e.g., persistent commit lock
+contention), set HA via CLI on each FW. Note PAN-OS `<group>` is a singleton,
+so the CLI uses `group group-id 1` not `group 1`:
+
+```text
+# On FW1 (active, peer = FW2 mgmt IP)
+admin@fw1> configure
+admin@fw1# set deviceconfig high-availability enabled yes
+admin@fw1# set deviceconfig high-availability group group-id 1
+admin@fw1# set deviceconfig high-availability group description "Azure VM-Series HA"
+admin@fw1# set deviceconfig high-availability group peer-ip 10.110.255.5
+admin@fw1# set deviceconfig high-availability group mode active-passive passive-link-state auto
+admin@fw1# set deviceconfig high-availability group configuration-synchronization enabled yes
+admin@fw1# set deviceconfig high-availability group election-option device-priority 100
+admin@fw1# set deviceconfig high-availability group election-option preemptive no
+admin@fw1# set deviceconfig high-availability interface ha1 port management
+admin@fw1# set deviceconfig high-availability interface ha2 port ethernet1/3
+admin@fw1# commit
+admin@fw1# exit
+
+# On FW2 — only peer-ip and device-priority differ:
+admin@fw2# set deviceconfig high-availability group peer-ip 10.110.255.4
+admin@fw2# set deviceconfig high-availability group election-option device-priority 200
+# (all other lines same as FW1)
+```
+
+After commits on both FWs, HA negotiates over HA1 in 30-60 seconds.
+Verify with `show high-availability state` — expect `active` on FW1,
+`passive` on FW2.
 
 ### Verify HA after deployment
 

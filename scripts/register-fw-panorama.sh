@@ -384,10 +384,63 @@ register_fw() {
   echo "    OK (registration)"
 }
 
+# Wait for the FW to have no active/pending jobs (commit, push, etc.) so the
+# next config write does not get rejected with "A commit is pending. Please
+# try again later." (PAN-OS error code 13). This is exactly what bit us on
+# the previous run — Template Stack and Device Group pushes from Panorama
+# were still being applied on the FW when push_ha_config tried to set HA.
+wait_for_fw_commit_idle() {
+  local fw_url="$1" fw_key="$2" label="$3"
+  echo "  $label  Waiting for FW commit to be idle..."
+  local MAX=72   # 72 x 5s = 6 min hard cap
+  for ATTEMPT in $(seq 1 $MAX); do
+    JOBS_RESP=$(curl -sk --max-time 15 \
+      "$fw_url/api/?type=op&cmd=<show><jobs><all></all></jobs></show>&key=$fw_key" 2>/dev/null || echo "")
+    PENDING=$(echo "$JOBS_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    pending = 0
+    for j in root.findall('.//job'):
+        status = (j.findtext('status','') or '').upper()
+        if status in ('ACT','PEND','PEN'):
+            pending += 1
+    print(pending)
+except Exception:
+    print(0)
+" 2>/dev/null)
+    if [ -z "$PENDING" ]; then PENDING=0; fi
+
+    if [ "$PENDING" = "0" ]; then
+      # Probe: try the cheapest possible config-lock check
+      PROBE=$(curl -sk --max-time 15 \
+        "$fw_url/api/?type=op&cmd=<check><pending-changes></pending-changes></check>&key=$fw_key" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    print(ET.fromstring(sys.stdin.read()).get('status',''))
+except Exception:
+    print('')
+" 2>/dev/null)
+      if [ "$PROBE" = "success" ]; then
+        echo "    OK (no pending jobs, config lock free, attempt $ATTEMPT)"
+        return 0
+      fi
+    fi
+
+    echo "    [$ATTEMPT/$MAX] $PENDING pending job(s) — waiting 5s..."
+    sleep 5
+  done
+  echo "    [WARN] FW $label still has pending jobs after $((MAX*5))s — proceeding anyway"
+}
+
 # Push HA config DIRECTLY to one FW via its own Bastion tunnel (NOT via
 # Panorama target=<serial>, because PAN-OS API target= is supported for
 # type=op and type=commit but NOT for type=config — earlier attempts with
 # target= silently no-oped, leaving HA off).
+#
+# Includes a retry loop for the "A commit is pending" error (PAN-OS code 13)
+# in case wait_for_fw_commit_idle missed a late-starting background job.
 push_ha_config() {
   local fw_url="$1" fw_key="$2" peer_ip="$3" priority="$4" label="$5"
   echo "  $label  HA: peer-ip=$peer_ip, device-priority=$priority (via $fw_url)"
@@ -395,14 +448,15 @@ push_ha_config() {
   HA_XPATH="/config/devices/entry[@name='localhost.localdomain']/deviceconfig/high-availability"
   HA_ELEMENT="<enabled>yes</enabled><group><group-id>1</group-id><description>Azure VM-Series Active/Passive HA</description><peer-ip>$peer_ip</peer-ip><mode><active-passive><passive-link-state>auto</passive-link-state></active-passive></mode><configuration-synchronization><enabled>yes</enabled></configuration-synchronization><election-option><device-priority>$priority</device-priority><preemptive>no</preemptive></election-option></group><interface><ha1><port>management</port></ha1><ha2><port>ethernet1/3</port></ha2></interface>"
 
-  HA_RESP=$(curl -sk --max-time 30 "$fw_url/api/" \
-    --data-urlencode "type=config" \
-    --data-urlencode "action=set" \
-    --data-urlencode "xpath=$HA_XPATH" \
-    --data-urlencode "element=$HA_ELEMENT" \
-    --data-urlencode "key=$fw_key" 2>/dev/null)
+  for ATTEMPT in 1 2 3 4 5; do
+    HA_RESP=$(curl -sk --max-time 30 "$fw_url/api/" \
+      --data-urlencode "type=config" \
+      --data-urlencode "action=set" \
+      --data-urlencode "xpath=$HA_XPATH" \
+      --data-urlencode "element=$HA_ELEMENT" \
+      --data-urlencode "key=$fw_key" 2>/dev/null)
 
-  HA_STATUS=$(echo "$HA_RESP" | python3 -c "
+    HA_STATUS=$(echo "$HA_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
@@ -411,9 +465,11 @@ except Exception as e:
     print('parse-error: ' + str(e))
 " 2>/dev/null)
 
-  if [ "$HA_STATUS" = "success" ]; then
-    echo "    OK (HA config set on FW candidate config)"
-  else
+    if [ "$HA_STATUS" = "success" ]; then
+      echo "    OK (HA config set on FW candidate config, attempt $ATTEMPT)"
+      return 0
+    fi
+
     MSG=$(echo "$HA_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
@@ -421,9 +477,21 @@ try:
     print(root.findtext('.//msg','') or root.findtext('.//line','') or 'no message')
 except: print('unparseable')
 " 2>/dev/null)
-    echo "    [WARN] HA set returned status=$HA_STATUS msg=$MSG"
-    echo "    Raw response (first 400 chars): $(echo "$HA_RESP" | head -c 400)"
-  fi
+
+    if echo "$MSG" | grep -qi "commit is pending"; then
+      WAIT=$((ATTEMPT * 15))
+      echo "    [$ATTEMPT/5] $MSG — waiting ${WAIT}s and retrying..."
+      sleep $WAIT
+    else
+      echo "    [WARN] HA set returned status=$HA_STATUS msg=$MSG"
+      echo "    Raw response (first 400 chars): $(echo "$HA_RESP" | head -c 400)"
+      return 1
+    fi
+  done
+
+  echo "    [ERROR] HA set still rejected after 5 retries — FW commit lock never freed."
+  echo "    Try manually: SSH to FW, run 'show jobs all', wait for ACT/PEND to drain, re-run this script."
+  return 1
 }
 
 # Commit the FW's local candidate config (where the HA settings now live).
@@ -626,13 +694,6 @@ except Exception as e:
     print('  [INFO] Collector Group push: ' + str(e))
 " 2>/dev/null
 
-# Wait for the Template Stack and Device Group pushes to land before touching
-# the FW directly (otherwise the local commit below races with the Panorama-
-# initiated commit that completes the template/DG push).
-echo ""
-echo "  Waiting 30s for Panorama pushes to settle on the FWs..."
-sleep 30
-
 # Push HA configuration directly to each FW via its own Bastion tunnel. Each
 # FW gets a complete HA config with its actual peer IP and priority baked in.
 # This goes into the FW's LOCAL candidate config — committed below.
@@ -654,6 +715,15 @@ if [ -z "$FW2_KEY" ] || echo "$FW2_KEY" | grep -q "^ERROR"; then
   echo "  [ERROR] Could not refresh FW2 API key — HA push will be skipped."
   exit 1
 fi
+
+# Wait for both FWs to finish processing the Template Stack / Device Group /
+# Collector Group pushes from Panorama before touching the FW config. Without
+# this wait the previous run's HA push bombed with PAN-OS error code 13
+# "A commit is pending. Please try again later." (the static 30s sleep was
+# not enough for big template pushes — they routinely take 60-120s).
+echo ""
+wait_for_fw_commit_idle "https://127.0.0.1:$FW1_PORT" "$FW1_KEY" "FW1"
+wait_for_fw_commit_idle "https://127.0.0.1:$FW2_PORT" "$FW2_KEY" "FW2"
 
 push_ha_config "https://127.0.0.1:$FW1_PORT" "$FW1_KEY" "$FW2_MGMT_IP" "100" "FW1 (active)"
 push_ha_config "https://127.0.0.1:$FW2_PORT" "$FW2_KEY" "$FW1_MGMT_IP" "200" "FW2 (passive)"
