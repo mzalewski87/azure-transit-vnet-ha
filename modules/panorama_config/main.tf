@@ -597,9 +597,16 @@ resource "panos_panorama_security_rule_group" "transit" {
   }
 
   # East-West rules use App-ID rather than "any" so traffic is identified at
-  # Layer 7. Lists cover Linux<->Windows DC interop in this lab (web/SSL, SSH,
-  # DNS, AD/SMB/Kerberos/LDAP/RPC, RDP, ICMP). Tighten or expand based on
-  # Monitor -> Traffic logs (which apps are actually traversing trust->trust).
+  # Layer 7. The list below is a CONSERVATIVE baseline of App-IDs that are
+  # guaranteed to exist in PAN-OS 9.0+ App-ID DB. To extend, verify the App-ID
+  # name first:
+  #   admin@panorama> show application all | match <name>
+  # Adding an invalid App-ID (e.g. "ms-ds-rpc" — that one does NOT exist; the
+  # real one is "msrpc-base") fails terraform apply with
+  # "application '<x>' is not an allowed keyword". Once an invalid App-ID
+  # error fires mid-apply, Panorama's API session can be reset, so a single
+  # bad name in this list cascades into spurious "Session timed out" on
+  # other parallel resources.
   rule {
     name        = "Allow-East-West-Spoke1-to-Spoke2"
     description = "App-ID-aware east-west: Spoke1 -> Spoke2 (inspected)"
@@ -614,9 +621,9 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_addresses = [var.spoke2_vnet_cidr]
 
     applications = [
-      "web-browsing", "ssl", "ssh", "dns", "dns-base",
-      "ping", "icmp", "kerberos", "ldap", "ms-ds-smb",
-      "ms-ds-rpc", "ms-rdp", "ntp-base",
+      "web-browsing", "ssl", "ssh", "dns", "icmp",
+      "kerberos", "ldap", "ms-ds-smb", "msrpc-base",
+      "ms-rdp", "ntp-base",
     ]
     services   = ["application-default"]
     categories = ["any"]
@@ -641,9 +648,9 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_addresses = [var.spoke1_vnet_cidr]
 
     applications = [
-      "web-browsing", "ssl", "ssh", "dns", "dns-base",
-      "ping", "icmp", "kerberos", "ldap", "ms-ds-smb",
-      "ms-ds-rpc", "ms-rdp", "ntp-base",
+      "web-browsing", "ssl", "ssh", "dns", "icmp",
+      "kerberos", "ldap", "ms-ds-smb", "msrpc-base",
+      "ms-rdp", "ntp-base",
     ]
     services   = ["application-default"]
     categories = ["any"]
@@ -667,13 +674,13 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_zones     = [panos_panorama_zone.untrust.name]
     destination_addresses = ["any"]
 
-    # Common outbound: web, DNS, NTP, ICMP, package managers, MS Update.
-    # SSL covers HTTPS to APIs/repos. ssl-proxy covers TLS handshake before
-    # App-ID resolves the inner protocol.
+    # Conservative outbound list — guaranteed-valid App-IDs in PAN-OS 9.0+.
+    # ssl covers HTTPS to APIs/package repos before App-ID resolves further.
+    # If something legitimate gets denied (Monitor -> Traffic, rule = Deny-All),
+    # add the resolved App-ID here after verifying it via
+    #   admin@panorama> show application all | match <name>
     applications = [
-      "web-browsing", "ssl", "dns", "dns-base", "ntp-base",
-      "ping", "icmp", "ms-update", "ms-windows-update",
-      "apt-get", "yum", "github", "git", "github-base",
+      "web-browsing", "ssl", "dns", "ntp-base", "icmp", "ms-update",
     ]
     services   = ["application-default"]
     categories = ["any"]

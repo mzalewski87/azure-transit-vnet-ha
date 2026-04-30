@@ -107,17 +107,19 @@ done
 
 # Run Phase 2 Terraform
 #
-# parallelism=4 (default is 10): reduces concurrent panos provider API calls
-# through the single Bastion tunnel. Higher concurrency causes Panorama to
-# return "Session timed out" mid-apply when too many parallel admin sessions
-# pile up against the same Bastion endpoint. 4 is empirically reliable while
-# keeping apply time reasonable.
-echo "[3/4] Running Phase 2 Terraform (parallelism=4)..."
+# parallelism=2 (default is 10): empirically the safe ceiling for panos via
+# Bastion tunnel. Higher values cause Panorama to return "Session timed out"
+# on a random resource mid-apply — multiple parallel API calls through the
+# single tunnel saturate Panorama's per-admin session pool, and any
+# validation error in one parallel call (e.g. an invalid App-ID name) can
+# cascade into session resets on the others. 2 keeps total apply time
+# reasonable (~5-7 min) while being reliable.
+echo "[3/4] Running Phase 2 Terraform (parallelism=2)..."
 echo ""
 cd "$PHASE2_DIR"
 terraform init -input=false -no-color 2>&1 | tail -5
 echo ""
-terraform apply -auto-approve -input=false -parallelism=4
+terraform apply -auto-approve -input=false -parallelism=2
 
 # Verify output and auto-inject vm-auth-key into terraform.tfvars
 echo ""
