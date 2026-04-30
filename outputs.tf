@@ -70,6 +70,16 @@ output "dc_vm_id" {
   value       = module.app2_dc.dc_vm_id
 }
 
+output "apache_vm_id" {
+  description = "Apache server (Spoke1) VM resource ID — for Bastion tunnel/SSH"
+  value       = module.app1_app.apache_vm_id
+}
+
+output "apache_private_ip" {
+  description = "Apache server (Spoke1) private IP — DNAT target + Bastion IpConnect target"
+  value       = module.app1_app.apache_private_ip
+}
+
 #--- Bastion ---
 output "bastion_name" {
   description = "Azure Bastion name (Management VNet)"
@@ -89,7 +99,7 @@ output "frontdoor_endpoint" {
 
 #--- Bastion Quick Reference ---
 output "bastion_ssh_commands" {
-  description = "Quick reference: Bastion SSH commands for FW and Panorama"
+  description = "Quick reference: Bastion SSH commands for Panorama, FW1, FW2 and Apache"
   value       = <<-EOT
     # Panorama
     az network bastion ssh --name ${module.networking.bastion_name} --resource-group ${module.networking.bastion_resource_group} --target-resource-id ${module.panorama.panorama_vm_id} --auth-type password --username panadmin
@@ -99,5 +109,8 @@ output "bastion_ssh_commands" {
 
     # FW2 (Passive)  mgmt IP: ${module.firewall.fw2_mgmt_private_ip}
     az network bastion ssh --name ${module.networking.bastion_name} --resource-group ${module.networking.bastion_resource_group} --target-resource-id ${module.firewall.fw2_vm_id} --auth-type password --username panadmin
+
+    # Apache web server (Spoke1, Ubuntu) — IpConnect via private IP works because Bastion Standard reaches peered VNets
+    az network bastion ssh --name ${module.networking.bastion_name} --resource-group ${module.networking.bastion_resource_group} --target-ip-address ${module.app1_app.apache_private_ip} --resource-group ${module.networking.bastion_resource_group} --auth-type password --username panadmin
   EOT
 }
