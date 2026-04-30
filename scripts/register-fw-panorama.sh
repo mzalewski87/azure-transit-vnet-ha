@@ -347,7 +347,8 @@ PAN_URL="https://127.0.0.1:$PANORAMA_PORT/api/"
 
 # HA peer mapping: FW1 sees FW2 as peer, FW2 sees FW1 as peer
 # Lower priority wins election → FW1 (100) is active, FW2 (200) is passive
-# /24 netmask hardcoded — matches transit_mgmt_cidr in modules/networking
+# HA config is pushed DIRECTLY to each FW via target=<serial>, NOT via
+# Template Variables (which proved unreliable for <peer-ip> field substitution).
 register_fw() {
   local serial="$1" peer_ip="$2" priority="$3" label="$4"
   echo "  $label  serial=$serial  peer-ip=$peer_ip  priority=$priority"
@@ -380,27 +381,77 @@ register_fw() {
     --data-urlencode "element=<entry name='$serial'/>" \
     --data-urlencode "key=$PAN_KEY" > /dev/null
 
-  # HA per-device variable overrides ($ha-peer-ip, $ha-priority)
-  # The Template defines these variables with placeholder defaults; per-device
-  # values are set here so HA1 forms with each FW pointing at its actual peer.
-  echo "    -> HA variable override: \$ha-peer-ip=$peer_ip/24"
-  VAR_XPATH="$TS_DEV_XPATH/entry[@name='$serial']/variable"
-  curl -sk --max-time 30 "$PAN_URL" \
+  echo "    OK (registration)"
+}
+
+# Push HA config DIRECTLY to a single FW via target=<serial>. The candidate
+# config on the FW is updated; commit happens in push_ha_commit() below.
+push_ha_config() {
+  local serial="$1" peer_ip="$2" priority="$3" label="$4"
+  echo "  $label  HA: peer-ip=$peer_ip, device-priority=$priority"
+
+  HA_XPATH="/config/devices/entry[@name='localhost.localdomain']/deviceconfig/high-availability"
+  HA_ELEMENT="<enabled>yes</enabled><group><group-id>1</group-id><description>Azure VM-Series Active/Passive HA</description><peer-ip>$peer_ip</peer-ip><mode><active-passive><passive-link-state>auto</passive-link-state></active-passive></mode><configuration-synchronization><enabled>yes</enabled></configuration-synchronization><election-option><device-priority>$priority</device-priority><preemptive>no</preemptive></election-option></group><interface><ha1><port>management</port></ha1><ha2><port>ethernet1/3</port></ha2></interface>"
+
+  HA_RESP=$(curl -sk --max-time 30 "$PAN_URL" \
     --data-urlencode "type=config" \
     --data-urlencode "action=set" \
-    --data-urlencode "xpath=$VAR_XPATH" \
-    --data-urlencode "element=<entry name='\$ha-peer-ip'><type><ip-netmask>$peer_ip/24</ip-netmask></type></entry>" \
-    --data-urlencode "key=$PAN_KEY" > /dev/null
+    --data-urlencode "xpath=$HA_XPATH" \
+    --data-urlencode "element=$HA_ELEMENT" \
+    --data-urlencode "target=$serial" \
+    --data-urlencode "key=$PAN_KEY" 2>/dev/null)
 
-  echo "    -> HA variable override: \$ha-priority=$priority"
-  curl -sk --max-time 30 "$PAN_URL" \
-    --data-urlencode "type=config" \
-    --data-urlencode "action=set" \
-    --data-urlencode "xpath=$VAR_XPATH" \
-    --data-urlencode "element=<entry name='\$ha-priority'><type><device-priority>$priority</device-priority></type></entry>" \
-    --data-urlencode "key=$PAN_KEY" > /dev/null
+  HA_STATUS=$(echo "$HA_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(root.get('status', 'unknown'))
+except Exception as e:
+    print('parse-error: ' + str(e))
+" 2>/dev/null)
 
-  echo "    OK"
+  if [ "$HA_STATUS" = "success" ]; then
+    echo "    OK (HA config set on FW candidate config)"
+  else
+    MSG=$(echo "$HA_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(root.findtext('.//msg','') or root.findtext('.//line','') or 'no message')
+except: print('unparseable')
+" 2>/dev/null)
+    echo "    [WARN] HA set returned status=$HA_STATUS msg=$MSG"
+  fi
+}
+
+# Commit the FW's candidate config so the HA settings take effect
+commit_on_fw() {
+  local serial="$1" label="$2"
+  echo "  $label  Committing on FW (target=$serial)..."
+
+  COMMIT_RESP=$(curl -sk --max-time 90 "$PAN_URL" \
+    --data-urlencode "type=commit" \
+    --data-urlencode "cmd=<commit></commit>" \
+    --data-urlencode "target=$serial" \
+    --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+
+  COMMIT_JOB=$(echo "$COMMIT_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    if root.get('status') == 'success':
+        print(root.findtext('.//job','submitted'))
+    else:
+        msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'unknown'
+        print('FAIL: ' + str(msg))
+except: print('parse-error')
+" 2>/dev/null)
+
+  if echo "$COMMIT_JOB" | grep -q "^FAIL"; then
+    echo "    [WARN] FW commit: $COMMIT_JOB"
+  else
+    echo "    OK (FW commit job $COMMIT_JOB submitted)"
+  fi
 }
 
 register_fw "$FW1_SERIAL" "$FW2_MGMT_IP" "100" "FW1 (active)"
@@ -571,6 +622,33 @@ try:
 except Exception as e:
     print('  [INFO] Collector Group push: ' + str(e))
 " 2>/dev/null
+
+# Wait for the Template Stack and Device Group pushes to land before touching
+# the FW directly (otherwise the local commit below races with the Panorama-
+# initiated commit that completes the template/DG push).
+echo ""
+echo "  Waiting 30s for Panorama pushes to settle on the FWs..."
+sleep 30
+
+# Push HA configuration directly to each FW via target=<serial>. The previous
+# Template Variable approach proved unreliable for the <peer-ip> field, so each
+# FW now receives a complete HA config with its actual peer IP and priority
+# baked in. This goes into the FW's LOCAL candidate config — committed below.
+echo ""
+echo "[9.7/9] Pushing HA configuration directly to each FW..."
+push_ha_config "$FW1_SERIAL" "$FW2_MGMT_IP" "100" "FW1 (active)"
+push_ha_config "$FW2_SERIAL" "$FW1_MGMT_IP" "200" "FW2 (passive)"
+
+# Commit on each FW so the HA candidate config becomes running config — HA
+# only forms after both peers have committed and brought up the HA1 link.
+echo ""
+echo "[9.8/9] Committing HA config on each FW..."
+commit_on_fw "$FW1_SERIAL" "FW1"
+commit_on_fw "$FW2_SERIAL" "FW2"
+
+echo ""
+echo "  HA negotiation typically takes 30-60s after both FWs commit."
+echo "  Verify with: show high-availability state on each FW."
 
 echo ""
 echo "============================================================"

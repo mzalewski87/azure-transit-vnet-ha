@@ -685,8 +685,7 @@ resource "panos_panorama_security_rule_group" "transit" {
     #   admin@panorama> show application all | match <name>
     applications = [
       "web-browsing", "ssl", "dns", "ntp-base", "icmp",
-      "apt-get", "yum",
-      "ms-update", "ms-windows-update",
+      "apt-get", "yum", "ms-update",
       "github", "git",
     ]
     services   = ["application-default"]
@@ -939,96 +938,21 @@ print(root.findtext('.//key',''))
 }
 
 ###############################################################################
-# HA Configuration in FW Template
+# HA Configuration is set DIRECTLY ON EACH FW (not via Template Variables) by
+# scripts/register-fw-panorama.sh (Phase 2b) using PAN-OS XML API with
+# target=<serial>. This was a deliberate pivot from the original Template
+# Variable approach, which had two compounding problems:
+#   1. Template Variable `<entry>` for ip-netmask requires CIDR notation
+#      (10.0.0.254/24), not dotted (10.0.0.254/255.255.255.0). Wrong format
+#      caused the variable declaration to fail silently.
+#   2. Even with valid declaration, PAN-OS substituting a $variable of type
+#      ip-netmask into a <peer-ip> field (which expects a plain IP, no /mask)
+#      is unreliable across PAN-OS versions.
 #
-# Active/Passive HA between FW1 and FW2 with HA1 (control plane) on the
-# management interface and HA2 (state sync) on ethernet1/3 in dedicated
-# snet-ha subnet. Common settings (group-id, mode, election, interfaces) are
-# pushed at the Template level. Per-device values that differ between FW1 and
-# FW2 — peer-ip and device-priority — are exposed as Template Variables and
-# overridden per FW serial in scripts/register-fw-panorama.sh (Phase 2b).
-#
-# Variable defaults are intentional placeholders that fail-loudly if Phase 2b
-# never runs (HA will not form). After Phase 2b each FW receives:
-#   FW1 (active):  $ha-peer-ip = <FW2 mgmt IP>/24, $ha-priority = 100
-#   FW2 (passive): $ha-peer-ip = <FW1 mgmt IP>/24, $ha-priority = 200
-#
-# Lower device-priority wins election. Preemption is OFF — once FW2 takes
-# over, it stays active until manually failed back, avoiding flapping.
-#
-# Ref: PANW Securing Applications in Azure deployment guide (Active/Passive HA)
+# The direct per-FW push via target=<serial> is simpler, deterministic, and
+# easier to debug — each FW gets its full HA config with literal peer IP and
+# priority values written directly into its candidate config, then committed.
 ###############################################################################
-
-resource "null_resource" "fw_template_ha_config" {
-  triggers = {
-    template_name = panos_panorama_template.transit.name
-  }
-
-  provisioner "local-exec" {
-    command = <<-SCRIPT
-      set -e
-      PANORAMA_URL="https://${var.panorama_hostname}:44300"
-      PAN_USER="${var.panorama_username}"
-      TEMPLATE_NAME="${panos_panorama_template.transit.name}"
-
-      echo "=== Setting HA configuration in FW Template ==="
-
-      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
-      API_KEY=$(curl -sk --max-time 30 \
-        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
-        | python3 -c "
-import sys, xml.etree.ElementTree as ET
-root = ET.fromstring(sys.stdin.read())
-if root.get('status') != 'success':
-    print('ERROR', file=sys.stderr); sys.exit(1)
-print(root.findtext('.//key',''))
-" 2>&1)
-
-      if [ -z "$API_KEY" ] || echo "$API_KEY" | grep -q "ERROR"; then
-        echo "[ERROR] API key failed"; exit 1
-      fi
-
-      TPL_BASE="/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']"
-      DEVCFG="$TPL_BASE/config/devices/entry[@name='localhost.localdomain']/deviceconfig"
-
-      # 1) Declare Template Variables (placeholder defaults — overridden per device in Phase 2b)
-      VAR_XPATH="$TPL_BASE/variable"
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=config" \
-        --data-urlencode "action=set" \
-        --data-urlencode "xpath=$VAR_XPATH" \
-        --data-urlencode "element=<entry name='\$ha-peer-ip'><type><ip-netmask>10.0.0.254/${var.mgmt_subnet_netmask}</ip-netmask></type><description>HA1 peer mgmt IP (overridden per FW in Phase 2b)</description></entry>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  Template variable: \$ha-peer-ip declared (placeholder default)"
-
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=config" \
-        --data-urlencode "action=set" \
-        --data-urlencode "xpath=$VAR_XPATH" \
-        --data-urlencode "element=<entry name='\$ha-priority'><type><device-priority>100</device-priority></type><description>HA election device priority (FW1=100 active, FW2=200 passive)</description></entry>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  Template variable: \$ha-priority declared (default 100)"
-
-      # 2) Push HA configuration (uses the variables above)
-      HA_XPATH="$DEVCFG/high-availability"
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=config" \
-        --data-urlencode "action=set" \
-        --data-urlencode "xpath=$HA_XPATH" \
-        --data-urlencode "element=<enabled>yes</enabled><group><group-id>1</group-id><description>Azure VM-Series Active/Passive HA</description><peer-ip>\$ha-peer-ip</peer-ip><mode><active-passive><passive-link-state>auto</passive-link-state></active-passive></mode><configuration-synchronization><enabled>yes</enabled></configuration-synchronization><election-option><device-priority>\$ha-priority</device-priority><preemptive>no</preemptive><heartbeat-backup>no</heartbeat-backup></election-option><state-synchronization><transport>ip</transport><ha2-keep-alive><enabled>yes</enabled><action>log-only</action><threshold>10000</threshold></ha2-keep-alive></state-synchronization></group><interface><ha1><port>management</port></ha1><ha2><port>ethernet1/3</port></ha2></interface>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  HA config: pushed to Template (group-id=1, active-passive, HA1=mgmt, HA2=ethernet1/3)"
-
-      echo "  [OK] HA Template config applied (per-device peer-ip/priority set in Phase 2b)"
-    SCRIPT
-  }
-
-  depends_on = [
-    panos_panorama_template.transit,
-    panos_panorama_ethernet_interface.ha2,
-    null_resource.fw_template_system_settings,
-  ]
-}
 
 ###############################################################################
 # Panorama Log Collector Group (via XML API)
@@ -1143,6 +1067,5 @@ print(root.findtext('.//serial',''))
     panos_panorama_device_group.transit,
     panos_panorama_log_forwarding_profile.default,
     null_resource.fw_template_system_settings,
-    null_resource.fw_template_ha_config,
   ]
 }

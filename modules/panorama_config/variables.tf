@@ -71,9 +71,3 @@ variable "external_lb_public_ip" {
   description = "External Load Balancer public IP (DNAT source)"
   type        = string
 }
-
-variable "mgmt_subnet_netmask" {
-  description = "Netmask for the FW management subnet (HA1 peer-ip variable type ip-netmask)"
-  type        = string
-  default     = "255.255.255.0"
-}
