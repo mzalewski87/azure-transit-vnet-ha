@@ -112,7 +112,7 @@ wait_for_tunnel() {
     fi
     sleep 5
   done
-  echo "[BLAD] Tunnel $name (port $port) not responding."
+  echo "[ERROR] Tunnel $name (port $port) not responding."
   return 1
 }
 
@@ -142,9 +142,11 @@ cd "$ROOT_DIR"
 PANORAMA_ID=$(terraform output -raw panorama_vm_id 2>/dev/null)
 FW1_ID=$(terraform output -raw fw1_vm_id 2>/dev/null)
 FW2_ID=$(terraform output -raw fw2_vm_id 2>/dev/null)
+FW1_MGMT_IP=$(terraform output -raw fw1_mgmt_private_ip 2>/dev/null)
+FW2_MGMT_IP=$(terraform output -raw fw2_mgmt_private_ip 2>/dev/null)
 echo "       Panorama: $PANORAMA_ID"
-echo "       FW1:      $FW1_ID"
-echo "       FW2:      $FW2_ID"
+echo "       FW1:      $FW1_ID  (mgmt $FW1_MGMT_IP)"
+echo "       FW2:      $FW2_ID  (mgmt $FW2_MGMT_IP)"
 
 # Read vm-auth-key (will auto-generate after tunnels are up if missing)
 VM_AUTH_KEY=""
@@ -157,7 +159,7 @@ fi
 
 # Start tunnels
 echo ""
-echo "[2/6] Starting Bastion tunneli..."
+echo "[2/6] Starting Bastion tunnels..."
 start_tunnel "Panorama" "$PANORAMA_ID" "$PANORAMA_PORT"
 start_tunnel "FW1"      "$FW1_ID"      "$FW1_PORT"
 start_tunnel "FW2"      "$FW2_ID"      "$FW2_PORT"
@@ -343,8 +345,12 @@ echo "[5/6] Registering serials on Panorama..."
 PAN_KEY=$(get_api_key "https://127.0.0.1:$PANORAMA_PORT" "$PAN_USER" "$PAN_PASS")
 PAN_URL="https://127.0.0.1:$PANORAMA_PORT/api/"
 
-for SERIAL in "$FW1_SERIAL" "$FW2_SERIAL"; do
-  echo "  Serial: $SERIAL"
+# HA peer mapping: FW1 sees FW2 as peer, FW2 sees FW1 as peer
+# Lower priority wins election → FW1 (100) is active, FW2 (200) is passive
+# /24 netmask hardcoded — matches transit_mgmt_cidr in modules/networking
+register_fw() {
+  local serial="$1" peer_ip="$2" priority="$3" label="$4"
+  echo "  $label  serial=$serial  peer-ip=$peer_ip  priority=$priority"
 
   # mgt-config devices
   echo "    -> mgt-config devices..."
@@ -352,7 +358,7 @@ for SERIAL in "$FW1_SERIAL" "$FW2_SERIAL"; do
     --data-urlencode "type=config" \
     --data-urlencode "action=set" \
     --data-urlencode "xpath=/config/mgt-config/devices" \
-    --data-urlencode "element=<entry name='$SERIAL'/>" \
+    --data-urlencode "element=<entry name='$serial'/>" \
     --data-urlencode "key=$PAN_KEY" > /dev/null
 
   # device-group devices
@@ -361,20 +367,44 @@ for SERIAL in "$FW1_SERIAL" "$FW2_SERIAL"; do
     --data-urlencode "type=config" \
     --data-urlencode "action=set" \
     --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='$DEVICE_GROUP']/devices" \
-    --data-urlencode "element=<entry name='$SERIAL'/>" \
+    --data-urlencode "element=<entry name='$serial'/>" \
     --data-urlencode "key=$PAN_KEY" > /dev/null
 
   # template-stack devices
   echo "    -> template-stack $TEMPLATE_STACK..."
+  TS_DEV_XPATH="/config/devices/entry[@name='localhost.localdomain']/template-stack/entry[@name='$TEMPLATE_STACK']/devices"
   curl -sk --max-time 30 "$PAN_URL" \
     --data-urlencode "type=config" \
     --data-urlencode "action=set" \
-    --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/template-stack/entry[@name='$TEMPLATE_STACK']/devices" \
-    --data-urlencode "element=<entry name='$SERIAL'/>" \
+    --data-urlencode "xpath=$TS_DEV_XPATH" \
+    --data-urlencode "element=<entry name='$serial'/>" \
+    --data-urlencode "key=$PAN_KEY" > /dev/null
+
+  # HA per-device variable overrides ($ha-peer-ip, $ha-priority)
+  # The Template defines these variables with placeholder defaults; per-device
+  # values are set here so HA1 forms with each FW pointing at its actual peer.
+  echo "    -> HA variable override: \$ha-peer-ip=$peer_ip/24"
+  VAR_XPATH="$TS_DEV_XPATH/entry[@name='$serial']/variable"
+  curl -sk --max-time 30 "$PAN_URL" \
+    --data-urlencode "type=config" \
+    --data-urlencode "action=set" \
+    --data-urlencode "xpath=$VAR_XPATH" \
+    --data-urlencode "element=<entry name='\$ha-peer-ip'><type><ip-netmask>$peer_ip/24</ip-netmask></type></entry>" \
+    --data-urlencode "key=$PAN_KEY" > /dev/null
+
+  echo "    -> HA variable override: \$ha-priority=$priority"
+  curl -sk --max-time 30 "$PAN_URL" \
+    --data-urlencode "type=config" \
+    --data-urlencode "action=set" \
+    --data-urlencode "xpath=$VAR_XPATH" \
+    --data-urlencode "element=<entry name='\$ha-priority'><type><device-priority>$priority</device-priority></type></entry>" \
     --data-urlencode "key=$PAN_KEY" > /dev/null
 
   echo "    OK"
-done
+}
+
+register_fw "$FW1_SERIAL" "$FW2_MGMT_IP" "100" "FW1 (active)"
+register_fw "$FW2_SERIAL" "$FW1_MGMT_IP" "200" "FW2 (passive)"
 
 # Add FW devices to Collector Group's Device Log Forwarding
 echo ""

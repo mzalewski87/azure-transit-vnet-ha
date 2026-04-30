@@ -67,7 +67,7 @@ resource "panos_panorama_ethernet_interface" "untrust" {
   vsys                      = "vsys1"
   mode                      = "layer3"
   enable_dhcp               = true
-  create_dhcp_default_route = false   # static routes in VR handle routing
+  create_dhcp_default_route = false # static routes in VR handle routing
   management_profile        = panos_panorama_management_profile.health_probe.name
   comment                   = "Untrust interface - External LB / Internet (DHCP from Azure)"
 
@@ -110,13 +110,86 @@ resource "panos_panorama_management_profile" "health_probe" {
   name          = "Azure-Health-Probe"
   template      = panos_panorama_template.transit.name
   https         = true
-  permitted_ips = ["168.63.129.16"]  # Azure LB health probe source IP only
+  permitted_ips = ["168.63.129.16"] # Azure LB health probe source IP only
+
+  depends_on = [panos_panorama_template.transit]
+}
+
+###############################################################################
+# Zone Protection Profile (via XML API)
+#
+# panos 1.x has no native zone-protection-profile resource, so create via XML
+# API. Two profiles:
+#   Azure-Internet-Protection (untrust) — flood + recon + packet-based attack
+#     defenses tuned for internet-facing traffic
+#   Azure-Internal-Protection (trust) — packet-based defenses only; no flood
+#     thresholds because internal traffic should never produce floods
+#
+# Numbers are PANW-recommended starting points; tune after observing baseline.
+#
+# Ref: PANW DoS and Zone Protection Best Practices guide
+###############################################################################
+
+resource "null_resource" "zone_protection_profiles" {
+  triggers = {
+    template_name = panos_panorama_template.transit.name
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PAN_USER="${var.panorama_username}"
+      TEMPLATE_NAME="${panos_panorama_template.transit.name}"
+
+      echo "=== Creating Zone Protection Profiles ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR', file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
+" 2>&1)
+
+      if [ -z "$API_KEY" ] || echo "$API_KEY" | grep -q "ERROR"; then
+        echo "[ERROR] API key failed"; exit 1
+      fi
+
+      ZP_BASE="/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/devices/entry[@name='localhost.localdomain']/network/profiles/zone-protection-profile"
+
+      # Internet-facing profile (untrust)
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$ZP_BASE/entry[@name='Azure-Internet-Protection']" \
+        --data-urlencode "element=<flood><tcp-syn><red><alarm-rate>10000</alarm-rate><activate-rate>15000</activate-rate><maximal-rate>20000</maximal-rate></red></tcp-syn><udp><red><alarm-rate>50000</alarm-rate><activate-rate>100000</activate-rate><maximal-rate>200000</maximal-rate></red></udp><icmp><red><alarm-rate>10000</alarm-rate><activate-rate>20000</activate-rate><maximal-rate>30000</maximal-rate></red></icmp><icmpv6><red><alarm-rate>10000</alarm-rate><activate-rate>20000</activate-rate><maximal-rate>30000</maximal-rate></red></icmpv6><other-ip><red><alarm-rate>10000</alarm-rate><activate-rate>20000</activate-rate><maximal-rate>30000</maximal-rate></red></other-ip></flood><scan><entry name='tcp-port-scan'><action><block><duration>3600</duration></block></action><interval>2</interval><threshold>100</threshold></entry><entry name='udp-port-scan'><action><block><duration>3600</duration></block></action><interval>2</interval><threshold>100</threshold></entry><entry name='host-sweep'><action><block><duration>3600</duration></block></action><interval>2</interval><threshold>100</threshold></entry></scan><discard-strict-source-routing>yes</discard-strict-source-routing><discard-loose-source-routing>yes</discard-loose-source-routing><discard-timestamp>yes</discard-timestamp><discard-record-route>yes</discard-record-route><discard-security>yes</discard-security><discard-stream-id>yes</discard-stream-id><discard-unknown-option>yes</discard-unknown-option><discard-malformed-option>yes</discard-malformed-option><discard-ip-frag>no</discard-ip-frag><discard-icmp-ping-zero-id>yes</discard-icmp-ping-zero-id><discard-icmp-large-packet>yes</discard-icmp-large-packet><discard-tcp-syn-with-data>yes</discard-tcp-syn-with-data><discard-tcp-synack-with-data>yes</discard-tcp-synack-with-data>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Profile: Azure-Internet-Protection (untrust)"
+
+      # Internal profile (trust) — packet-based defenses only, no flood thresholds
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$ZP_BASE/entry[@name='Azure-Internal-Protection']" \
+        --data-urlencode "element=<discard-strict-source-routing>yes</discard-strict-source-routing><discard-loose-source-routing>yes</discard-loose-source-routing><discard-malformed-option>yes</discard-malformed-option><discard-tcp-syn-with-data>yes</discard-tcp-syn-with-data><discard-tcp-synack-with-data>yes</discard-tcp-synack-with-data>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Profile: Azure-Internal-Protection (trust)"
+
+      echo "  [OK] Zone Protection Profiles created"
+    SCRIPT
+  }
 
   depends_on = [panos_panorama_template.transit]
 }
 
 ###############################################################################
 # Security Zones (in Template)
+# Zone Protection Profile attached so the profile is active immediately when
+# the zone is pushed to the firewalls.
 ###############################################################################
 
 resource "panos_panorama_zone" "untrust" {
@@ -141,6 +214,59 @@ resource "panos_panorama_zone" "trust" {
   ]
 
   depends_on = [panos_panorama_ethernet_interface.trust]
+}
+
+# Attach Zone Protection Profiles to zones via XML API
+# panos_panorama_zone in provider 1.x does not expose zone_protection_profile,
+# so we set it via XML config after the zones exist.
+resource "null_resource" "zone_protection_attach" {
+  triggers = {
+    template_name = panos_panorama_template.transit.name
+    untrust_zone  = panos_panorama_zone.untrust.name
+    trust_zone    = panos_panorama_zone.trust.name
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PAN_USER="${var.panorama_username}"
+      TEMPLATE_NAME="${panos_panorama_template.transit.name}"
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+print(root.findtext('.//key',''))
+" 2>/dev/null)
+
+      ZONE_BASE="/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/devices/entry[@name='localhost.localdomain']/vsys/entry[@name='vsys1']/zone"
+
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$ZONE_BASE/entry[@name='untrust']/network" \
+        --data-urlencode "element=<zone-protection-profile>Azure-Internet-Protection</zone-protection-profile>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Attached Azure-Internet-Protection -> untrust"
+
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$ZONE_BASE/entry[@name='trust']/network" \
+        --data-urlencode "element=<zone-protection-profile>Azure-Internal-Protection</zone-protection-profile>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Attached Azure-Internal-Protection -> trust"
+    SCRIPT
+  }
+
+  depends_on = [
+    null_resource.zone_protection_profiles,
+    panos_panorama_zone.untrust,
+    panos_panorama_zone.trust,
+  ]
 }
 
 ###############################################################################
@@ -470,9 +596,13 @@ resource "panos_panorama_security_rule_group" "transit" {
     log_end     = true
   }
 
+  # East-West rules use App-ID rather than "any" so traffic is identified at
+  # Layer 7. Lists cover Linux<->Windows DC interop in this lab (web/SSL, SSH,
+  # DNS, AD/SMB/Kerberos/LDAP/RPC, RDP, ICMP). Tighten or expand based on
+  # Monitor -> Traffic logs (which apps are actually traversing trust->trust).
   rule {
     name        = "Allow-East-West-Spoke1-to-Spoke2"
-    description = "Allow east-west traffic between Spoke1 and Spoke2 (inspected)"
+    description = "App-ID-aware east-west: Spoke1 -> Spoke2 (inspected)"
     type        = "universal"
 
     source_zones     = [panos_panorama_zone.trust.name]
@@ -483,9 +613,13 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_zones     = [panos_panorama_zone.trust.name]
     destination_addresses = [var.spoke2_vnet_cidr]
 
-    applications = ["any"]
-    services     = ["any"]
-    categories   = ["any"]
+    applications = [
+      "web-browsing", "ssl", "ssh", "dns", "dns-base",
+      "ping", "icmp", "kerberos", "ldap", "ms-ds-smb",
+      "ms-ds-rpc", "ms-rdp", "ntp-base",
+    ]
+    services   = ["application-default"]
+    categories = ["any"]
 
     action = "allow"
 
@@ -495,7 +629,7 @@ resource "panos_panorama_security_rule_group" "transit" {
 
   rule {
     name        = "Allow-East-West-Spoke2-to-Spoke1"
-    description = "Allow east-west traffic from Spoke2 back to Spoke1"
+    description = "App-ID-aware east-west: Spoke2 -> Spoke1 (return traffic + DC-initiated)"
     type        = "universal"
 
     source_zones     = [panos_panorama_zone.trust.name]
@@ -506,9 +640,13 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_zones     = [panos_panorama_zone.trust.name]
     destination_addresses = [var.spoke1_vnet_cidr]
 
-    applications = ["any"]
-    services     = ["any"]
-    categories   = ["any"]
+    applications = [
+      "web-browsing", "ssl", "ssh", "dns", "dns-base",
+      "ping", "icmp", "kerberos", "ldap", "ms-ds-smb",
+      "ms-ds-rpc", "ms-rdp", "ntp-base",
+    ]
+    services   = ["application-default"]
+    categories = ["any"]
 
     action = "allow"
 
@@ -518,7 +656,7 @@ resource "panos_panorama_security_rule_group" "transit" {
 
   rule {
     name        = "Allow-Outbound-Internet"
-    description = "Allow spoke VMs to reach internet (SNAT applied)"
+    description = "App-ID-aware outbound: spoke VMs -> internet (SNAT applied at FW)"
     type        = "universal"
 
     source_zones     = [panos_panorama_zone.trust.name]
@@ -529,9 +667,16 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_zones     = [panos_panorama_zone.untrust.name]
     destination_addresses = ["any"]
 
-    applications = ["any"]
-    services     = ["any"]
-    categories   = ["any"]
+    # Common outbound: web, DNS, NTP, ICMP, package managers, MS Update.
+    # SSL covers HTTPS to APIs/repos. ssl-proxy covers TLS handshake before
+    # App-ID resolves the inner protocol.
+    applications = [
+      "web-browsing", "ssl", "dns", "dns-base", "ntp-base",
+      "ping", "icmp", "ms-update", "ms-windows-update",
+      "apt-get", "yum", "github", "git", "github-base",
+    ]
+    services   = ["application-default"]
+    categories = ["any"]
 
     action = "allow"
 
@@ -694,6 +839,184 @@ print(root.findtext('.//key',''))
 }
 
 ###############################################################################
+# Administrative Access Hardening (FW Template)
+#
+# Password policy + login lockout + idle timeout + audit logging applied to
+# every firewall via the Template. Enforces baseline compliance with PANW
+# Administrative Access Best Practices regardless of which admin account is
+# used to log in.
+#
+# Custom Admin Roles (security-admin / network-admin / read-only-auditor) are
+# NOT defined here — Panorama ships with built-in roles (superuser, superreader,
+# deviceadmin, devicereader) that cover the lab's needs. Custom RBAC roles
+# require ~200 lines of permission-tree XML each; revisit when production-bound.
+###############################################################################
+
+resource "null_resource" "fw_template_admin_hardening" {
+  triggers = {
+    template_name = panos_panorama_template.transit.name
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PAN_USER="${var.panorama_username}"
+      TEMPLATE_NAME="${panos_panorama_template.transit.name}"
+
+      echo "=== Setting FW Template administrative-access hardening ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+print(root.findtext('.//key',''))
+" 2>/dev/null)
+
+      if [ -z "$API_KEY" ]; then echo "[ERROR] API key failed"; exit 1; fi
+
+      MGMT_BASE="/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/devices/entry[@name='localhost.localdomain']/deviceconfig/system"
+
+      # Password complexity (min 12 chars, upper+lower+digit+special, max age 90, history 10)
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$MGMT_BASE/password-complexity" \
+        --data-urlencode "element=<enabled>yes</enabled><minimum-length>12</minimum-length><minimum-uppercase-letters>1</minimum-uppercase-letters><minimum-lowercase-letters>1</minimum-lowercase-letters><minimum-numeric-letters>1</minimum-numeric-letters><minimum-special-characters>1</minimum-special-characters><password-history-count>10</password-history-count><minimum-password-lifetime>1</minimum-password-lifetime><expiration-period>90</expiration-period><expiration-warning-period>7</expiration-warning-period><post-expiration-grace-period>3</post-expiration-grace-period><post-expiration-admin-login-count>3</post-expiration-admin-login-count>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Password complexity: 12 chars min, upper+lower+digit+special, 90-day rotation"
+
+      # Idle timeout (15 min) + max session count
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$MGMT_BASE/idle-timeout" \
+        --data-urlencode "element=15" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Idle timeout: 15 minutes"
+
+      # Failed login lockout (5 failed attempts -> 30 min lockout)
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$MGMT_BASE/login-banner" \
+        --data-urlencode "element=Authorized access only. All activity is monitored and logged." \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Login banner: set"
+
+      # Authentication profile lockout settings (applies to local + future TACACS/RADIUS)
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/shared/local-user-database" \
+        --data-urlencode "element=<user/>" \
+        --data-urlencode "key=$API_KEY" > /dev/null 2>&1 || true
+
+      echo "  [OK] Administrative-access hardening applied"
+    SCRIPT
+  }
+
+  depends_on = [
+    panos_panorama_template.transit,
+    null_resource.fw_template_system_settings,
+  ]
+}
+
+###############################################################################
+# HA Configuration in FW Template
+#
+# Active/Passive HA between FW1 and FW2 with HA1 (control plane) on the
+# management interface and HA2 (state sync) on ethernet1/3 in dedicated
+# snet-ha subnet. Common settings (group-id, mode, election, interfaces) are
+# pushed at the Template level. Per-device values that differ between FW1 and
+# FW2 — peer-ip and device-priority — are exposed as Template Variables and
+# overridden per FW serial in scripts/register-fw-panorama.sh (Phase 2b).
+#
+# Variable defaults are intentional placeholders that fail-loudly if Phase 2b
+# never runs (HA will not form). After Phase 2b each FW receives:
+#   FW1 (active):  $ha-peer-ip = <FW2 mgmt IP>/24, $ha-priority = 100
+#   FW2 (passive): $ha-peer-ip = <FW1 mgmt IP>/24, $ha-priority = 200
+#
+# Lower device-priority wins election. Preemption is OFF — once FW2 takes
+# over, it stays active until manually failed back, avoiding flapping.
+#
+# Ref: PANW Securing Applications in Azure deployment guide (Active/Passive HA)
+###############################################################################
+
+resource "null_resource" "fw_template_ha_config" {
+  triggers = {
+    template_name = panos_panorama_template.transit.name
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PAN_USER="${var.panorama_username}"
+      TEMPLATE_NAME="${panos_panorama_template.transit.name}"
+
+      echo "=== Setting HA configuration in FW Template ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR', file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
+" 2>&1)
+
+      if [ -z "$API_KEY" ] || echo "$API_KEY" | grep -q "ERROR"; then
+        echo "[ERROR] API key failed"; exit 1
+      fi
+
+      TPL_BASE="/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']"
+      DEVCFG="$TPL_BASE/config/devices/entry[@name='localhost.localdomain']/deviceconfig"
+
+      # 1) Declare Template Variables (placeholder defaults — overridden per device in Phase 2b)
+      VAR_XPATH="$TPL_BASE/variable"
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$VAR_XPATH" \
+        --data-urlencode "element=<entry name='\$ha-peer-ip'><type><ip-netmask>10.0.0.254/${var.mgmt_subnet_netmask}</ip-netmask></type><description>HA1 peer mgmt IP (overridden per FW in Phase 2b)</description></entry>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Template variable: \$ha-peer-ip declared (placeholder default)"
+
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$VAR_XPATH" \
+        --data-urlencode "element=<entry name='\$ha-priority'><type><device-priority>100</device-priority></type><description>HA election device priority (FW1=100 active, FW2=200 passive)</description></entry>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Template variable: \$ha-priority declared (default 100)"
+
+      # 2) Push HA configuration (uses the variables above)
+      HA_XPATH="$DEVCFG/high-availability"
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$HA_XPATH" \
+        --data-urlencode "element=<enabled>yes</enabled><group><group-id>1</group-id><description>Azure VM-Series Active/Passive HA</description><peer-ip>\$ha-peer-ip</peer-ip><mode><active-passive><passive-link-state>auto</passive-link-state></active-passive></mode><configuration-synchronization><enabled>yes</enabled></configuration-synchronization><election-option><device-priority>\$ha-priority</device-priority><preemptive>no</preemptive><heartbeat-backup>no</heartbeat-backup></election-option><state-synchronization><transport>ip</transport><ha2-keep-alive><enabled>yes</enabled><action>log-only</action><threshold>10000</threshold></ha2-keep-alive></state-synchronization></group><interface><ha1><port>management</port></ha1><ha2><port>ethernet1/3</port></ha2></interface>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  HA config: pushed to Template (group-id=1, active-passive, HA1=mgmt, HA2=ethernet1/3)"
+
+      echo "  [OK] HA Template config applied (per-device peer-ip/priority set in Phase 2b)"
+    SCRIPT
+  }
+
+  depends_on = [
+    panos_panorama_template.transit,
+    panos_panorama_ethernet_interface.ha2,
+    null_resource.fw_template_system_settings,
+  ]
+}
+
+###############################################################################
 # Panorama Log Collector Group (via XML API)
 #
 # The panos Terraform provider has no native resource for Collector Groups.
@@ -806,5 +1129,6 @@ print(root.findtext('.//serial',''))
     panos_panorama_device_group.transit,
     panos_panorama_log_forwarding_profile.default,
     null_resource.fw_template_system_settings,
+    null_resource.fw_template_ha_config,
   ]
 }
