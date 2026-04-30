@@ -7,7 +7,7 @@
 #   When terraform apply returns error:
 #   "A resource with the ID ... already exists - needs to be imported"
 #
-# WYMAGANIA:
+# REQUIREMENTS:
 #   - az CLI logged in: az login
 #   - terraform init executed in project root directory
 #   - Run from project root directory (azure_ha_project/)
@@ -16,9 +16,9 @@
 #   chmod +x scripts/fix-drift.sh
 #   ./scripts/fix-drift.sh
 #
-# Co robi ten skrypt:
+# What this script does:
 #   1. Imports azurerm_virtual_machine_extension "dc_promote" into TF state
-#      (Extension exists in Azure because DC was already promoted, but TF does not know)
+#      (extension exists in Azure because DC was already promoted, but TF does not know)
 #   2. Removes old azurerm_marketplace_agreement from state (if present)
 #      Code changed to null_resource — old resources in state will conflict
 ###############################################################################

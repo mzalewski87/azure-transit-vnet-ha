@@ -236,7 +236,8 @@ admin@panorama> show devices connected    # should list fw1 + fw2
 
 ## Bootstrap – How It Works
 
-FW bootstrap uses **direct init-cfg parameters in custom_data/userData** (PAN-OS 10.0+ reads from Azure IMDS):
+FW bootstrap uses **direct init-cfg parameters in custom_data/userData** (PAN-OS 10.0+
+reads from Azure IMDS — no SMB share required):
 
 ```
 custom_data (base64-encoded init-cfg):
@@ -250,17 +251,19 @@ custom_data (base64-encoded init-cfg):
   dns-primary=168.63.129.16
 ```
 
-An Azure Storage Account with File Share structure is also provisioned for optional future use
-(e.g., uploading `bootstrap.xml`, content packages via Azure Cloud Shell):
+The rendered files are also written to `modules/bootstrap/rendered/fw{1,2}-init-cfg.txt`
+for inspection during troubleshooting (gitignored).
 
-```
-Storage Account (default_action=Deny, service endpoint + NAT GW IP)
-  └── File Share: "bootstrap"
-        ├── fw1/config/ license/ content/ software/
-        └── fw2/config/ license/ content/ software/
-```
+A User Assigned Managed Identity is created and attached to both FW VMs so PAN-OS can
+authenticate to other Azure services (Key Vault, Storage, Monitor) when needed in the
+future. It carries no role assignments today.
 
-Network access: FW management subnet has `Microsoft.Storage` service endpoint + NAT GW public IP in SA `ip_rules` as fallback.
+> **Why no Azure File Share scaffold?** The classic PAN-OS bootstrap on Azure expects
+> SMB files under `bootstrap/fw{1,2}/config/init-cfg.txt` + `bootstrap/fw{1,2}/license/authcodes`.
+> In environments where corporate SSL inspection blocks PUT requests to
+> `*.file.core.windows.net` (Terraform Go client and curl both return "connection reset"),
+> file uploads can never complete. The IMDS path bypasses the data plane entirely and
+> is officially supported by PAN-OS 10.0+.
 
 ---
 
@@ -297,7 +300,6 @@ element=<serial-number>007300XXXXXXX</serial-number>
 | `admin_password` | Password for Panorama and FW (min 12 chars) |
 | `panorama_vm_auth_key` | Auto-generated in Phase 2 Step 4 |
 | `fw_auth_code` | VM-Series BYOL auth code from CSP Portal |
-| `terraform_operator_ips` | Your public IP for SA access |
 
 ### Phase 2 – phase2-panorama-config/terraform.tfvars
 
@@ -420,16 +422,21 @@ az vm start --ids $(terraform output -raw fw1_vm_id)
 
 ### Bootstrap fails (Media Detection Failed)
 ```bash
-# Check userData is set
+# Verify userData is actually set on the VM (this is what PAN-OS reads via IMDS)
 az vm show -g rg-transit-hub -n vm-panos-fw1 --query "userData" -o tsv | base64 -d
 
-# Check SA network rules
-SA=$(terraform output -raw bootstrap_storage_account)
-az storage account show --name "$SA" -g rg-transit-hub --query "networkRuleSet" -o json
+# Compare to the rendered init-cfg on disk (what Terraform generated)
+cat modules/bootstrap/rendered/fw1-init-cfg.txt
 
-# Check File Share contents
-SA_KEY=$(az storage account keys list --account-name "$SA" -g rg-transit-hub --query "[0].value" -o tsv)
-az storage file list --account-name "$SA" --share-name bootstrap --path fw1/config --account-key "$SA_KEY" -o table
+# Check userData propagation: customData was set on VM creation, then the
+# null_resource in modules/firewall/main.tf re-applies it via 'az vm update --user-data'
+# (workaround for azurerm marketplace VMs not propagating user_data through plan{} block).
+# If userData is empty after deploy, that null_resource provisioner failed — re-run:
+terraform apply -target=module.firewall
+
+# Inspect bootstrap log on the FW (via Bastion SSH)
+admin@fw1> less mp-log bootstrap.log
+admin@fw1> show system bootstrap status
 ```
 
 ### Panorama license fetch fails

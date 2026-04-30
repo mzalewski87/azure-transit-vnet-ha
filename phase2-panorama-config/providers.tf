@@ -20,7 +20,7 @@
 # STEP 2 (terminal 2) – start Phase 2 (the tunnel must be active):
 #   cd phase2-panorama-config/
 #   cp terraform.tfvars.example terraform.tfvars
-#   # Ustaw: panorama_hostname = "127.0.0.1", panorama_port = 44300
+#   # Set: panorama_hostname = "127.0.0.1", panorama_port = 44300
 #   terraform init && terraform apply
 ###############################################################################
 
@@ -43,8 +43,8 @@ terraform {
 # timeout increased from default 10s — Bastion tunnel adds latency, and
 # Panorama API may be slow after license activation or Collector Group commit.
 provider "panos" {
-  hostname = var.panorama_hostname  # 127.0.0.1
-  port     = var.panorama_port      # 44300 (match --port from az bastion tunnel)
+  hostname = var.panorama_hostname # 127.0.0.1
+  port     = var.panorama_port     # 44300 (match --port from az bastion tunnel)
   username = var.panorama_username
   password = var.panorama_password
   timeout  = 60

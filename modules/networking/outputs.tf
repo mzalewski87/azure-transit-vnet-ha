@@ -74,9 +74,9 @@ output "ha_subnet_cidr" {
   value       = azurerm_subnet.transit_ha.address_prefixes[0]
 }
 
-# NAT Gateway public IPs
+# NAT Gateway public IPs (FW + Panorama outbound for license/content updates)
 output "nat_gateway_transit_mgmt_public_ip" {
-  description = "Public IP of NAT Gateway for FW management subnet (FW → internet outbound). Required in bootstrap SA ip_rules so FW can reach bootstrap SA when service endpoint isn't routing correctly."
+  description = "Public IP of NAT Gateway for FW management subnet (FW outbound to PANW services)"
   value       = azurerm_public_ip.nat_gateway_transit_mgmt.ip_address
 }
 

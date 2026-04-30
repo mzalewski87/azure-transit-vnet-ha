@@ -44,7 +44,7 @@ resource "null_resource" "panorama_wait_for_api" {
           break
         fi
         if [ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then
-          echo "[ERROR] Panorama API stil not responding after $MAX_ATTEMPTS attempts."
+          echo "[ERROR] Panorama API still not responding after $MAX_ATTEMPTS attempts."
           exit 1
         fi
         echo "  [$ATTEMPTS/$MAX_ATTEMPTS] HTTP $HTTP_CODE – waiting 30s..."
@@ -271,7 +271,7 @@ import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
     status = root.get('status','')
-    msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'brak info'
+    msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'no info'
     if status == 'success':
         print('OK')
     else:
@@ -281,7 +281,7 @@ except Exception as e:
 " 2>/dev/null)
 
         if [ "$LIC_STATUS" = "OK" ]; then
-          echo "  [OK] License installed succesfully!"
+          echo "  [OK] License installed successfully!"
           break
         fi
 
@@ -328,7 +328,7 @@ except: print('RETRY')
           echo "  Credentials: OK"
           break
         fi
-        echo "  [$VERIFY/5] Credentials not ready — waitng 15s..."
+        echo "  [$VERIFY/5] Credentials not ready — waiting 15s..."
         sleep 15
       done
 
@@ -360,7 +360,7 @@ resource "null_resource" "panorama_generate_vm_auth_key" {
       PAN_USER="${var.panorama_username}"
       LIFETIME="${var.vm_auth_key_lifetime}"
 
-      echo "=== [Step 4] Generowanie vm-auth-key (lifetime: $LIFETIME min) ==="
+      echo "=== [Step 4] Generating vm-auth-key (lifetime: $LIFETIME min) ==="
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
 
@@ -399,7 +399,7 @@ except:
           2>/dev/null || echo "")
 
         # Debug: show raw response (first 500 chars)
-        echo "  [authkey proba $AUTH_TRY] Response length: $(echo "$KEY_RESP" | wc -c | tr -d ' ') bytes"
+        echo "  [authkey attempt $AUTH_TRY] Response length: $(echo "$KEY_RESP" | wc -c | tr -d ' ') bytes"
 
         # Parser — ALWAYS exit 0, errors in stdout prefixed ERROR:
         VM_AUTH_KEY=$(echo "$KEY_RESP" | python3 -c "
@@ -609,9 +609,9 @@ print(root.findtext('.//serial','unknown'))
 module "panorama_config" {
   source = "../modules/panorama_config"
 
-  panorama_hostname  = var.panorama_hostname
-  panorama_username  = var.panorama_username
-  panorama_password  = var.panorama_password
+  panorama_hostname = var.panorama_hostname
+  panorama_username = var.panorama_username
+  panorama_password = var.panorama_password
 
   template_name       = var.template_name
   template_stack_name = var.template_stack_name

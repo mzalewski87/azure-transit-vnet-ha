@@ -81,12 +81,6 @@ output "bastion_resource_group" {
   value       = module.networking.bastion_resource_group
 }
 
-#--- Bootstrap SA ---
-output "bootstrap_storage_account" {
-  description = "Bootstrap Storage Account name"
-  value       = module.bootstrap.storage_account_name
-}
-
 #--- Front Door ---
 output "frontdoor_endpoint" {
   description = "Azure Front Door endpoint hostname"

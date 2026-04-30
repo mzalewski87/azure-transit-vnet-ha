@@ -1,7 +1,7 @@
 ###############################################################################
 # Spoke2 DC Module Variables
 # Windows Server 2022 Domain Controller
-# Bastion jest w Management VNet (modules/networking) – nie tutaj
+# Bastion lives in the Management VNet (modules/networking) – not here
 ###############################################################################
 
 variable "location" {
@@ -16,6 +16,11 @@ variable "resource_group_name" {
 
 variable "workload_subnet_id" {
   description = "Workload subnet ID (App2 VNet, snet-workload) where DC VM is placed"
+  type        = string
+}
+
+variable "dc_private_ip" {
+  description = "Static private IP for the DC NIC inside snet-workload (must be in the spoke2 workload subnet)"
   type        = string
 }
 

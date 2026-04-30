@@ -81,7 +81,6 @@ resource "azurerm_subnet" "management_panorama" {
   resource_group_name  = var.hub_resource_group_name
   virtual_network_name = azurerm_virtual_network.management.name
   address_prefixes     = [local.mgmt_vnet_panorama_cidr]
-  service_endpoints    = ["Microsoft.Storage"]
 }
 
 # Azure Bastion subnet (required name: AzureBastionSubnet, min /26)
@@ -317,8 +316,8 @@ resource "azurerm_bastion_host" "management" {
   location            = var.location
   resource_group_name = var.hub_resource_group_name
   sku                 = "Standard"
-  tunneling_enabled   = true   # Required for: az network bastion tunnel --target-resource-id
-  ip_connect_enabled  = true   # Required for: az network bastion ssh --target-ip-address
+  tunneling_enabled   = true # Required for: az network bastion tunnel --target-resource-id
+  ip_connect_enabled  = true # Required for: az network bastion ssh --target-ip-address
   tags                = var.tags
 
   ip_configuration {
@@ -373,13 +372,11 @@ resource "azurerm_virtual_network" "transit" {
 }
 
 # Management subnet – FW eth0 (mgmt interface)
-# service_endpoints: Microsoft.Storage for bootstrap SA (Azure Policy compliance)
 resource "azurerm_subnet" "transit_mgmt" {
   name                 = "snet-mgmt"
   resource_group_name  = var.hub_resource_group_name
   virtual_network_name = azurerm_virtual_network.transit.name
   address_prefixes     = [local.transit_mgmt_cidr]
-  service_endpoints    = ["Microsoft.Storage"]
 }
 
 # Public subnet – FW eth1/1 (faces internet, connected to External LB)

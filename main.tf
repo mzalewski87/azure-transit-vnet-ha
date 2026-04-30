@@ -108,28 +108,28 @@ module "networking" {
     azurerm.spoke2 = azurerm.spoke2
   }
 
-  location                       = var.location
-  hub_resource_group_name        = azurerm_resource_group.hub.name
-  app1_resource_group_name       = azurerm_resource_group.app1.name
-  app2_resource_group_name       = azurerm_resource_group.app2.name
+  location                 = var.location
+  hub_resource_group_name  = azurerm_resource_group.hub.name
+  app1_resource_group_name = azurerm_resource_group.app1.name
+  app2_resource_group_name = azurerm_resource_group.app2.name
 
-  management_vnet_address_space  = var.management_vnet_address_space
-  transit_vnet_address_space     = var.transit_vnet_address_space
-  app1_vnet_address_space        = var.app1_vnet_address_space
-  app2_vnet_address_space        = var.app2_vnet_address_space
+  management_vnet_address_space = var.management_vnet_address_space
+  transit_vnet_address_space    = var.transit_vnet_address_space
+  app1_vnet_address_space       = var.app1_vnet_address_space
+  app2_vnet_address_space       = var.app2_vnet_address_space
 
-  hub_subscription_id            = var.hub_subscription_id
-  spoke1_subscription_id         = var.spoke1_subscription_id
-  spoke2_subscription_id         = var.spoke2_subscription_id
+  hub_subscription_id    = var.hub_subscription_id
+  spoke1_subscription_id = var.spoke1_subscription_id
+  spoke2_subscription_id = var.spoke2_subscription_id
 
   tags = var.tags
 }
 
 #------------------------------------------------------------------------------
 # Bootstrap Module
-# Creates: Storage Account, FW1+FW2 bootstrap blobs (init-cfg, authcodes),
-#          User Assigned Managed Identity for FW SA access
-# SCOPE: ONLY for VM-Series FW. Panorama uses direct init-cfg in customData.
+# Renders FW1+FW2 init-cfg.txt (output as base64 custom_data) +
+# User Assigned Managed Identity attached to FW VMs.
+# Panorama uses its own (no-op) bootstrap; configured in Phase 2 via XML API.
 #------------------------------------------------------------------------------
 module "bootstrap" {
   source = "./modules/bootstrap"
@@ -137,27 +137,13 @@ module "bootstrap" {
   location            = var.location
   resource_group_name = azurerm_resource_group.hub.name
 
-  # Panorama IP in Management VNet – goes into FW init-cfg as panorama-server=
   panorama_private_ip     = var.panorama_private_ip
   panorama_template_stack = var.panorama_template_stack
   panorama_device_group   = var.panorama_device_group
   panorama_vm_auth_key    = var.panorama_vm_auth_key
   fw_auth_code            = var.fw_auth_code
 
-  # Azure Policy compliance: SA network_rules.default_action = Deny
-  # Transit FW mgmt subnet has Microsoft.Storage service endpoint
-  allowed_subnet_ids = [
-    module.networking.mgmt_subnet_id,
-  ]
-
-  # NAT GW IP required in SA ip_rules — FW egresses via NAT GW during bootstrap
-  # before service endpoint is ready. Without it SA rejects FW connections.
-  nat_gateway_ips        = [module.networking.nat_gateway_transit_mgmt_public_ip]
-  terraform_operator_ips = var.terraform_operator_ips
-
   tags = var.tags
-
-  depends_on = [module.networking]
 }
 
 #------------------------------------------------------------------------------
@@ -237,8 +223,8 @@ module "firewall" {
 
   tags = var.tags
 
-  # Explicit dependency — bootstrap must be ready (SA + blobs + ip_rules)
-  # BEFORE FW is created. customData/userData is immutable after create.
+  # Bootstrap renders init-cfg used as custom_data — must exist before FW VMs
+  # because customData is immutable after VM creation.
   depends_on = [module.bootstrap]
 }
 
@@ -323,6 +309,7 @@ module "app2_dc" {
   resource_group_name = azurerm_resource_group.app2.name
 
   workload_subnet_id = module.networking.spoke2_workload_subnet_id
+  dc_private_ip      = cidrhost(cidrsubnet(var.app2_vnet_address_space, 8, 0), 4)
 
   admin_username    = var.dc_admin_username
   admin_password    = var.dc_admin_password

@@ -4,7 +4,7 @@
 # OPTIONAL step — promote Windows Server to Active Directory Domain Controller.
 # Run after Phase 1a and Phase 1b completion if you need AD DS.
 #
-# WYMAGANIA:
+# REQUIREMENTS:
 #   - DC VM (vm-spoke2-dc) must be running (deployed in Phase 1a)
 #   - Bastion tunnel or Azure API access
 #
@@ -16,7 +16,7 @@
 #   terraform apply
 #   # Wait 30-45 min for promotion completion and reboot
 #
-# WERYFIKACJA (przez Azure Bastion → RDP → vm-spoke2-dc):
+# VERIFICATION (via Azure Bastion -> RDP -> vm-spoke2-dc):
 #   nltest /sc_verify:panw.labs
 #   Get-ADDomain | Select Name,DomainMode
 #
@@ -32,8 +32,8 @@ data "azurerm_virtual_machine" "dc" {
 
 ###############################################################################
 # AD DS Promotion – Custom Script Extension
-# Instaluje AD DS i promuje Windows Server do Domain Controller.
-# Czas: 30-45 minut (install + reboot po promocji).
+# Installs AD DS and promotes Windows Server to a Domain Controller.
+# Duration: 30-45 minutes (install + reboot after promotion).
 ###############################################################################
 resource "azurerm_virtual_machine_extension" "promote_dc" {
   name                 = "promote-to-dc"

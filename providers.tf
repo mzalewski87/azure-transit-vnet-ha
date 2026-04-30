@@ -54,14 +54,14 @@ provider "azurerm" {
 
 # Spoke 1 provider (may be a different subscription)
 provider "azurerm" {
-  alias           = "spoke1"
+  alias = "spoke1"
   features {}
   subscription_id = var.spoke1_subscription_id
 }
 
 # Spoke 2 provider (may be a different subscription)
 provider "azurerm" {
-  alias           = "spoke2"
+  alias = "spoke2"
   features {}
   subscription_id = var.spoke2_subscription_id
 }

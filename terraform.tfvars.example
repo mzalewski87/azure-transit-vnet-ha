@@ -97,13 +97,6 @@ dc_skip_auto_promote = false   # true = skip automatic DC promotion
 frontdoor_sku = "Premium_AzureFrontDoor"
 
 #------------------------------------------------------------------------------
-# Bootstrap SA — access from Terraform operator machine
-# Azure Policy requires SA access restriction (network_rules.default_action = Deny)
-# Get your IP: curl -s https://api.ipify.org
-#------------------------------------------------------------------------------
-terraform_operator_ips = ["REPLACE_ME_YOUR_PUBLIC_IP"]  # e.g. ["203.0.113.10"]
-
-#------------------------------------------------------------------------------
 # Tags
 #------------------------------------------------------------------------------
 tags = {

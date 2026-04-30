@@ -7,18 +7,33 @@
 # Azure Subscriptions
 #------------------------------------------------------------------------------
 variable "hub_subscription_id" {
-  description = "Hub subscription ID (Management VNet + Transit VNet + Bootstrap SA)"
+  description = "Hub subscription ID (Management VNet + Transit VNet)"
   type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.hub_subscription_id))
+    error_message = "hub_subscription_id must be an Azure subscription UUID."
+  }
 }
 
 variable "spoke1_subscription_id" {
   description = "App1 (Spoke1) subscription ID – application workloads"
   type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.spoke1_subscription_id))
+    error_message = "spoke1_subscription_id must be an Azure subscription UUID."
+  }
 }
 
 variable "spoke2_subscription_id" {
   description = "App2 (Spoke2) subscription ID – Windows DC"
   type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.spoke2_subscription_id))
+    error_message = "spoke2_subscription_id must be an Azure subscription UUID."
+  }
 }
 
 #------------------------------------------------------------------------------
@@ -88,6 +103,17 @@ variable "admin_password" {
   description = "Administrator password for Panorama and VM-Series FW (min 12 chars, upper/lower/digit/special)"
   type        = string
   sensitive   = true
+
+  validation {
+    condition = (
+      length(var.admin_password) >= 12 &&
+      can(regex("[A-Z]", var.admin_password)) &&
+      can(regex("[a-z]", var.admin_password)) &&
+      can(regex("[0-9]", var.admin_password)) &&
+      can(regex("[^A-Za-z0-9]", var.admin_password))
+    )
+    error_message = "admin_password must be at least 12 characters and contain uppercase, lowercase, digit and special character."
+  }
 }
 
 variable "dc_admin_username" {
@@ -97,9 +123,20 @@ variable "dc_admin_username" {
 }
 
 variable "dc_admin_password" {
-  description = "Administrator password for Windows DC VM"
+  description = "Administrator password for Windows DC VM (min 12 chars, upper/lower/digit/special)"
   type        = string
   sensitive   = true
+
+  validation {
+    condition = (
+      length(var.dc_admin_password) >= 12 &&
+      can(regex("[A-Z]", var.dc_admin_password)) &&
+      can(regex("[a-z]", var.dc_admin_password)) &&
+      can(regex("[0-9]", var.dc_admin_password)) &&
+      can(regex("[^A-Za-z0-9]", var.dc_admin_password))
+    )
+    error_message = "dc_admin_password must be at least 12 characters and contain uppercase, lowercase, digit and special character."
+  }
 }
 
 #------------------------------------------------------------------------------
@@ -144,7 +181,7 @@ variable "panorama_device_group" {
 
 variable "panorama_vm_auth_key" {
   description = <<-EOT
-    Device Registration Auth Key from Panorama (Panorama → Devices → VM Auth Key).
+    Device Registration Auth Key from Panorama (Panorama -> Devices -> VM Auth Key).
     Generate via SSH: request vm-auth-key generate lifetime 168
     Or via script: ./scripts/generate-vm-auth-key.sh
     Format: 2:XXXXXXXXXXXXXXXX...
@@ -153,6 +190,11 @@ variable "panorama_vm_auth_key" {
   type        = string
   default     = ""
   sensitive   = true
+
+  validation {
+    condition     = var.panorama_vm_auth_key == "" || can(regex("^2:[A-Za-z0-9+/=_-]{20,}$", var.panorama_vm_auth_key))
+    error_message = "panorama_vm_auth_key must be empty or match Panorama auth key format '2:XXXXXX...' (min 20 chars after the prefix)."
+  }
 }
 
 #------------------------------------------------------------------------------
@@ -165,10 +207,15 @@ variable "fw_vm_size" {
 }
 
 variable "fw_auth_code" {
-  description = "VM-Series BYOL license auth code from CSP Portal. Format: XXXX-XXXX-XXXX-XXXX"
+  description = "VM-Series BYOL license auth code from CSP Portal. Format: XXXXXXXX (8 alphanumeric chars)"
   type        = string
   default     = ""
   sensitive   = true
+
+  validation {
+    condition     = var.fw_auth_code == "" || can(regex("^[A-Z0-9]{8}$", var.fw_auth_code))
+    error_message = "fw_auth_code must be empty or 8 uppercase alphanumeric characters (CSP Portal format, e.g. D5541146)."
+  }
 }
 
 variable "pan_os_version" {
@@ -187,8 +234,8 @@ variable "internal_lb_private_ip" {
     Example: transit=10.110.0.0/16 → snet-private=10.110.0.0/24 → auto IP=10.110.0.21
     Example: transit=10.0.0.0/16   → snet-private=10.0.0.0/24   → auto IP=10.0.0.21
   EOT
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
 
 #------------------------------------------------------------------------------
@@ -198,19 +245,6 @@ variable "frontdoor_sku" {
   description = "Azure Front Door SKU (Premium_AzureFrontDoor recommended for WAF)"
   type        = string
   default     = "Premium_AzureFrontDoor"
-}
-
-#------------------------------------------------------------------------------
-# Bootstrap SA Access
-#------------------------------------------------------------------------------
-variable "terraform_operator_ips" {
-  description = <<-EOT
-    Public IP(s) of Terraform operator for Bootstrap SA access.
-    Required: SA network_rules.default_action = Deny (Azure Policy).
-    Get your IP: curl -s https://api.ipify.org
-  EOT
-  type        = list(string)
-  default     = []
 }
 
 #------------------------------------------------------------------------------

@@ -33,7 +33,7 @@ resource "azurerm_network_interface" "dc" {
     name                          = "ipconfig-dc"
     subnet_id                     = var.workload_subnet_id
     private_ip_address_allocation = "Static"
-    private_ip_address            = "10.113.0.4"
+    private_ip_address            = var.dc_private_ip
     primary                       = true
   }
 }
