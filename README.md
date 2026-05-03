@@ -468,9 +468,8 @@ so the CLI uses `group group-id 1` not `group 1`:
 admin@fw1> configure
 admin@fw1# set deviceconfig high-availability enabled yes
 admin@fw1# set deviceconfig high-availability group group-id 1
-admin@fw1# set deviceconfig high-availability group description "Azure VM-Series HA"
 admin@fw1# set deviceconfig high-availability group peer-ip 10.110.255.5
-admin@fw1# set deviceconfig high-availability group mode active-passive passive-link-state auto
+admin@fw1# set deviceconfig high-availability group mode active-passive
 admin@fw1# set deviceconfig high-availability group configuration-synchronization enabled yes
 admin@fw1# set deviceconfig high-availability group election-option device-priority 100
 admin@fw1# set deviceconfig high-availability group election-option preemptive no
@@ -484,6 +483,11 @@ admin@fw2# set deviceconfig high-availability group peer-ip 10.110.255.4
 admin@fw2# set deviceconfig high-availability group election-option device-priority 200
 # (all other lines same as FW1)
 ```
+
+> **Note on `passive-link-state`:** PAN-OS 11.x rejects `passive-link-state`
+> nested inside `active-passive` in the XML config (schema error
+> "passive-link-state unexpected here"). The default of `auto` is fine for
+> Azure deployments and is what PAN-OS applies when the element is omitted.
 
 After commits on both FWs, HA negotiates over HA1 in 30-60 seconds.
 Verify with `show high-availability state` — expect `active` on FW1,

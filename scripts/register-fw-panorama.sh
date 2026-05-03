@@ -446,7 +446,13 @@ push_ha_config() {
   echo "  $label  HA: peer-ip=$peer_ip, device-priority=$priority (via $fw_url)"
 
   HA_XPATH="/config/devices/entry[@name='localhost.localdomain']/deviceconfig/high-availability"
-  HA_ELEMENT="<enabled>yes</enabled><group><group-id>1</group-id><description>Azure VM-Series Active/Passive HA</description><peer-ip>$peer_ip</peer-ip><mode><active-passive><passive-link-state>auto</passive-link-state></active-passive></mode><configuration-synchronization><enabled>yes</enabled></configuration-synchronization><election-option><device-priority>$priority</device-priority><preemptive>no</preemptive></election-option></group><interface><ha1><port>management</port></ha1><ha2><port>ethernet1/3</port></ha2></interface>"
+  # Minimum-viable HA XML — PAN-OS schema for <active-passive> is empty in
+  # 11.x (passive-link-state default is "auto" and lives at a different level
+  # in newer schema; including it inside <active-passive> trips
+  # 'unexpected here' validation, code 12). We keep this XML lean and let
+  # PAN-OS supply defaults for everything except the values that MUST differ
+  # between FW1 and FW2 (peer-ip, device-priority).
+  HA_ELEMENT="<enabled>yes</enabled><group><group-id>1</group-id><peer-ip>$peer_ip</peer-ip><mode><active-passive/></mode><configuration-synchronization><enabled>yes</enabled></configuration-synchronization><election-option><device-priority>$priority</device-priority><preemptive>no</preemptive></election-option></group><interface><ha1><port>management</port></ha1><ha2><port>ethernet1/3</port></ha2></interface>"
 
   for ATTEMPT in 1 2 3 4 5; do
     HA_RESP=$(curl -sk --max-time 30 "$fw_url/api/" \
