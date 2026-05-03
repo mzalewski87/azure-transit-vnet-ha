@@ -500,8 +500,67 @@ except: print('unparseable')
   return 1
 }
 
+# Poll a FW commit job until it reaches FIN (success or failure) and surface
+# the result. Without this the script previously reported 'commit submitted'
+# but never noticed when the job itself failed during PAN-OS validation —
+# leaving the user with 'HA not enabled' and no clear error.
+wait_for_fw_job_complete() {
+  local fw_url="$1" fw_key="$2" job_id="$3" label="$4"
+  echo "    Polling commit job $job_id for completion..."
+  local MAX=60   # 60 x 5s = 5 min
+  for i in $(seq 1 $MAX); do
+    JOB_RESP=$(curl -sk --max-time 15 \
+      "$fw_url/api/?type=op&cmd=<show><jobs><id>$job_id</id></jobs></show>&key=$fw_key" 2>/dev/null || echo "")
+
+    JOB_PARSED=$(echo "$JOB_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    job = root.find('.//job')
+    if job is None:
+        print('NOJOB|NOJOB|')
+    else:
+        status = job.findtext('status', '') or ''
+        result = job.findtext('result', '') or ''
+        # Collect failure detail lines (PAN-OS puts them under details/line)
+        details = job.findall('.//details/line')
+        msgs = [d.text.strip() for d in details if d.text and d.text.strip()]
+        print(status + '|' + result + '|' + ' || '.join(msgs[:6]))
+except Exception as e:
+    print('ERR|ERR|' + str(e))
+" 2>/dev/null)
+
+    STATUS=$(echo "$JOB_PARSED" | cut -d'|' -f1)
+    RESULT=$(echo "$JOB_PARSED" | cut -d'|' -f2)
+    DETAILS=$(echo "$JOB_PARSED" | cut -d'|' -f3-)
+
+    if [ "$STATUS" = "FIN" ]; then
+      if [ "$RESULT" = "OK" ]; then
+        echo "    OK ($label commit job $job_id completed successfully)"
+        return 0
+      else
+        echo "    [ERROR] $label commit job $job_id finished with result=$RESULT"
+        if [ -n "$DETAILS" ]; then
+          echo "    Details: $DETAILS"
+        fi
+        return 1
+      fi
+    fi
+
+    if [ $((i % 6)) -eq 0 ]; then   # Every 30s
+      echo "    [${i}/$MAX] Job $job_id status=$STATUS — still running..."
+    fi
+    sleep 5
+  done
+  echo "    [WARN] $label commit job $job_id did not finish within $((MAX*5))s"
+  return 1
+}
+
 # Commit the FW's local candidate config (where the HA settings now live).
 # Direct to FW via its own tunnel — same reasoning as push_ha_config above.
+# Polls the resulting job to confirm commit ACTUALLY succeeded (PAN-OS commit
+# returns a job ID immediately; the validation/apply phase can still fail
+# with errors that only show up in `show jobs id <N>` details).
 commit_on_fw() {
   local fw_url="$1" fw_key="$2" label="$3"
   echo "  $label  Committing on FW (direct via $fw_url)..."
@@ -524,11 +583,14 @@ except: print('parse-error')
 " 2>/dev/null)
 
   if echo "$COMMIT_RESULT" | grep -q "^FAIL"; then
-    echo "    [WARN] FW commit: $COMMIT_RESULT"
+    echo "    [WARN] FW commit submit: $COMMIT_RESULT"
     echo "    Raw response (first 400 chars): $(echo "$COMMIT_RESP" | head -c 400)"
-  else
-    echo "    OK (FW commit job $(echo "$COMMIT_RESULT" | sed 's/^OK://') submitted)"
+    return 1
   fi
+
+  COMMIT_JOB_ID=$(echo "$COMMIT_RESULT" | sed 's/^OK://')
+  echo "    Submitted as job $COMMIT_JOB_ID — polling for actual result..."
+  wait_for_fw_job_complete "$fw_url" "$fw_key" "$COMMIT_JOB_ID" "$label"
 }
 
 register_fw "$FW1_SERIAL" "$FW2_MGMT_IP" "100" "FW1 (active)"
