@@ -64,16 +64,6 @@ output "trust_subnet_cidr" {
   value       = azurerm_subnet.transit_private.address_prefixes[0]
 }
 
-output "ha_subnet_id" {
-  description = "Transit HA subnet ID (snet-ha) – FW eth1/3 HA2"
-  value       = azurerm_subnet.transit_ha.id
-}
-
-output "ha_subnet_cidr" {
-  description = "Transit HA subnet CIDR (snet-ha)"
-  value       = azurerm_subnet.transit_ha.address_prefixes[0]
-}
-
 # NAT Gateway public IPs (FW + Panorama outbound for license/content updates)
 output "nat_gateway_transit_mgmt_public_ip" {
   description = "Public IP of NAT Gateway for FW management subnet (FW outbound to PANW services)"

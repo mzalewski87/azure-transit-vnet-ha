@@ -42,16 +42,6 @@ output "fw2_trust_private_ip" {
   value       = azurerm_network_interface.fw["fw2-trust"].private_ip_address
 }
 
-output "fw1_ha_private_ip" {
-  description = "FW1 HA2 interface private IP"
-  value       = azurerm_network_interface.fw["fw1-ha"].private_ip_address
-}
-
-output "fw2_ha_private_ip" {
-  description = "FW2 HA2 interface private IP"
-  value       = azurerm_network_interface.fw["fw2-ha"].private_ip_address
-}
-
 output "availability_set_id" {
   description = "Availability Set resource ID"
   value       = azurerm_availability_set.fw_avset.id

@@ -63,11 +63,6 @@ variable "trust_subnet_id" {
   type        = string
 }
 
-variable "ha_subnet_id" {
-  description = "HA2 subnet ID (eth3/NIC3)"
-  type        = string
-}
-
 #------------------------------------------------------------------------------
 # Load Balancer Backend Pool IDs
 #------------------------------------------------------------------------------
@@ -97,11 +92,6 @@ variable "untrust_subnet_cidr" {
 
 variable "trust_subnet_cidr" {
   description = "CIDR of FW trust subnet (snet-private) – used to compute FW1/FW2 trust IPs"
-  type        = string
-}
-
-variable "ha_subnet_cidr" {
-  description = "CIDR of FW HA2 subnet (snet-ha) – used to compute FW1/FW2 HA IPs"
   type        = string
 }
 

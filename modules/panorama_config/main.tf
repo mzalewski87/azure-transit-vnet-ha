@@ -9,7 +9,7 @@
 # Configuration created:
 #   - Template + Template Stack (network config: interfaces, zones, VR, routes)
 #   - Device Group (security policy + NAT rules)
-#   - Ethernet interfaces: eth1/1 (untrust), eth1/2 (trust), eth1/3 (HA2)
+#   - Ethernet interfaces: eth1/1 (untrust), eth1/2 (trust)
 #   - Security zones: untrust, trust
 #   - Virtual Router with static routes to Spokes + default internet route
 #   - NAT rules: DNAT inbound HTTP/HTTPS → Apache (10.1.0.4)
@@ -86,16 +86,6 @@ resource "panos_panorama_ethernet_interface" "trust" {
   comment                   = "Trust interface - Internal LB / Spoke VNets (DHCP from Azure)"
 
   depends_on = [panos_panorama_template.transit, panos_panorama_management_profile.health_probe]
-}
-
-# ethernet1/3 - HA2 (data synchronization link)
-resource "panos_panorama_ethernet_interface" "ha2" {
-  name     = "ethernet1/3"
-  template = panos_panorama_template.transit.name
-  mode     = "ha"
-  comment  = "HA2 data synchronization interface"
-
-  depends_on = [panos_panorama_template.transit]
 }
 
 ###############################################################################
@@ -938,20 +928,20 @@ print(root.findtext('.//key',''))
 }
 
 ###############################################################################
-# HA Configuration is set DIRECTLY ON EACH FW (not via Template Variables) by
-# scripts/register-fw-panorama.sh (Phase 2b) using PAN-OS XML API with
-# target=<serial>. This was a deliberate pivot from the original Template
-# Variable approach, which had two compounding problems:
-#   1. Template Variable `<entry>` for ip-netmask requires CIDR notation
-#      (10.0.0.254/24), not dotted (10.0.0.254/255.255.255.0). Wrong format
-#      caused the variable declaration to fail silently.
-#   2. Even with valid declaration, PAN-OS substituting a $variable of type
-#      ip-netmask into a <peer-ip> field (which expects a plain IP, no /mask)
-#      is unreliable across PAN-OS versions.
+# No PAN-OS HA pair is configured.
 #
-# The direct per-FW push via target=<serial> is simpler, deterministic, and
-# easier to debug — each FW gets its full HA config with literal peer IP and
-# priority values written directly into its candidate config, then committed.
+# The PANW Securing Applications in Azure deployment guide (DEC 2024) does
+# NOT configure PAN-OS Active/Passive HA between firewalls in the Azure
+# Transit VNet model. Failover is realised by Azure Standard Load Balancer
+# health probes:
+#   - Internal LB (HA Ports rule, /php/login.php probe) drains an unhealthy
+#     FW from the backend pool within seconds — outbound + east-west traffic
+#     reroutes to the surviving FW.
+#   - External LB does the same on the inbound path.
+# Configuration consistency between FW1 and FW2 is enforced by Panorama
+# Device Group + Template Stack pushes: every change committed on Panorama
+# is pushed to both FWs simultaneously, so they always run identical config.
+# See README "Azure-Native HA + Configuration Management via Panorama".
 ###############################################################################
 
 ###############################################################################

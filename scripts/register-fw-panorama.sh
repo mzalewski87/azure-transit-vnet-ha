@@ -345,13 +345,9 @@ echo "[5/6] Registering serials on Panorama..."
 PAN_KEY=$(get_api_key "https://127.0.0.1:$PANORAMA_PORT" "$PAN_USER" "$PAN_PASS")
 PAN_URL="https://127.0.0.1:$PANORAMA_PORT/api/"
 
-# HA peer mapping: FW1 sees FW2 as peer, FW2 sees FW1 as peer
-# Lower priority wins election → FW1 (100) is active, FW2 (200) is passive
-# HA config is pushed DIRECTLY to each FW via target=<serial>, NOT via
-# Template Variables (which proved unreliable for <peer-ip> field substitution).
 register_fw() {
-  local serial="$1" peer_ip="$2" priority="$3" label="$4"
-  echo "  $label  serial=$serial  peer-ip=$peer_ip  priority=$priority"
+  local serial="$1" label="$2"
+  echo "  $label  serial=$serial"
 
   # mgt-config devices
   echo "    -> mgt-config devices..."
@@ -373,230 +369,18 @@ register_fw() {
 
   # template-stack devices
   echo "    -> template-stack $TEMPLATE_STACK..."
-  TS_DEV_XPATH="/config/devices/entry[@name='localhost.localdomain']/template-stack/entry[@name='$TEMPLATE_STACK']/devices"
   curl -sk --max-time 30 "$PAN_URL" \
     --data-urlencode "type=config" \
     --data-urlencode "action=set" \
-    --data-urlencode "xpath=$TS_DEV_XPATH" \
+    --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/template-stack/entry[@name='$TEMPLATE_STACK']/devices" \
     --data-urlencode "element=<entry name='$serial'/>" \
     --data-urlencode "key=$PAN_KEY" > /dev/null
 
-  echo "    OK (registration)"
+  echo "    OK"
 }
 
-# Wait for the FW to have no active/pending jobs (commit, push, etc.) so the
-# next config write does not get rejected with "A commit is pending. Please
-# try again later." (PAN-OS error code 13). This is exactly what bit us on
-# the previous run — Template Stack and Device Group pushes from Panorama
-# were still being applied on the FW when push_ha_config tried to set HA.
-wait_for_fw_commit_idle() {
-  local fw_url="$1" fw_key="$2" label="$3"
-  echo "  $label  Waiting for FW commit to be idle..."
-  local MAX=72   # 72 x 5s = 6 min hard cap
-  for ATTEMPT in $(seq 1 $MAX); do
-    JOBS_RESP=$(curl -sk --max-time 15 \
-      "$fw_url/api/?type=op&cmd=<show><jobs><all></all></jobs></show>&key=$fw_key" 2>/dev/null || echo "")
-    PENDING=$(echo "$JOBS_RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    pending = 0
-    for j in root.findall('.//job'):
-        status = (j.findtext('status','') or '').upper()
-        if status in ('ACT','PEND','PEN'):
-            pending += 1
-    print(pending)
-except Exception:
-    print(0)
-" 2>/dev/null)
-    if [ -z "$PENDING" ]; then PENDING=0; fi
-
-    if [ "$PENDING" = "0" ]; then
-      # Probe: try the cheapest possible config-lock check
-      PROBE=$(curl -sk --max-time 15 \
-        "$fw_url/api/?type=op&cmd=<check><pending-changes></pending-changes></check>&key=$fw_key" 2>/dev/null \
-        | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    print(ET.fromstring(sys.stdin.read()).get('status',''))
-except Exception:
-    print('')
-" 2>/dev/null)
-      if [ "$PROBE" = "success" ]; then
-        echo "    OK (no pending jobs, config lock free, attempt $ATTEMPT)"
-        return 0
-      fi
-    fi
-
-    echo "    [$ATTEMPT/$MAX] $PENDING pending job(s) — waiting 5s..."
-    sleep 5
-  done
-  echo "    [WARN] FW $label still has pending jobs after $((MAX*5))s — proceeding anyway"
-}
-
-# Push HA config DIRECTLY to one FW via its own Bastion tunnel (NOT via
-# Panorama target=<serial>, because PAN-OS API target= is supported for
-# type=op and type=commit but NOT for type=config — earlier attempts with
-# target= silently no-oped, leaving HA off).
-#
-# Includes a retry loop for the "A commit is pending" error (PAN-OS code 13)
-# in case wait_for_fw_commit_idle missed a late-starting background job.
-push_ha_config() {
-  local fw_url="$1" fw_key="$2" peer_ip="$3" priority="$4" label="$5"
-  echo "  $label  HA: peer-ip=$peer_ip, device-priority=$priority (via $fw_url)"
-
-  HA_XPATH="/config/devices/entry[@name='localhost.localdomain']/deviceconfig/high-availability"
-  # Minimum-viable HA XML for PAN-OS 11.x:
-  #   <active-passive/> is empty (passive-link-state nested inside trips
-  #     "unexpected here" validation, code 12).
-  #   <state-synchronization><transport>ethernet</transport> is required —
-  #     PAN-OS 11.x defaults to transport=ip, which requires an IP/netmask
-  #     on the HA2 interface. ethernet transport doesn't need that and is
-  #     the PANW-recommended pattern for Azure VM-Series HA on a dedicated
-  #     HA subnet (peers on the same /24 — Azure handles L2/ARP).
-  HA_ELEMENT="<enabled>yes</enabled><group><group-id>1</group-id><peer-ip>$peer_ip</peer-ip><mode><active-passive/></mode><configuration-synchronization><enabled>yes</enabled></configuration-synchronization><state-synchronization><enabled>yes</enabled><transport>ethernet</transport></state-synchronization><election-option><device-priority>$priority</device-priority><preemptive>no</preemptive></election-option></group><interface><ha1><port>management</port></ha1><ha2><port>ethernet1/3</port></ha2></interface>"
-
-  for ATTEMPT in 1 2 3 4 5; do
-    HA_RESP=$(curl -sk --max-time 30 "$fw_url/api/" \
-      --data-urlencode "type=config" \
-      --data-urlencode "action=set" \
-      --data-urlencode "xpath=$HA_XPATH" \
-      --data-urlencode "element=$HA_ELEMENT" \
-      --data-urlencode "key=$fw_key" 2>/dev/null)
-
-    HA_STATUS=$(echo "$HA_RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    print(root.get('status', 'unknown'))
-except Exception as e:
-    print('parse-error: ' + str(e))
-" 2>/dev/null)
-
-    if [ "$HA_STATUS" = "success" ]; then
-      echo "    OK (HA config set on FW candidate config, attempt $ATTEMPT)"
-      return 0
-    fi
-
-    MSG=$(echo "$HA_RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    print(root.findtext('.//msg','') or root.findtext('.//line','') or 'no message')
-except: print('unparseable')
-" 2>/dev/null)
-
-    if echo "$MSG" | grep -qi "commit is pending"; then
-      WAIT=$((ATTEMPT * 15))
-      echo "    [$ATTEMPT/5] $MSG — waiting ${WAIT}s and retrying..."
-      sleep $WAIT
-    else
-      echo "    [WARN] HA set returned status=$HA_STATUS msg=$MSG"
-      echo "    Raw response (first 400 chars): $(echo "$HA_RESP" | head -c 400)"
-      return 1
-    fi
-  done
-
-  echo "    [ERROR] HA set still rejected after 5 retries — FW commit lock never freed."
-  echo "    Try manually: SSH to FW, run 'show jobs all', wait for ACT/PEND to drain, re-run this script."
-  return 1
-}
-
-# Poll a FW commit job until it reaches FIN (success or failure) and surface
-# the result. Without this the script previously reported 'commit submitted'
-# but never noticed when the job itself failed during PAN-OS validation —
-# leaving the user with 'HA not enabled' and no clear error.
-wait_for_fw_job_complete() {
-  local fw_url="$1" fw_key="$2" job_id="$3" label="$4"
-  echo "    Polling commit job $job_id for completion..."
-  local MAX=60   # 60 x 5s = 5 min
-  for i in $(seq 1 $MAX); do
-    JOB_RESP=$(curl -sk --max-time 15 \
-      "$fw_url/api/?type=op&cmd=<show><jobs><id>$job_id</id></jobs></show>&key=$fw_key" 2>/dev/null || echo "")
-
-    JOB_PARSED=$(echo "$JOB_RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    job = root.find('.//job')
-    if job is None:
-        print('NOJOB|NOJOB|')
-    else:
-        status = job.findtext('status', '') or ''
-        result = job.findtext('result', '') or ''
-        # Collect failure detail lines (PAN-OS puts them under details/line)
-        details = job.findall('.//details/line')
-        msgs = [d.text.strip() for d in details if d.text and d.text.strip()]
-        print(status + '|' + result + '|' + ' || '.join(msgs[:6]))
-except Exception as e:
-    print('ERR|ERR|' + str(e))
-" 2>/dev/null)
-
-    STATUS=$(echo "$JOB_PARSED" | cut -d'|' -f1)
-    RESULT=$(echo "$JOB_PARSED" | cut -d'|' -f2)
-    DETAILS=$(echo "$JOB_PARSED" | cut -d'|' -f3-)
-
-    if [ "$STATUS" = "FIN" ]; then
-      if [ "$RESULT" = "OK" ]; then
-        echo "    OK ($label commit job $job_id completed successfully)"
-        return 0
-      else
-        echo "    [ERROR] $label commit job $job_id finished with result=$RESULT"
-        if [ -n "$DETAILS" ]; then
-          echo "    Details: $DETAILS"
-        fi
-        return 1
-      fi
-    fi
-
-    if [ $((i % 6)) -eq 0 ]; then   # Every 30s
-      echo "    [${i}/$MAX] Job $job_id status=$STATUS — still running..."
-    fi
-    sleep 5
-  done
-  echo "    [WARN] $label commit job $job_id did not finish within $((MAX*5))s"
-  return 1
-}
-
-# Commit the FW's local candidate config (where the HA settings now live).
-# Direct to FW via its own tunnel — same reasoning as push_ha_config above.
-# Polls the resulting job to confirm commit ACTUALLY succeeded (PAN-OS commit
-# returns a job ID immediately; the validation/apply phase can still fail
-# with errors that only show up in `show jobs id <N>` details).
-commit_on_fw() {
-  local fw_url="$1" fw_key="$2" label="$3"
-  echo "  $label  Committing on FW (direct via $fw_url)..."
-
-  COMMIT_RESP=$(curl -sk --max-time 90 "$fw_url/api/" \
-    --data-urlencode "type=commit" \
-    --data-urlencode "cmd=<commit></commit>" \
-    --data-urlencode "key=$fw_key" 2>/dev/null)
-
-  COMMIT_RESULT=$(echo "$COMMIT_RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    if root.get('status') == 'success':
-        print('OK:' + root.findtext('.//job','submitted'))
-    else:
-        msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'unknown'
-        print('FAIL: ' + str(msg))
-except: print('parse-error')
-" 2>/dev/null)
-
-  if echo "$COMMIT_RESULT" | grep -q "^FAIL"; then
-    echo "    [WARN] FW commit submit: $COMMIT_RESULT"
-    echo "    Raw response (first 400 chars): $(echo "$COMMIT_RESP" | head -c 400)"
-    return 1
-  fi
-
-  COMMIT_JOB_ID=$(echo "$COMMIT_RESULT" | sed 's/^OK://')
-  echo "    Submitted as job $COMMIT_JOB_ID — polling for actual result..."
-  wait_for_fw_job_complete "$fw_url" "$fw_key" "$COMMIT_JOB_ID" "$label"
-}
-
-register_fw "$FW1_SERIAL" "$FW2_MGMT_IP" "100" "FW1 (active)"
-register_fw "$FW2_SERIAL" "$FW1_MGMT_IP" "200" "FW2 (passive)"
+register_fw "$FW1_SERIAL" "FW1"
+register_fw "$FW2_SERIAL" "FW2"
 
 # Add FW devices to Collector Group's Device Log Forwarding
 echo ""
@@ -764,51 +548,12 @@ except Exception as e:
     print('  [INFO] Collector Group push: ' + str(e))
 " 2>/dev/null
 
-# Push HA configuration directly to each FW via its own Bastion tunnel. Each
-# FW gets a complete HA config with its actual peer IP and priority baked in.
-# This goes into the FW's LOCAL candidate config — committed below.
-echo ""
-echo "[9.7/9] Pushing HA configuration directly to each FW..."
-
-# Refresh API keys on each FW — they were obtained ~5-10 min ago at step [3/6]
-# and a long Phase 2b run can hit Panorama-side commits that occasionally
-# invalidate FW-side admin sessions.
-echo "  Refreshing FW API keys..."
-FW1_KEY=$(get_api_key "https://127.0.0.1:$FW1_PORT" "$PAN_USER" "$PAN_PASS" 2>/dev/null)
-FW2_KEY=$(get_api_key "https://127.0.0.1:$FW2_PORT" "$PAN_USER" "$PAN_PASS" 2>/dev/null)
-if [ -z "$FW1_KEY" ] || echo "$FW1_KEY" | grep -q "^ERROR"; then
-  echo "  [ERROR] Could not refresh FW1 API key — HA push will be skipped."
-  echo "          Re-run scripts/register-fw-panorama.sh."
-  exit 1
-fi
-if [ -z "$FW2_KEY" ] || echo "$FW2_KEY" | grep -q "^ERROR"; then
-  echo "  [ERROR] Could not refresh FW2 API key — HA push will be skipped."
-  exit 1
-fi
-
-# Wait for both FWs to finish processing the Template Stack / Device Group /
-# Collector Group pushes from Panorama before touching the FW config. Without
-# this wait the previous run's HA push bombed with PAN-OS error code 13
-# "A commit is pending. Please try again later." (the static 30s sleep was
-# not enough for big template pushes — they routinely take 60-120s).
-echo ""
-wait_for_fw_commit_idle "https://127.0.0.1:$FW1_PORT" "$FW1_KEY" "FW1"
-wait_for_fw_commit_idle "https://127.0.0.1:$FW2_PORT" "$FW2_KEY" "FW2"
-
-push_ha_config "https://127.0.0.1:$FW1_PORT" "$FW1_KEY" "$FW2_MGMT_IP" "100" "FW1 (active)"
-push_ha_config "https://127.0.0.1:$FW2_PORT" "$FW2_KEY" "$FW1_MGMT_IP" "200" "FW2 (passive)"
-
-# Commit on each FW so the HA candidate config becomes running config — HA
-# only forms after both peers have committed and brought up the HA1 link.
-echo ""
-echo "[9.8/9] Committing HA config on each FW..."
-commit_on_fw "https://127.0.0.1:$FW1_PORT" "$FW1_KEY" "FW1"
-commit_on_fw "https://127.0.0.1:$FW2_PORT" "$FW2_KEY" "FW2"
-
-echo ""
-echo "  HA negotiation typically takes 30-60s after both FWs commit."
-echo "  Verify with: show high-availability state on each FW."
-
 echo ""
 echo "============================================================"
 echo "  Phase 2b COMPLETED"
+echo ""
+echo "  Both FWs are now Panorama-managed and sit behind Azure Standard LB."
+echo "  Failover is realised by Azure LB health probes — no PAN-OS HA pair"
+echo "  is configured (per PANW Azure deployment guide). Configuration"
+echo "  consistency between FW1 and FW2 is enforced by Panorama Device Group"
+echo "  + Template Stack pushes."

@@ -207,12 +207,10 @@ module "firewall" {
   mgmt_subnet_id    = module.networking.mgmt_subnet_id
   untrust_subnet_id = module.networking.untrust_subnet_id
   trust_subnet_id   = module.networking.trust_subnet_id
-  ha_subnet_id      = module.networking.ha_subnet_id
 
   mgmt_subnet_cidr    = module.networking.mgmt_subnet_cidr
   untrust_subnet_cidr = module.networking.untrust_subnet_cidr
   trust_subnet_cidr   = module.networking.trust_subnet_cidr
-  ha_subnet_cidr      = module.networking.ha_subnet_cidr
 
   external_lb_backend_pool_id = module.loadbalancer.external_lb_backend_pool_id
   internal_lb_backend_pool_id = module.loadbalancer.internal_lb_backend_pool_id

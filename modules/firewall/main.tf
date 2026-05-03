@@ -1,23 +1,25 @@
 ###############################################################################
 # Firewall Module
-# 2x Palo Alto VM-Series (Active/Passive HA) — PAN-OS 11.x BYOL.
+# 2x Palo Alto VM-Series (FW farm behind Azure LB) — PAN-OS 11.x BYOL.
 #
 # NIC order per VM (mandatory for PAN-OS boot order):
-#   NIC0 (primary) = Management   -> snet-mgmt    (eth0)        HA1 heartbeat
+#   NIC0 (primary) = Management   -> snet-mgmt    (eth0)
 #   NIC1           = Untrust       -> snet-public  (ethernet1/1) Internet-facing
 #   NIC2           = Trust         -> snet-private (ethernet1/2) Spoke-facing
-#   NIC3           = HA2           -> snet-ha      (ethernet1/3) HA2 state sync
 #
-# Active/Passive HA itself is configured by Panorama Template (see
-# modules/panorama_config/main.tf -> null_resource.fw_template_ha_config) with
-# per-FW peer-ip / device-priority overrides applied during Phase 2b.
+# Three NICs only — matches PANW Securing Applications in Azure deployment
+# guide (Table 12). NO dedicated HA2 interface: failover is realised by Azure
+# Standard LB health probes (HA Ports rule on internal LB, /php/login.php
+# probe on external LB), not by PAN-OS HA1/HA2 peer links. See
+# README "Azure-Native HA + Configuration Management via Panorama".
 #
 # FW1 host index = 4, FW2 host index = 5 in every subnet (computed via cidrhost).
 ###############################################################################
 
 locals {
-  # Two-FW pair. Order in this list defines which FW is active (first = active,
-  # device-priority 100 in HA election) and which is passive (priority 200).
+  # Two-FW farm. Both FWs are simultaneously active under the Azure LB
+  # backend pool; the LB health probe drains a FW from rotation if it stops
+  # responding on /php/login.php. There is no PAN-OS HA pair.
   fw_names = ["fw1", "fw2"]
 
   # Per-FW custom_data lookup (variables stay separate for backward compatibility
@@ -29,12 +31,11 @@ locals {
 
   # NIC type -> {subnet_id, subnet_cidr, dataplane_flags}
   # Dataplane interfaces (untrust/trust) need IP forwarding + accelerated
-  # networking. Mgmt and HA NICs do not.
+  # networking. The mgmt NIC does not.
   nic_types = {
     mgmt    = { subnet_id = var.mgmt_subnet_id, subnet_cidr = var.mgmt_subnet_cidr, dataplane = false }
     untrust = { subnet_id = var.untrust_subnet_id, subnet_cidr = var.untrust_subnet_cidr, dataplane = true }
     trust   = { subnet_id = var.trust_subnet_id, subnet_cidr = var.trust_subnet_cidr, dataplane = true }
-    ha      = { subnet_id = var.ha_subnet_id, subnet_cidr = var.ha_subnet_cidr, dataplane = false }
   }
 
   # Cartesian product of FW x NIC type, keyed "fw1-mgmt", "fw1-untrust", ...
@@ -147,12 +148,10 @@ resource "azurerm_linux_virtual_machine" "fw" {
   #   index 0 -> management (must be primary)
   #   index 1 -> ethernet1/1 (untrust)
   #   index 2 -> ethernet1/2 (trust)
-  #   index 3 -> ethernet1/3 (HA2)
   network_interface_ids = [
     azurerm_network_interface.fw["${each.key}-mgmt"].id,
     azurerm_network_interface.fw["${each.key}-untrust"].id,
     azurerm_network_interface.fw["${each.key}-trust"].id,
-    azurerm_network_interface.fw["${each.key}-ha"].id,
   ]
 
   os_disk {

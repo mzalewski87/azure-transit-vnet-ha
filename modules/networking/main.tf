@@ -2,17 +2,16 @@
 # Networking Module
 # Palo Alto Transit VNet – Reference Architecture (PANW Azure Transit VNet Guide)
 #
-# VNet topology (per PANW reference architecture):
+# VNet topology (matches PANW Securing Applications in Azure deployment guide):
 #
 #   Management VNet (10.255.0.0/16)              ← Panorama + Bastion
-#     snet-management:   10.255.0.0/24           ← Panorama: 10.255.0.4/5
+#     snet-management:   10.255.0.0/24           ← Panorama: 10.255.0.4
 #     AzureBastionSubnet: 10.255.1.0/26          ← Single Bastion for ALL VNets
 #
-#   Transit Hub VNet (10.110.0.0/16)             ← VM-Series HA pair
+#   Transit Hub VNet (10.110.0.0/16)             ← VM-Series farm behind Azure LB
 #     snet-mgmt:    10.110.255.0/24              ← FW eth0 (management)
 #     snet-public:  10.110.129.0/24              ← FW eth1/1 (untrust, internet)
-#     snet-private: 10.110.0.0/24               ← FW eth1/2 (trust, internal)
-#     snet-ha:      10.110.128.0/24              ← FW eth1/3 (HA2 sync)
+#     snet-private: 10.110.0.0/24                ← FW eth1/2 (trust, internal)
 #
 #   App1 VNet (10.112.0.0/16)                   ← Application workloads
 #     snet-workload: 10.112.0.0/24
@@ -32,6 +31,11 @@
 #   - Single Bastion (Standard) in Management VNet reaches ALL peered VNets
 #   - No public IPs on FW/Panorama – Bastion tunnel for HTTPS management
 #   - NAT Gateway in both Management VNet (Panorama license) and Transit mgmt (FW license)
+#   - NO dedicated HA subnet — PANW Azure deployment guide does NOT configure
+#     PAN-OS HA Active/Passive between firewalls. Failover is realised by Azure
+#     Standard Load Balancer health probes (snet-public External LB, snet-private
+#     Internal LB with HA Ports), not by HA1/HA2 peer-to-peer links. See
+#     README "Azure-Native HA + Configuration Management via Panorama".
 ###############################################################################
 
 terraform {
@@ -55,7 +59,6 @@ locals {
   transit_mgmt_cidr    = cidrsubnet(var.transit_vnet_address_space, 8, 255) # x.x.255.0/24 – management
   transit_public_cidr  = cidrsubnet(var.transit_vnet_address_space, 8, 129) # x.x.129.0/24 – public (untrust)
   transit_private_cidr = cidrsubnet(var.transit_vnet_address_space, 8, 0)   # x.x.0.0/24   – private (trust)
-  transit_ha_cidr      = cidrsubnet(var.transit_vnet_address_space, 8, 128) # x.x.128.0/24 – HA2
 
   # App VNet subnets
   app1_workload_cidr = cidrsubnet(var.app1_vnet_address_space, 8, 0) # 10.112.0.0/24
@@ -395,14 +398,6 @@ resource "azurerm_subnet" "transit_private" {
   address_prefixes     = [local.transit_private_cidr]
 }
 
-# HA subnet – FW eth1/3 (HA2 data synchronisation link)
-resource "azurerm_subnet" "transit_ha" {
-  name                 = "snet-ha"
-  resource_group_name  = var.hub_resource_group_name
-  virtual_network_name = azurerm_virtual_network.transit.name
-  address_prefixes     = [local.transit_ha_cidr]
-}
-
 ###############################################################################
 # Transit VNet NSGs
 ###############################################################################
@@ -439,20 +434,7 @@ resource "azurerm_network_security_group" "transit_mgmt" {
     destination_address_prefix = "*"
   }
 
-  # HA1 heartbeat between FW peers (within same mgmt subnet)
-  security_rule {
-    name                       = "Allow-HA1-Internal"
-    priority                   = 120
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = local.transit_mgmt_cidr
-    destination_address_prefix = local.transit_mgmt_cidr
-  }
-
-  # SSH/HTTPS from App2 VNet (np. Windows DC diagnostics, FW mgmt)
+  # SSH/HTTPS from App2 VNet (e.g. Windows DC diagnostics, FW mgmt)
   security_rule {
     name                       = "Allow-SSH-From-App2-VNet"
     priority                   = 130
@@ -604,50 +586,6 @@ resource "azurerm_network_security_group" "transit_private" {
   }
 }
 
-# HA NSG – only HA2 sync between FW peers
-resource "azurerm_network_security_group" "transit_ha" {
-  name                = "nsg-transit-ha"
-  location            = var.location
-  resource_group_name = var.hub_resource_group_name
-  tags                = var.tags
-
-  security_rule {
-    name                       = "Allow-HA2-Inbound"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = local.transit_ha_cidr
-    destination_address_prefix = local.transit_ha_cidr
-  }
-
-  security_rule {
-    name                       = "Allow-HA2-Outbound"
-    priority                   = 100
-    direction                  = "Outbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = local.transit_ha_cidr
-    destination_address_prefix = local.transit_ha_cidr
-  }
-
-  security_rule {
-    name                       = "Deny-All-Inbound"
-    priority                   = 4096
-    direction                  = "Inbound"
-    access                     = "Deny"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-}
-
 ###############################################################################
 # NSG → Subnet Associations (Transit VNet)
 ###############################################################################
@@ -665,11 +603,6 @@ resource "azurerm_subnet_network_security_group_association" "transit_public" {
 resource "azurerm_subnet_network_security_group_association" "transit_private" {
   subnet_id                 = azurerm_subnet.transit_private.id
   network_security_group_id = azurerm_network_security_group.transit_private.id
-}
-
-resource "azurerm_subnet_network_security_group_association" "transit_ha" {
-  subnet_id                 = azurerm_subnet.transit_ha.id
-  network_security_group_id = azurerm_network_security_group.transit_ha.id
 }
 
 ###############################################################################
@@ -970,7 +903,6 @@ resource "azurerm_virtual_network_peering" "app1_to_transit" {
     azurerm_subnet.transit_mgmt,
     azurerm_subnet.transit_public,
     azurerm_subnet.transit_private,
-    azurerm_subnet.transit_ha,
   ]
 }
 
@@ -1001,6 +933,5 @@ resource "azurerm_virtual_network_peering" "app2_to_transit" {
     azurerm_subnet.transit_mgmt,
     azurerm_subnet.transit_public,
     azurerm_subnet.transit_private,
-    azurerm_subnet.transit_ha,
   ]
 }

@@ -31,11 +31,10 @@ Terraform IaC for **Palo Alto Networks Azure Transit VNet** reference architectu
   │                                                                      │
   │   snet-public (10.110.129.0/24) ─── FW eth1/1 (untrust, DHCP)        │
   │        ┌──────────┐  ┌──────────┐                                    │
-  │        │  FW1 (A) │  │  FW2 (P) │  VM-Series Active/Passive HA       │
-  │        └────┬─────┘  └────┬─────┘                                    │
+  │        │   FW1    │  │   FW2    │  VM-Series farm behind Azure LB    │
+  │        └────┬─────┘  └────┬─────┘  (no PAN-OS HA pair — see below)   │
   │   snet-private (10.110.0.0/24) ─── FW eth1/2 (trust, DHCP)           │
-  │   snet-ha (10.110.128.0/24)    ─── FW eth1/3 (HA2 data sync)         │
-  │   snet-mgmt (10.110.255.0/24)  ─── FW eth0 (mgmt, HA1)               │
+  │   snet-mgmt (10.110.255.0/24)  ─── FW eth0  (management)             │
   │        │  NAT GW (license/updates)                                   │
   └────────┼─────────────────────────────────────────────────────────────┘
            │                    │ peering              │ peering
@@ -162,10 +161,6 @@ Phase 2a automatically:
    config: ethernet interfaces (DHCP), security zones, **multi-VR architecture**
    (VR-External + VR-Internal for Azure LB sandwich), static routes, **Log Forwarding
    Profile**, App-ID-aware security rules, NAT rules (DNAT inbound + SNAT outbound).
-5b. ✅ **Pushes HA configuration to Template** (group-id=1, active-passive, HA1 on
-   management interface, HA2 on ethernet1/3) plus declares Template Variables
-   `$ha-peer-ip` and `$ha-priority` with placeholders. Per-device overrides happen
-   in Phase 2b after FW serials are known.
 5c. ✅ **Creates Zone Protection Profiles**: `Azure-Internet-Protection` (untrust:
    SYN/UDP/ICMP flood + TCP/UDP port-scan + host-sweep + packet-based defenses)
    and `Azure-Internal-Protection` (trust: packet-based defenses only). Attached
@@ -212,22 +207,18 @@ bash scripts/register-fw-panorama.sh
 
 This script automatically:
 1. Opens Bastion tunnels to FW1, FW2, and Panorama
-2. Reads FW serial numbers (dynamically generated during license activation) and
-   their management IPs from `terraform output`
+2. Reads FW serial numbers (dynamically generated during license activation)
 3. Registers FW serials on Panorama (mgt-config + Device Group + Template Stack)
-4. **Sets per-device HA Template Variable overrides** — FW1 (active) gets
-   `$ha-peer-ip = <FW2 mgmt IP>/24` + `$ha-priority = 100`; FW2 (passive) gets
-   `$ha-peer-ip = <FW1 mgmt IP>/24` + `$ha-priority = 200`. This is what makes HA
-   actually form — without it the placeholder peer-ip from Phase 2a Step 5b means
-   HA never establishes.
+4. Adds FWs to the Collector Group's Device Log Forwarding preference list
 5. Commits on Panorama
 6. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min)
-7. **Push Template Stack to devices** (interfaces, zones, VR, routes, HA config)
-8. **Push Device Group to devices** (security policies, NAT rules)
-9. Push Collector Group (Device Log Forwarding mapping)
+7. **Push Template Stack to devices** — interfaces, zones, virtual routers, routes
+8. **Push Device Group to devices** — security policies, NAT rules
+9. Push Collector Group (so logs from both FWs land on the Panorama log collector)
 
-> **Without this step, firewalls will NOT appear as managed devices in Panorama
-> AND HA will not form** (peer-ip stays as the placeholder default from Step 5b).
+> **Without this step, firewalls will NOT appear as managed devices in Panorama**
+> and the Template Stack / Device Group / Collector Group won't be pushed,
+> so the FWs sit there licensed but unconfigured.
 
 ### Phase 3: Domain Controller (optional)
 
@@ -302,11 +293,9 @@ future. It carries no role assignments today.
 | Phase 2 Step 4 | XML API (operational) | Generates vm-auth-key (saved to file + auto.tfvars) |
 | Phase 2 Step 4b | XML API (config mode) | Configures Panorama as Managed Collector + Collector Group |
 | Phase 2 Step 5 | panos provider | Template + Template Stack + Device Group + interfaces + zones + multi-VR + routes + NAT + App-ID-aware security rules + Log Forwarding Profile |
-| Phase 2 Step 5b | XML API (config mode) | **HA configuration in Template** + Template Variables `$ha-peer-ip`, `$ha-priority` |
 | Phase 2 Step 5c | XML API (config mode) | **Zone Protection Profiles** (`Azure-Internet-Protection` on untrust, `Azure-Internal-Protection` on trust) |
 | Phase 2 Step 5d | XML API (config mode) | **Admin hardening**: password complexity, idle timeout, login banner |
 | Phase 2 Step 6 | XML API | Final commit |
-| Phase 2b Step 4 | XML API (config mode) | **Per-device HA variable overrides** — FW1 priority 100 + peer FW2; FW2 priority 200 + peer FW1 |
 
 **Serial number activation** uses config mode (not operational `request serial-number set`), which is more reliable across PAN-OS versions:
 ```
@@ -424,110 +413,120 @@ Or via Panorama GUI: **Monitor → Traffic** — filter by source/destination.
 
 ---
 
-## HA Mode – Active/Passive with Azure LB
+## Azure-Native HA + Configuration Management via Panorama
 
-This architecture uses **Active/Passive HA** with Azure Standard Load Balancer:
+This deployment follows the **PANW Securing Applications in Azure deployment
+guide** (DEC 2024) verbatim: VM-Series firewalls in Azure run **without** a
+classic PAN-OS Active/Passive HA pair. Instead, two complementary mechanisms
+provide resilience and consistency:
 
-- **Azure LB** (HA Ports mode) distributes traffic to both FWs
-- **PAN-OS HA** is Active/Passive — one FW handles sessions, the other is standby
-- HA1 (control plane) heartbeat over the management interface (eth0)
-- HA2 (state sync) over the dedicated `snet-ha` subnet (ethernet1/3)
-- On failover, the passive FW takes over (stateful session sync via HA2 link)
-- **Policies are centrally managed via Panorama** Device Group — changes are pushed to BOTH firewalls simultaneously. No per-FW configuration needed.
+| Concern | Azure handles | Panorama handles |
+|---|---|---|
+| **Failover when a FW dies** | Standard LB health probes + HA Ports rule | — |
+| **Same config on both FWs** | — | Device Group + Template Stack push |
+| **Centralised policy / NAT / zones** | — | Device Group |
+| **Centralised network config (interfaces, VRs, routes)** | — | Template Stack |
+| **Centralised log forwarding** | — | Collector Group |
 
-### HA Configuration — How It's Wired
+### Failover via Azure Standard LB health probes (no PAN-OS HA pair)
 
-HA configuration is pushed **directly to each FW** (not via Panorama Template)
-in **Phase 2b Steps 9.7/9.8** (`scripts/register-fw-panorama.sh`). The script
-opens a Bastion tunnel to each FW (`127.0.0.1:44301` for FW1, `:44302` for
-FW2), waits until both FWs have no pending commits, then pushes the complete
-HA config to each FW via XML API and commits locally on each FW:
+Both FW1 and FW2 are simultaneously active in the load-balancer backend pool —
+each FW handles sessions independently and Azure LB load-balances new sessions
+across them. There is no HA1 heartbeat, no HA2 state sync, no peer-ip, no
+device-priority. Failover is handled at the LB layer:
 
-| FW | Role | Device Priority | `peer-ip` (HA1) |
-|----|------|-----------------|-----------------|
-| FW1 | active | 100 (lower wins election) | FW2 management IP |
-| FW2 | passive | 200 | FW1 management IP |
+- **Internal LB** (HA Ports rule on protocol=All / port=0) probes each FW on
+  HTTPS `/php/login.php` every 5 seconds. After 2 failed probes the FW is
+  drained from the backend pool — outbound + east-west sessions reroute to
+  the surviving FW within ~10 seconds.
+- **External LB** does the same on the inbound path with floating IP enabled
+  (so PAN-OS DNAT rules match the public IP correctly).
+- An Availability Set across two fault domains ensures FW1 and FW2 are never
+  on the same physical hardware, so a single host failure cannot take both
+  out simultaneously.
 
-Preemption is **off** — once FW2 takes over, it stays active until a manual
-fail-back. This avoids flapping during maintenance.
+> **Trade-off:** there is no session-state synchronisation between FW1 and FW2.
+> When a FW goes down, in-flight TCP/TLS sessions on it are lost — the client
+> must re-establish them, and the new sessions land on the surviving FW. For
+> stateless or short-lived flows (HTTP, DNS, NTP, application API calls)
+> this is invisible. For long-lived sessions (SSH, RDP, persistent VPN) the
+> user sees a brief reconnect. PANW Azure deployment guide accepts this
+> trade-off in exchange for not fighting Azure's L3-only fabric (raw L2 HA2
+> sync via Ethertype 0x7261 doesn't work in Azure).
 
-> **Why direct push to FW instead of Panorama Template?** PAN-OS API
-> `target=<serial>` parameter is supported for `type=op` and `type=commit`
-> but NOT for `type=config&action=set`. Template Variables of type `ip-netmask`
-> also have unreliable substitution into `<peer-ip>` fields (which expect a
-> plain IP, not CIDR). Direct per-FW push bypasses both pitfalls.
+### Configuration consistency via Panorama (Device Group + Template Stack)
 
-### Manual HA setup (recovery — if Phase 2b script fails)
+Both firewalls are members of the same Panorama **Device Group**
+(`Transit-VNet-DG`) and the same **Template Stack** (`Transit-VNet-Stack`).
+This is what guarantees they always run identical config:
 
-If `register-fw-panorama.sh` fails to push HA (e.g., persistent commit lock
-contention), set HA via CLI on each FW. Note PAN-OS `<group>` is a singleton,
-so the CLI uses `group group-id 1` not `group 1`:
+| Panorama object | What it pushes | Why both FWs always match |
+|---|---|---|
+| **Template Stack** (`Transit-VNet-Stack`) | Network config — ethernet interfaces (eth1/1 untrust, eth1/2 trust), security zones (untrust, trust), virtual routers (multi-VR for Azure LB sandwich), static routes, interface management profile (HTTPS for LB health probes), system settings (timezone, NTP, telemetry), administrative-access hardening (password policy, idle timeout), log settings | A `commit-all template-stack` job (Phase 2b Step 8/9 of `register-fw-panorama.sh`) sends the SAME compiled template to every FW listed under the Stack's `devices` block |
+| **Device Group** (`Transit-VNet-DG`) | Security policy rules (Allow-Inbound-Web, Allow-East-West-*, Allow-Outbound-Internet with App-ID, Allow-Azure-LB-Probes, Deny-All), NAT rules (DNAT inbound, SNAT outbound), Log Forwarding Profile, Zone Protection Profile attachments | A `commit-all shared-policy device-group` job (Phase 2b Step 9/9) pushes the SAME policy + NAT set to every FW in the DG |
+| **Collector Group** (`default`) | Log Forwarding routing — every FW sends traffic/threat/url logs to the same Panorama log collector | Pushed in Phase 2b Step 9.5/9 |
 
-```text
-# On FW1 (active, peer = FW2 mgmt IP)
-admin@fw1> configure
-admin@fw1# set deviceconfig high-availability enabled yes
-admin@fw1# set deviceconfig high-availability group group-id 1
-admin@fw1# set deviceconfig high-availability group peer-ip 10.110.255.5
-admin@fw1# set deviceconfig high-availability group mode active-passive
-admin@fw1# set deviceconfig high-availability group configuration-synchronization enabled yes
-admin@fw1# set deviceconfig high-availability group state-synchronization enabled yes
-admin@fw1# set deviceconfig high-availability group state-synchronization transport ethernet
-admin@fw1# set deviceconfig high-availability group election-option device-priority 100
-admin@fw1# set deviceconfig high-availability group election-option preemptive no
-admin@fw1# set deviceconfig high-availability interface ha1 port management
-admin@fw1# set deviceconfig high-availability interface ha2 port ethernet1/3
-admin@fw1# commit
-admin@fw1# exit
-
-# On FW2 — only peer-ip and device-priority differ:
-admin@fw2# set deviceconfig high-availability group peer-ip 10.110.255.4
-admin@fw2# set deviceconfig high-availability group election-option device-priority 200
-# (all other lines same as FW1)
-```
-
-> **Notes on PAN-OS 11.x HA quirks:**
-> - `passive-link-state` cannot be nested inside `active-passive` (schema
->   error "passive-link-state unexpected here"). Default `auto` is applied
->   when omitted and is correct for Azure.
-> - `state-synchronization transport ethernet` is REQUIRED — PAN-OS 11.x
->   defaults the transport to `ip`, which then demands an IP/netmask on the
->   HA2 interface. Setting transport=ethernet uses the dedicated `snet-ha`
->   subnet at L2 and avoids the IP requirement (PANW-recommended for Azure).
-
-After commits on both FWs, HA negotiates over HA1 in 30-60 seconds.
-Verify with `show high-availability state` — expect `active` on FW1,
-`passive` on FW2.
-
-### Verify HA after deployment
+If you change anything in `modules/panorama_config/main.tf`, the workflow is:
 
 ```bash
-# SSH to FW1 via Bastion, then on the PAN-OS CLI:
-admin@fw1> show high-availability state
-# Expected: "State: active", "Peer state: passive"
-
-admin@fw1> show high-availability state-synchronization
-# HA2 link should show "Connection: up", "ha2-keep-alive: enabled"
-
-# Same on FW2 — should be the mirror image:
-admin@fw2> show high-availability state
-# Expected: "State: passive", "Peer state: active"
+# 1. Apply the change to Panorama candidate config
+cd phase2-panorama-config
+terraform apply
+# 2. Push the new template/DG to all FWs (idempotent — pushes whatever's currently in Panorama)
+cd ..
+bash scripts/register-fw-panorama.sh
 ```
 
-### Test failover
+You can also push manually from the Panorama GUI: **Commit → Commit and Push**,
+selecting the Template Stack and Device Group.
+
+### Verify both firewalls are in sync (Panorama-side)
 
 ```bash
-# Deallocate active FW
-az vm deallocate --ids $(terraform output -raw fw1_vm_id)
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
+az network bastion ssh --name bastion-management --resource-group rg-transit-hub \
+  --target-resource-id "$PANORAMA_ID" --auth-type password --username panadmin
 
-# Traffic should failover to FW2 — test:
-curl "http://$(terraform output -raw external_lb_public_ip)/"
+admin@panorama> show devices connected
+# Expect both FW serials listed, "Connected: yes"
 
-# Verify FW2 is now active (via Bastion SSH):
-admin@fw2> show high-availability state    # should now show "State: active"
+admin@panorama> show devices all
+# Look at the "Shared Policy" and "Template" columns — both should say "In sync"
+# If "Out of sync" — push the corresponding object: Commit → Commit and Push → ...
+```
 
-# Start FW1 back — it will rejoin as passive (preemption is OFF)
-az vm start --ids $(terraform output -raw fw1_vm_id)
+### Verify the Azure LB sees both FWs as healthy
+
+```bash
+# Internal LB health probe status (Azure side):
+az network lb show -g rg-transit-hub -n lb-internal-transit \
+  --query 'backendAddressPools[0].loadBalancerBackendAddresses[].{nic:networkInterfaceIPConfiguration.id,ip:ipAddress}' -o table
+
+# Live probe results — show the running state of backend instances:
+az network lb show -g rg-transit-hub -n lb-internal-transit --query 'probes' -o json
+```
+
+In the Azure Portal: **Load Balancers → lb-internal-transit → Insights → Backend health** —
+both FWs should show as "Up".
+
+### Test failover (drain one FW, traffic continues via the other)
+
+```bash
+# Take FW1 out of service:
+FW1_ID=$(terraform output -raw fw1_vm_id)
+az vm deallocate --ids "$FW1_ID"
+
+# Within ~10s the Internal LB health probe (HA Ports, HTTPS /php/login.php,
+# 5s interval x 2 probes) marks FW1 unhealthy and drains it from the pool.
+# Outbound + east-west traffic continues via FW2:
+ELB_IP=$(terraform output -raw external_lb_public_ip)
+curl -v "http://$ELB_IP/"   # should still return Apache page
+
+# Bring FW1 back:
+az vm start --ids "$FW1_ID"
+# After PAN-OS finishes booting (~5-10 min) and responds to /php/login.php
+# probes, LB adds it back to the pool. New sessions distribute across both
+# FWs again.
 ```
 
 ---
@@ -576,22 +575,25 @@ admin@fw1> show system bootstrap status
 admin@fw1> less mp-log bootstrap.log
 ```
 
-### HA does not form (both FWs show as active, or both as passive)
+### `show high-availability state` returns "HA not enabled"
 
-Almost always caused by Phase 2b skipping the per-device variable override.
-Symptoms: `show high-availability state` on each FW shows the placeholder
-peer-ip (10.0.0.254 by default) or both FWs report "active".
+That's intentional — this deployment does NOT configure PAN-OS HA Active/Passive
+between the firewalls. Failover is provided by Azure Standard LB health probes
+instead. See "Azure-Native HA + Configuration Management via Panorama" above
+for the full rationale (matches PANW Securing Applications in Azure deployment
+guide). To verify failover works at the LB layer, drain a FW with
+`az vm deallocate` and confirm traffic continues via the surviving FW.
+
+### Both FWs marked "Out of sync" in Panorama → Managed Devices
+
+Re-run the relevant push:
 
 ```bash
-# Re-run Phase 2b — it is idempotent:
+# Re-run all of Phase 2b (idempotent):
 bash scripts/register-fw-panorama.sh
 
-# Verify the per-device variables landed in Panorama:
-#   Panorama GUI -> Panorama -> Managed Devices -> <serial> -> "Variables" tab
-# Should show: $ha-peer-ip = <other FW mgmt IP>/24, $ha-priority = 100 or 200
-
-# After fixing, push the Template Stack so each FW pulls the new variable:
-#   Panorama GUI -> Commit -> Push to Devices -> Template Stack
+# Or push manually from Panorama GUI:
+#   Commit → Commit and Push → select Template Stack and Device Group → Push
 ```
 
 ### Traffic blocked unexpectedly by Deny-All
@@ -635,9 +637,9 @@ azure_ha_project/
 ├── modules/
 │   ├── bootstrap/          init-cfg renderer (base64 -> custom_data via IMDS) + UAMI
 │   ├── panorama/           Panorama VM (no bootstrap)
-│   ├── panorama_config/    panos provider + XML API: Template, DG, HA, Zone Protection, App-ID rules
-│   ├── firewall/           VM-Series HA pair (for_each over fw_names) + userData workaround
-│   ├── networking/         VNets, subnets, NSGs, peerings, Bastion, NAT GW
+│   ├── panorama_config/    panos provider + XML API: Template, DG, Zone Protection, App-ID rules
+│   ├── firewall/           VM-Series farm (for_each over fw_names) + userData workaround
+│   ├── networking/         VNets, subnets (3 transit subnets — no snet-ha), NSGs, peerings, Bastion, NAT GW
 │   ├── loadbalancer/       External + Internal Standard LB (HA Ports rule)
 │   ├── routing/            UDR Route Tables for spokes
 │   ├── frontdoor/          Azure Front Door Premium
