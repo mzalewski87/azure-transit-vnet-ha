@@ -471,6 +471,8 @@ admin@fw1# set deviceconfig high-availability group group-id 1
 admin@fw1# set deviceconfig high-availability group peer-ip 10.110.255.5
 admin@fw1# set deviceconfig high-availability group mode active-passive
 admin@fw1# set deviceconfig high-availability group configuration-synchronization enabled yes
+admin@fw1# set deviceconfig high-availability group state-synchronization enabled yes
+admin@fw1# set deviceconfig high-availability group state-synchronization transport ethernet
 admin@fw1# set deviceconfig high-availability group election-option device-priority 100
 admin@fw1# set deviceconfig high-availability group election-option preemptive no
 admin@fw1# set deviceconfig high-availability interface ha1 port management
@@ -484,10 +486,14 @@ admin@fw2# set deviceconfig high-availability group election-option device-prior
 # (all other lines same as FW1)
 ```
 
-> **Note on `passive-link-state`:** PAN-OS 11.x rejects `passive-link-state`
-> nested inside `active-passive` in the XML config (schema error
-> "passive-link-state unexpected here"). The default of `auto` is fine for
-> Azure deployments and is what PAN-OS applies when the element is omitted.
+> **Notes on PAN-OS 11.x HA quirks:**
+> - `passive-link-state` cannot be nested inside `active-passive` (schema
+>   error "passive-link-state unexpected here"). Default `auto` is applied
+>   when omitted and is correct for Azure.
+> - `state-synchronization transport ethernet` is REQUIRED — PAN-OS 11.x
+>   defaults the transport to `ip`, which then demands an IP/netmask on the
+>   HA2 interface. Setting transport=ethernet uses the dedicated `snet-ha`
+>   subnet at L2 and avoids the IP requirement (PANW-recommended for Azure).
 
 After commits on both FWs, HA negotiates over HA1 in 30-60 seconds.
 Verify with `show high-availability state` — expect `active` on FW1,
