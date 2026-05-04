@@ -945,117 +945,36 @@ print(root.findtext('.//key',''))
 ###############################################################################
 
 ###############################################################################
-# Panorama Log Collector Group (via XML API)
+# Log Collection
 #
-# The panos Terraform provider has no native resource for Collector Groups.
-# Panorama must be configured as a local log collector with a Collector Group
-# for FW logs to flow from firewalls to Panorama.
+# Panorama runs in default Panorama Mode with a 2 TB log disk attached
+# (modules/panorama). This is sufficient for the standalone Panorama use
+# case in this project: Panorama-managed firewalls automatically push logs
+# to the panorama-server IP (set in their bootstrap init-cfg) over PAN-OS
+# port 3978/TCP, and Panorama natively accepts those logs into its local
+# storage.
 #
-# Prerequisites (done automatically here):
-#   1. Get Panorama serial number
-#   2. Register Panorama as a Managed Collector (with disk pair)
-#   3. Create Collector Group "default" with the collector serial as member
-#   4. Configure Device Group log forwarding to this Collector Group
+# We do NOT register Panorama as a "Managed Collector" with an explicit
+# Collector Group — that pattern is required only for advanced setups:
+#   - Dedicated M-series Log Collectors (separate appliance)
+#   - Multiple Panoramas in HA with shared collectors
+#   - Log distribution across collectors based on log type or device group
+# Earlier attempts to do that registration via XML API consistently failed
+# (`show log-collector all` returned "No collectors found" + the
+# `commit-all log-collector-config` push reported
+# "collector-group unexpected here"), and even if it had worked it would
+# have added complexity for zero benefit in a single-Panorama deployment.
 #
-# After terraform apply, you MUST:
-#   1. Commit to Panorama
-#   2. Commit > Commit and Push > Collector Group "default"
-#   3. Push to Devices
+# What IS configured (and what makes logs flow):
+#   1. Per-rule Log Forwarding Profile in the Device Group with
+#      `send_to_panorama = true` for traffic/threat/url types
+#      (see panos_panorama_log_forwarding_profile.default above).
+#   2. System-level log forwarding (system, config, userid, hipmatch)
+#      configured via XML API in fw_template_system_settings above.
+#   3. Each Panorama-managed FW already knows the Panorama IP from its
+#      init-cfg (panorama-server=10.255.0.4) — no additional config needed.
+#
+# Verify on Panorama after some traffic has flowed:
+#   admin@panorama> debug log-collector log-collection-stats show incoming-logs
+#   admin@panorama> show logging-status device <FW_SERIAL>
 ###############################################################################
-
-resource "null_resource" "collector_group_config" {
-  # Always re-run to ensure config is present after redeployment
-  triggers = {
-    always_run = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command = <<-SCRIPT
-      set -e
-      PANORAMA_URL="https://${var.panorama_hostname}:44300"
-      PAN_USER="${var.panorama_username}"
-
-      echo "=== Configuring Panorama Managed Collector + Collector Group ==="
-
-      # Get API key
-      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
-      API_KEY=$(curl -sk --max-time 30 \
-        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
-        | python3 -c "
-import sys, xml.etree.ElementTree as ET
-root = ET.fromstring(sys.stdin.read())
-if root.get('status') != 'success':
-    print('ERROR', file=sys.stderr); sys.exit(1)
-print(root.findtext('.//key',''))
-" 2>&1)
-
-      if [ -z "$API_KEY" ] || echo "$API_KEY" | grep -q "ERROR"; then
-        echo "[ERROR] API key retrieval failed"; exit 1
-      fi
-
-      # Step 1: Get Panorama serial number
-      SERIAL=$(curl -sk --max-time 30 \
-        "$PANORAMA_URL/api/?type=op&cmd=<show><system><info></info></system></show>&key=$API_KEY" \
-        | python3 -c "
-import sys, xml.etree.ElementTree as ET
-root = ET.fromstring(sys.stdin.read())
-print(root.findtext('.//serial',''))
-" 2>&1)
-
-      if [ -z "$SERIAL" ]; then
-        echo "[ERROR] Could not get Panorama serial number"; exit 1
-      fi
-      echo "  Panorama serial: $SERIAL"
-
-      # Step 2: Register Panorama as a Managed Collector
-      # This is the PREREQUISITE - without this, Collector Group has no collector to reference
-      # XPath: Panorama > Managed Collectors > <serial>
-      MC_XPATH="/config/devices/entry[@name='localhost.localdomain']/log-collector/entry[@name='$SERIAL']"
-
-      # Assign disk pair (Disk A) to the managed collector
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=config" \
-        --data-urlencode "action=set" \
-        --data-urlencode "xpath=$MC_XPATH/disk-pair" \
-        --data-urlencode "element=<entry name='Pair1'><disk1>Disk A</disk1></entry>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  Managed Collector ($SERIAL): registered with disk pair (Disk A)"
-
-      # Step 3: Create Collector Group "default" with Panorama as member
-      CG_XPATH="/config/devices/entry[@name='localhost.localdomain']/log-collector-group/entry[@name='default']"
-
-      # Add collector serial to the group
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=config" \
-        --data-urlencode "action=set" \
-        --data-urlencode "xpath=$CG_XPATH/logfwd-setting/collectors" \
-        --data-urlencode "element=<entry name='$SERIAL'/>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  Collector Group 'default': added collector $SERIAL"
-
-      # Step 4: Configure Device Group log forwarding to this Collector Group
-      DG_NAME="${panos_panorama_device_group.transit.name}"
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=config" \
-        --data-urlencode "action=set" \
-        --data-urlencode "xpath=$CG_XPATH/logfwd-setting/lf" \
-        --data-urlencode "element=<entry name='$DG_NAME'><filter>All Logs</filter><collectors><entry name='$SERIAL'/></collectors></entry>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  Log forwarding: Device Group '$DG_NAME' → Collector Group 'default'"
-
-      echo ""
-      echo "  [OK] Managed Collector + Collector Group configured"
-      echo ""
-      echo "  NEXT STEPS (manual):"
-      echo "    1. Panorama GUI: Commit to Panorama"
-      echo "    2. Panorama GUI: Commit > Commit and Push > Collector Group 'default'"
-      echo "    3. Panorama GUI: Commit > Push to Devices (Device Group '$DG_NAME')"
-    SCRIPT
-  }
-
-  depends_on = [
-    panos_panorama_device_group.transit,
-    panos_panorama_log_forwarding_profile.default,
-    null_resource.fw_template_system_settings,
-  ]
-}

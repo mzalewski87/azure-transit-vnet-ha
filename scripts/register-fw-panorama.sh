@@ -382,39 +382,6 @@ register_fw() {
 register_fw "$FW1_SERIAL" "FW1"
 register_fw "$FW2_SERIAL" "FW2"
 
-# Add FW devices to Collector Group's Device Log Forwarding
-echo ""
-echo "[5.5/6] Adding FWs to Collector Group 'default' Device Log Forwarding..."
-
-# Get Panorama serial (Log Collector serial = Panorama serial in local LC mode)
-PAN_SERIAL=$(curl -sk --max-time 30 \
-  "https://127.0.0.1:$PANORAMA_PORT/api/?type=op&cmd=<show><system><info></info></system></show>&key=$PAN_KEY" 2>/dev/null \
-  | python3 -c "
-import sys, xml.etree.ElementTree as ET
-root = ET.fromstring(sys.stdin.read())
-print(root.findtext('.//serial','unknown'))
-" 2>/dev/null)
-
-if [ "$PAN_SERIAL" != "unknown" ] && [ -n "$PAN_SERIAL" ]; then
-  echo "  Panorama/LC serial: $PAN_SERIAL"
-
-  # Add Device Log Forwarding preference list mapping FWs → Log Collector
-  CG_XPATH="/config/panorama/collector-group/entry[@name='default']/logfwd-setting/device"
-  for SERIAL in "$FW1_SERIAL" "$FW2_SERIAL"; do
-    echo "  Adding $SERIAL → Collector Group log forwarding..."
-    curl -sk --max-time 30 "$PAN_URL" \
-      --data-urlencode "type=config" \
-      --data-urlencode "action=set" \
-      --data-urlencode "xpath=$CG_XPATH" \
-      --data-urlencode "element=<entry name='$SERIAL'><collector><entry name='$PAN_SERIAL'/></collector></entry>" \
-      --data-urlencode "key=$PAN_KEY" > /dev/null
-  done
-  echo "  [OK] FWs added to Collector Group Device Log Forwarding"
-else
-  echo "  [WARN] Could not get Panorama serial — skipping Collector Group update."
-  echo "         Manual: Panorama → Collector Groups → default → Device Log Forwarding → Add FWs"
-fi
-
 # Commit on Panorama
 echo ""
 echo "[6/6] Committing on Panorama..."
@@ -524,29 +491,10 @@ except Exception as e:
     print('  [WARN] ' + str(e))
 " 2>/dev/null
 
-# Push Collector Group (to apply Device Log Forwarding with FW serials)
 echo ""
-echo "[9.5/9] Push Collector Group 'default'..."
-CG_PUSH_RESP=$(curl -sk --max-time 120 "$PAN_URL" \
-  --data-urlencode "type=commit" \
-  --data-urlencode "action=all" \
-  --data-urlencode "cmd=<commit-all><log-collector-config><collector-group>default</collector-group></log-collector-config></commit-all>" \
-  --data-urlencode "key=$PAN_KEY" 2>/dev/null || echo "")
-
-echo "$CG_PUSH_RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    status = root.get('status','')
-    if status == 'success':
-        job = root.findtext('.//job','')
-        print('  [OK] Collector Group push submitted' + (' (job ' + job + ')' if job else ''))
-    else:
-        msg = root.findtext('.//msg','') or root.findtext('.//line','')
-        print('  [INFO] Collector Group push: ' + str(msg))
-except Exception as e:
-    print('  [INFO] Collector Group push: ' + str(e))
-" 2>/dev/null
+echo "  Logs from both FWs will reach Panorama natively over PAN-OS port"
+echo "  3978/TCP (panorama-server in init-cfg). Verify after some traffic:"
+echo "    admin@panorama> debug log-collector log-collection-stats show incoming-logs"
 
 echo ""
 echo "============================================================"
