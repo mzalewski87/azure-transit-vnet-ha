@@ -56,6 +56,26 @@ if [ ! -f "$PHASE2_DIR/terraform.tfvars" ]; then
   exit 1
 fi
 
+# Loud warning if panorama_serial_number is empty — Step 3 (license activation)
+# is gated by `count = var.panorama_serial_number != "" ? 1 : 0` and would
+# otherwise be silently skipped, leaving Panorama unlicensed.
+SERIAL_LINE=$(grep -E '^\s*panorama_serial_number\s*=' "$PHASE2_DIR/terraform.tfvars" | head -1)
+SERIAL_VALUE=$(echo "$SERIAL_LINE" | sed -E 's/.*=[[:space:]]*"([^"]*)".*/\1/')
+if [ -z "$SERIAL_VALUE" ]; then
+  echo ""
+  echo "[WARN] panorama_serial_number is empty in $PHASE2_DIR/terraform.tfvars"
+  echo "       => Step 3 (set serial + commit + 'request license fetch') will be SKIPPED."
+  echo "       => Panorama will run UNLICENSED (no log retention, no SLS, etc.)."
+  echo "       => Fix: set panorama_serial_number = \"007300XXXXXXX\" (from CSP Portal)"
+  echo "          and re-run this script. The licensing step is idempotent."
+  echo ""
+  read -r -p "Continue anyway? [y/N] " ANSWER
+  if [ "$ANSWER" != "y" ] && [ "$ANSWER" != "Y" ]; then
+    echo "Aborted. Edit terraform.tfvars and re-run."
+    exit 1
+  fi
+fi
+
 # Get Panorama VM ID and External LB IP from Terraform output
 echo "[1/4] Fetching infrastructure info from Terraform output..."
 cd "$ROOT_DIR"

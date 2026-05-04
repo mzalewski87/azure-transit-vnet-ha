@@ -12,16 +12,19 @@ variable "panorama_hostname" {
 }
 
 variable "panorama_target_hostname" {
-  description = "Docelowy hostname Panoramy (ustawiany przez XML API)."
+  description = "Hostname assigned to Panorama via the XML API in Step 2."
   type        = string
   default     = "panorama-transit-hub"
 }
 
 variable "panorama_serial_number" {
   description = <<-EOT
-    Numer seryjny Panoramy z CSP Portal (my.paloaltonetworks.com).
-    Required for BYOL license activation. Format: 007300XXXXXXX.
-    If empty — license activation step is skipped.
+    Panorama serial number from the CSP Portal (my.paloaltonetworks.com → Assets → Panorama).
+    Required for BYOL license activation. Format: 007300XXXXXXX (13 digits).
+    If left empty, Step 3 (set serial + commit + 'request license fetch')
+    is silently skipped. The script will still set up Template Stack, Device
+    Group and vm-auth-key, but Panorama will run unlicensed (no log retention,
+    no Strata Logging Service, etc.).
   EOT
   type        = string
   default     = ""
@@ -34,7 +37,7 @@ variable "panorama_port" {
 }
 
 variable "panorama_username" {
-  description = "Nazwa administratora Panoramy"
+  description = "Panorama administrator username"
   type        = string
   default     = "panadmin"
 }
@@ -61,19 +64,19 @@ variable "vm_auth_key_lifetime" {
 # Panorama Template & Device Group
 #------------------------------------------------------------------------------
 variable "template_name" {
-  description = "Nazwa Panorama Template"
+  description = "Panorama Template name"
   type        = string
   default     = "Transit-VNet-Template"
 }
 
 variable "template_stack_name" {
-  description = "Nazwa Panorama Template Stack"
+  description = "Panorama Template Stack name"
   type        = string
   default     = "Transit-VNet-Stack"
 }
 
 variable "device_group_name" {
-  description = "Nazwa Panorama Device Group"
+  description = "Panorama Device Group name"
   type        = string
   default     = "Transit-VNet-DG"
 }
@@ -83,25 +86,25 @@ variable "device_group_name" {
 # Default values match Phase 1 reference architecture
 #------------------------------------------------------------------------------
 variable "trust_subnet_cidr" {
-  description = "CIDR subnetu trust (FW eth1/2) = cidrsubnet(transit, 8, 0)"
+  description = "Trust subnet CIDR (FW eth1/2) = cidrsubnet(transit, 8, 0)"
   type        = string
   default     = "10.110.0.0/24"
 }
 
 variable "untrust_subnet_cidr" {
-  description = "CIDR subnetu untrust (FW eth1/1) = cidrsubnet(transit, 8, 129)"
+  description = "Untrust subnet CIDR (FW eth1/1) = cidrsubnet(transit, 8, 129)"
   type        = string
   default     = "10.110.129.0/24"
 }
 
 variable "spoke1_vnet_cidr" {
-  description = "CIDR VNet Spoke1 (App1)"
+  description = "Spoke1 (App1) VNet CIDR"
   type        = string
   default     = "10.112.0.0/16"
 }
 
 variable "spoke2_vnet_cidr" {
-  description = "CIDR VNet Spoke2 (App2/DC)"
+  description = "Spoke2 (App2/DC) VNet CIDR"
   type        = string
   default     = "10.113.0.0/16"
 }
@@ -110,7 +113,7 @@ variable "spoke2_vnet_cidr" {
 # Endpoints
 #------------------------------------------------------------------------------
 variable "apache_server_ip" {
-  description = "IP serwera Apache w Spoke1 (cel DNAT)"
+  description = "Apache server private IP in Spoke1 (DNAT target)"
   type        = string
   default     = "10.112.0.4"
 }
