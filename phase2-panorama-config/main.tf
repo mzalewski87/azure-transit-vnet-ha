@@ -340,6 +340,125 @@ except: print('RETRY')
 }
 
 ###############################################################################
+# Step 3.5: Fetch Panorama device certificate via OTP (if provided)
+#
+# CSP Portal -> Assets -> Device Certificates -> Generate OTP for Panorama's
+# serial number. Paste the OTP into phase2 terraform.tfvars
+# (panorama_device_otp). 60-min lifetime, single-use.
+#
+# This step is idempotent in two ways:
+#   - count=0 if OTP is empty (skipped silently)
+#   - if Panorama already has a valid device cert (`show device-cert info`),
+#     the fetch is skipped to avoid wasting the OTP
+#
+# Without a device certificate, Panorama can't authenticate to Strata cloud
+# services (Strata Logging Service, Cloud Identity Engine, etc.). For an
+# on-prem-style deployment with local logs, this is optional.
+###############################################################################
+resource "null_resource" "panorama_fetch_device_certificate" {
+  count = var.panorama_device_otp != "" ? 1 : 0
+
+  triggers = {
+    otp_hash = sha256(var.panorama_device_otp)
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
+      PAN_USER="${var.panorama_username}"
+      OTP="${var.panorama_device_otp}"
+
+      echo "=== [Step 3.5] Fetching Panorama device certificate ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+print(root.findtext('.//key',''))
+" 2>/dev/null)
+
+      if [ -z "$API_KEY" ]; then
+        echo "[ERROR] Could not get API key for cert fetch"; exit 1
+      fi
+
+      # Skip if certificate already valid (avoid burning the OTP)
+      CERT_STATUS=$(curl -sk --max-time 15 \
+        "$PANORAMA_URL/api/?type=op&cmd=<show><device-cert><info></info></device-cert></show>&key=$API_KEY" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    # Different PAN-OS versions place the status field differently
+    for tag in ('current-status','status','validity'):
+        val = root.find('.//' + tag)
+        if val is not None and val.text:
+            print(val.text.strip()); sys.exit(0)
+    print('Unknown')
+except Exception as e:
+    print('parse-error: ' + str(e))
+" 2>/dev/null)
+
+      echo "  Current device-cert status: $CERT_STATUS"
+      if echo "$CERT_STATUS" | grep -qi "valid"; then
+        echo "  [OK] Device certificate already valid — skipping fetch (OTP not consumed)"
+        exit 0
+      fi
+
+      echo "  Calling: request device-certificate fetch otp <OTP>"
+      RESP=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=op" \
+        --data-urlencode "cmd=<request><device-certificate><fetch><otp>$OTP</otp></fetch></device-certificate></request>" \
+        --data-urlencode "key=$API_KEY" 2>/dev/null)
+
+      RESP_STATUS=$(echo "$RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    print(ET.fromstring(sys.stdin.read()).get('status',''))
+except: print('parse-error')
+" 2>/dev/null)
+
+      if [ "$RESP_STATUS" = "success" ]; then
+        echo "  [OK] Device certificate fetch submitted"
+        # Verify after a few seconds
+        sleep 10
+        FINAL_STATUS=$(curl -sk --max-time 15 \
+          "$PANORAMA_URL/api/?type=op&cmd=<show><device-cert><info></info></device-cert></show>&key=$API_KEY" 2>/dev/null \
+          | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    for tag in ('current-status','status','validity'):
+        val = root.find('.//' + tag)
+        if val is not None and val.text:
+            print(val.text.strip()); sys.exit(0)
+    print('Unknown')
+except: print('parse-error')
+" 2>/dev/null)
+        echo "  Verification: device-cert status = $FINAL_STATUS"
+      else
+        MSG=$(echo "$RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(root.findtext('.//msg','') or root.findtext('.//line','') or 'unknown')
+except: print('unparseable')
+" 2>/dev/null)
+        echo "  [WARN] Device cert fetch failed: $MSG"
+        echo "  Common causes:"
+        echo "    - OTP expired (60-min lifetime) -> regenerate in CSP Portal"
+        echo "    - OTP already used -> generate a fresh one"
+        echo "    - OTP for wrong device serial -> verify CSP Portal selected Panorama serial"
+      fi
+    SCRIPT
+  }
+
+  depends_on = [null_resource.panorama_activate_license]
+}
+
+###############################################################################
 # Step 4: Generate vm-auth-key automatically via XML API
 #
 # Generates the Device Registration Auth Key on Panorama.

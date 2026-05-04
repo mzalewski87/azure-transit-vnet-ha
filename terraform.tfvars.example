@@ -80,7 +80,17 @@ panorama_vm_auth_key = ""   # Format: 2:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 # VM-Series FW License
 # CSP Portal → Assets → Auth Codes → VM-Series BYOL
 #------------------------------------------------------------------------------
-fw_auth_code = ""   # Format: XXXX-XXXX-XXXX-XXXX
+fw_auth_code = ""   # Format: XXXXXXXX (8 alphanumeric chars)
+
+#------------------------------------------------------------------------------
+# Device Certificate OTPs
+# CSP Portal → Assets → Device Certificates → Generate OTP
+# Each FW needs its OWN OTP (per serial number), 60-min lifetime, single-use.
+# Empty = skip the fetch (FW works without a device cert in lab).
+# Used by scripts/register-fw-panorama.sh in step [5b/6].
+#------------------------------------------------------------------------------
+fw1_device_otp = ""   # OTP for FW1 from CSP Portal (against FW1 serial)
+fw2_device_otp = ""   # OTP for FW2 from CSP Portal (against FW2 serial)
 
 #------------------------------------------------------------------------------
 # Windows Domain Controller

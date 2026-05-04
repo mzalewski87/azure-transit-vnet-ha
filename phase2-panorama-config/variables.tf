@@ -30,6 +30,20 @@ variable "panorama_serial_number" {
   default     = ""
 }
 
+variable "panorama_device_otp" {
+  description = <<-EOT
+    One-Time Password for Panorama's device certificate, generated in CSP Portal
+    (my.paloaltonetworks.com -> Assets -> Device Certificates -> Generate OTP)
+    against Panorama's serial number. 60-minute lifetime, single-use.
+    Used for `request device-certificate fetch otp <OTP>` after license activation.
+    Empty = skip the fetch (Panorama runs without a device certificate — fine
+    for lab; missing some Strata cloud features like Strata Logging Service).
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "panorama_port" {
   description = "Port to connect to Panorama. 44300 = Bastion tunnel, 443 = direct."
   type        = number

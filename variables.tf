@@ -218,6 +218,37 @@ variable "fw_auth_code" {
   }
 }
 
+#------------------------------------------------------------------------------
+# Device Certificate OTPs (CSP Portal -> Assets -> Device Certificates)
+#
+# Each device (Panorama, FW1, FW2) needs its own OTP. Generate per-serial
+# at my.paloaltonetworks.com. OTP is valid for 60 minutes and is single-use.
+# Leave empty to skip the device-certificate fetch step (device will run
+# without one — fine for lab, missing some Strata cloud features).
+#------------------------------------------------------------------------------
+variable "fw1_device_otp" {
+  description = <<-EOT
+    One-Time Password for FW1 device certificate, generated in CSP Portal
+    (my.paloaltonetworks.com -> Assets -> Device Certificates -> Generate OTP)
+    against FW1's serial number. 60-minute lifetime, single-use.
+    Empty = skip the fetch (FW operates without a device certificate).
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "fw2_device_otp" {
+  description = <<-EOT
+    One-Time Password for FW2 device certificate. Same rules as fw1_device_otp.
+    Each FW needs its OWN OTP generated against its OWN serial number — they
+    are NOT interchangeable.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "pan_os_version" {
   description = "PAN-OS version for VM-Series FW Marketplace image"
   type        = string

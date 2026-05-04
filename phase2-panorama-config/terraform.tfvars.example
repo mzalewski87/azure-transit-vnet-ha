@@ -28,6 +28,11 @@ panorama_target_hostname = "panorama-transit-hub"
 # Empty = skip license activation
 panorama_serial_number = ""   # e.g. "007300202012345"
 
+# OTP for Panorama device certificate (CSP Portal -> Assets -> Device Certificates ->
+# Generate OTP for Panorama serial). 60-min lifetime, single-use.
+# Empty = skip device-cert fetch (Panorama works without one for on-prem logs).
+panorama_device_otp = ""      # e.g. "abc123def456..."
+
 # vm-auth-key lifetime in minutes (1440 = 24h, max 8760 = 365 days)
 vm_auth_key_lifetime = 1440
 
