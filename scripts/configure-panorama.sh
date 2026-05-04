@@ -86,17 +86,36 @@ if [ -z "$PANORAMA_ID" ]; then
 fi
 echo "       VM ID: $PANORAMA_ID"
 
-# Auto-populate external_lb_public_ip if still REPLACE_ME
+# ALWAYS sync external_lb_public_ip with current terraform output.
+#
+# Azure dynamically allocates a NEW public IP for the External LB on every
+# fresh deploy (after destroy + apply). If the phase2 tfvars still carries
+# the old IP (from a previous iteration), the DNAT rule and the
+# Allow-Inbound-Web security rule on the FW will be configured against the
+# wrong destination — health probes will be 100% Up but real client traffic
+# from the Internet (with dst = current ELB Public IP, kept by floating IP)
+# will silently drop because no NAT/security rule matches it. Symptom: ELB
+# curl times out, AFD returns 504, but Backend Health = 100% and FW packet
+# capture shows happy probe traffic.
+#
+# Earlier behaviour only auto-injected when the value was literally
+# REPLACE_ME — that left stale IPs untouched and caused exactly the bug
+# above on a redeploy.
 ELB_IP=$(terraform output -raw external_lb_public_ip 2>/dev/null || true)
 if [ -n "$ELB_IP" ]; then
-  echo "       External LB IP: $ELB_IP"
-  if grep -q 'external_lb_public_ip.*REPLACE_ME' "$PHASE2_DIR/terraform.tfvars" 2>/dev/null; then
-    echo "       [AUTO] Injecting external_lb_public_ip into phase2 terraform.tfvars..."
-    sed -i '' "s|external_lb_public_ip.*=.*\"REPLACE_ME\"|external_lb_public_ip = \"$ELB_IP\"|" "$PHASE2_DIR/terraform.tfvars"
-    echo "       [OK] external_lb_public_ip = \"$ELB_IP\""
+  echo "       External LB IP (from terraform output): $ELB_IP"
+  CURRENT_VAL=$(grep -E '^\s*external_lb_public_ip\s*=' "$PHASE2_DIR/terraform.tfvars" 2>/dev/null \
+    | head -1 | sed -E 's/.*=[[:space:]]*"([^"]*)".*/\1/')
+  if [ "$CURRENT_VAL" != "$ELB_IP" ]; then
+    echo "       [AUTO] external_lb_public_ip in phase2 tfvars (was: ${CURRENT_VAL:-empty}) does not match — updating to $ELB_IP"
+    sed -i '' "s|external_lb_public_ip[[:space:]]*=[[:space:]]*\"[^\"]*\"|external_lb_public_ip = \"$ELB_IP\"|" "$PHASE2_DIR/terraform.tfvars"
+    echo "       [OK] phase2 terraform.tfvars updated"
+  else
+    echo "       [OK] phase2 terraform.tfvars already has the correct value"
   fi
 else
-  echo "       [WARN] Cannot fetch external_lb_public_ip. Make sure it's set in phase2 terraform.tfvars."
+  echo "       [WARN] Cannot fetch external_lb_public_ip from terraform output."
+  echo "              Make sure it's set in phase2 terraform.tfvars manually."
 fi
 
 # Start Bastion tunnel
