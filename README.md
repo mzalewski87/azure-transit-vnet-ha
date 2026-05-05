@@ -339,6 +339,12 @@ element=<serial-number>007300XXXXXXX</serial-number>
 
 ## Bastion Access
 
+All management plane access goes through **Azure Bastion (Standard SKU)** in
+the hub VNet. Username for ALL VMs (Panorama, FW1, FW2, Apache, DC) is
+**`panadmin`** with the password from `admin_password` in `terraform.tfvars`.
+Bastion Standard reaches peered Spoke VNets, so Apache + DC are reachable
+even though they sit outside the hub.
+
 ```bash
 # SSH to Panorama
 az network bastion ssh --name bastion-management --resource-group rg-transit-hub \
@@ -350,17 +356,36 @@ az network bastion ssh --name bastion-management --resource-group rg-transit-hub
   --target-resource-id "$(terraform output -raw fw1_vm_id)" \
   --auth-type password --username panadmin
 
+# SSH to FW2 (replace fw1_vm_id with fw2_vm_id)
+
+# SSH to Apache VM (Spoke1, Ubuntu 22.04 LTS) — uses --target-ip-address because
+# the VM is in a peered VNet, not in the same RG as Bastion.
+az network bastion ssh --name bastion-management --resource-group rg-transit-hub \
+  --target-ip-address "$(terraform output -raw apache_private_ip)" \
+  --resource-group rg-transit-hub \
+  --auth-type password --username panadmin
+
 # HTTPS tunnel to Panorama GUI
 az network bastion tunnel --name bastion-management --resource-group rg-transit-hub \
   --target-resource-id "$(terraform output -raw panorama_vm_id)" \
   --resource-port 443 --port 44300
 # Then: open https://localhost:44300
 
+# Quick reference for ALL Bastion SSH commands (Panorama, FW1, FW2, Apache):
+terraform output bastion_ssh_commands
+
 # Helper script
 ./scripts/check-panorama.sh           # status + commands
 ./scripts/check-panorama.sh --tunnel  # HTTPS tunnel
 ./scripts/check-panorama.sh --rdp     # RDP to DC
 ```
+
+> **Note:** Apache and DC are accessed via `--target-ip-address` because they
+> are in **Spoke VNets** (different RG than Bastion). Panorama and FWs use
+> `--target-resource-id` because they are in the same RG as Bastion. The
+> second `--resource-group` flag in the Apache SSH command refers to the
+> target VM's resource group (also `rg-transit-hub` in this lab; would be
+> different in a multi-RG production layout).
 
 ---
 
@@ -722,6 +747,104 @@ admin@panorama> debug log-collector log-collection-stats show incoming-logs   # 
 
 # Template system log-settings (sanity check Phase 2 was applied):
 admin@panorama> show config running xpath /config/devices/entry[@name='localhost.localdomain']/template/entry[@name='Transit-VNet-Template']/config/shared/log-settings
+```
+
+### Apache VM (Spoke1, Ubuntu) — service not responding
+
+The Apache VM (`vm-spoke1-apache`, Ubuntu 22.04 LTS) is provisioned with
+cloud-init that installs `apache2` package and enables it. If the Apache
+"Hello World" page is not reachable end-to-end, first check whether Apache
+itself is up locally on the VM, then walk the chain outward.
+
+SSH in (see Bastion Access section above), then run:
+
+```bash
+# 1. Did cloud-init complete successfully?
+sudo cloud-init status --long
+# Expect: "status: done". If "status: error" — see /var/log/cloud-init.log
+# for which step failed (apt-get, write_files, runcmd).
+
+# 2. Is the Apache service running?
+sudo systemctl is-active apache2 && echo OK || echo NOT-ACTIVE
+sudo systemctl status apache2 --no-pager | head -15
+
+# 3. Is Apache listening on port 80?
+sudo ss -tlnp | grep -E ":80|:443"
+# Expect: 0.0.0.0:80 LISTEN apache2
+
+# 4. Local response check (eliminates network/FW issues):
+curl -sI http://127.0.0.1/
+# Expect: HTTP/1.1 200 OK
+
+# 5. ufw status — cloud-init runs `ufw allow 'Apache'` but ufw may be
+# disabled by default on Ubuntu Server (which is fine for this lab — no
+# host firewall, all filtering is done by VM-Series). Verify:
+sudo ufw status verbose
+# Expect: "Status: inactive" (lab default) OR explicit "Apache  ALLOW" rule
+
+# 6. cloud-init errors (if Apache install failed at boot):
+sudo grep -iE "fail|error" /var/log/cloud-init.log /var/log/cloud-init-output.log | tail -20
+# Common cause: NAT GW not yet ready when apt-get fetched packages — re-run:
+sudo cloud-init clean && sudo cloud-init init
+sudo apt-get update && sudo apt-get install -y apache2
+```
+
+### Apache responds locally but Front Door returns 502/504
+
+End-to-end path: `Client → Azure Front Door (anycast L7) → External LB
+(public IP, floating IP enabled) → VM-Series FW (DNAT + security policy) →
+Internal LB (HA Ports) → Apache (10.112.0.4)`. Walk it inward from the
+Apache VM.
+
+```bash
+# On the Apache VM — open access log in real-time:
+sudo tail -f /var/log/apache2/access.log
+
+# In a SECOND terminal, hit Front Door + ELB and watch the access log:
+AFD=$(terraform output -raw frontdoor_endpoint)
+ELB=$(terraform output -raw external_lb_public_ip)
+
+curl -v "https://$AFD/"        # full path
+curl -v "http://$ELB/"          # bypass Front Door (isolates AFD vs FW chain)
+```
+
+Diagnostic decision tree based on what the access log + curl shows:
+
+| Apache log | curl ELB direct | curl via AFD | Likely cause |
+|---|---|---|---|
+| ❌ no entries | timeout/refused | timeout/refused | FW DNAT rule missing OR Internal LB not forwarding OR `enable_floating_ip` removed from External LB rule |
+| ❌ no entries | HTTP 200 (impossible — bypass goes through FW) | n/a | Misread the test — re-run |
+| ✅ entries appear, 200 OK | timeout/error at curl | n/a | Return-path issue (DNAT response not reaching client). Check FW NAT logs, Multi-VR routing, source-NAT policy |
+| ✅ entries appear, 200 OK | 200 OK | 502/504 from AFD | Front Door origin health probe failing OR origin pool config wrong. Check Front Door Manager → Origin groups → health |
+| ✅ entries appear, 200 OK | 200 OK | 200 OK | Working ✅ |
+
+```bash
+# On Panorama: check FW saw the traffic and what rule matched:
+admin@panorama> show log traffic direction equal backward csv-output equal yes
+# Or via GUI: Monitor → Traffic, filter: ( addr.dst in 10.112.0.4 )
+# Look for: rule name (should be Allow-Inbound-Web), action (allow/deny), bytes
+
+# Verify the FW security rule + NAT rule are pushed (sometimes Phase 2a
+# panos provider partially fails):
+admin@fw1> show running security-policy
+admin@fw1> show running nat-policy
+admin@fw1> show counter global filter delta yes severity drop
+# Last one: counters of dropped packets in the last interval — useful
+# to see if FW is silently dropping something.
+```
+
+### Apache: cheat sheet for live traffic capture
+
+```bash
+# tcpdump on Apache VM eth0 — see what actually arrives:
+sudo tcpdump -i eth0 -n -A 'tcp port 80 and not host 168.63.129.16' -c 50
+# (excludes Azure LB health probes from 168.63.129.16, otherwise output is noise)
+
+# tcpdump filtered to a specific source IP (your laptop's public IP via curl):
+sudo tcpdump -i eth0 -n 'tcp port 80 and src host <YOUR_PUBLIC_IP>' -c 20
+
+# After the test, count requests by source:
+sudo awk '{print $1}' /var/log/apache2/access.log | sort | uniq -c | sort -rn | head
 ```
 
 ### Traffic blocked unexpectedly by Deny-All
