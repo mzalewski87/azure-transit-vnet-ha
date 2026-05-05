@@ -81,15 +81,31 @@ print(root.findtext('.//key',''))
 }
 
 get_serial() {
+  # Robust: never fails the calling pipe under set -euo pipefail.
+  # Returns one of:
+  #   <serial>  — actual serial (license activation complete, system-info populated)
+  #   unknown   — XML parsed OK but no <serial> field (license still activating)
+  #   <empty>   — network/curl failed OR XML malformed (FW briefly down or restarting)
   local url="$1" api_key="$2"
-  curl -sk --max-time 30 \
-    "$url/api/?type=op&cmd=<show><system><info></info></system></show>&key=$api_key" 2>/dev/null \
-    | python3 -c "
+  local raw
+  raw=$(curl -sk --max-time 30 \
+    "$url/api/?type=op&cmd=<show><system><info></info></system></show>&key=$api_key" 2>/dev/null) \
+    || raw=""
+  if [ -z "$raw" ]; then
+    echo ""
+    return 0
+  fi
+  echo "$raw" | python3 -c "
 import sys, xml.etree.ElementTree as ET
-root = ET.fromstring(sys.stdin.read())
-serial = root.findtext('.//serial', 'unknown')
-print(serial)
-" 2>/dev/null
+try:
+    root = ET.fromstring(sys.stdin.read())
+    if root.get('status','') != 'success':
+        print(''); sys.exit(0)
+    s = (root.findtext('.//serial','') or '').strip()
+    print(s if s else 'unknown')
+except Exception:
+    print('')
+" 2>/dev/null || echo ""
 }
 
 start_tunnel() {
@@ -226,20 +242,77 @@ for FW_WAIT in $(seq 1 $MAX_FW_WAIT); do
   sleep 30
 done
 
-# Read serials
+# Read serials.
+# License activation is asynchronous and finishes AFTER the API becomes
+# responsive — so "API ready" (the wait loop above) is necessary but not
+# sufficient. Retry until both serials come through, with detailed diagnostics
+# on final failure so the operator knows what to check, instead of the script
+# silently dying via set -e + pipefail when XML parsing fails on a stale
+# response.
 echo ""
-echo "  Reading serial numbers..."
-FW1_SERIAL=$(get_serial "https://127.0.0.1:$FW1_PORT" "$FW1_KEY")
-FW2_SERIAL=$(get_serial "https://127.0.0.1:$FW2_PORT" "$FW2_KEY")
+echo "  Reading serial numbers (license activation must complete first)..."
+MAX_SERIAL_TRIES=10  # 10 x 30s = 5 min total
+FW1_SERIAL=""
+FW2_SERIAL=""
 
-echo "  FW1 serial: $FW1_SERIAL"
-echo "  FW2 serial: $FW2_SERIAL"
+is_real_serial() {
+  # Empty string and the literal 'unknown' are both "not yet ready".
+  [ -n "$1" ] && [ "$1" != "unknown" ]
+}
 
-if [ "$FW1_SERIAL" = "unknown" ] || [ "$FW2_SERIAL" = "unknown" ]; then
-  echo "[ERROR] Failed to read serial. Check if FW license is active."
-  echo "        SSH to FW: show system info | match serial"
-  exit 1
-fi
+for SERIAL_TRY in $(seq 1 "$MAX_SERIAL_TRIES"); do
+  if ! is_real_serial "$FW1_SERIAL"; then
+    FW1_SERIAL=$(get_serial "https://127.0.0.1:$FW1_PORT" "$FW1_KEY")
+    if is_real_serial "$FW1_SERIAL"; then
+      echo "  [OK] FW1 serial: $FW1_SERIAL (attempt $SERIAL_TRY)"
+    fi
+  fi
+  if ! is_real_serial "$FW2_SERIAL"; then
+    FW2_SERIAL=$(get_serial "https://127.0.0.1:$FW2_PORT" "$FW2_KEY")
+    if is_real_serial "$FW2_SERIAL"; then
+      echo "  [OK] FW2 serial: $FW2_SERIAL (attempt $SERIAL_TRY)"
+    fi
+  fi
+
+  if is_real_serial "$FW1_SERIAL" && is_real_serial "$FW2_SERIAL"; then
+    echo "  Both serials read successfully."
+    break
+  fi
+
+  if [ "$SERIAL_TRY" -ge "$MAX_SERIAL_TRIES" ]; then
+    echo ""
+    echo "[ERROR] Could not read FW serial numbers after $((MAX_SERIAL_TRIES * 30 / 60)) min."
+    echo "        FW1 serial: ${FW1_SERIAL:-<empty/unparseable>}"
+    echo "        FW2 serial: ${FW2_SERIAL:-<empty/unparseable>}"
+    echo ""
+    echo "        Most likely cause: license activation has not completed."
+    echo "        License activation can take 5-15 min after first boot and"
+    echo "        depends on outbound HTTPS to api.paloaltonetworks.com."
+    echo ""
+    echo "        Diagnose on the FW that's missing a serial (Bastion SSH):"
+    echo "          admin@fw1> show system info | match \"serial\\|model\""
+    echo "          admin@fw1> request license info"
+    echo "          admin@fw1> show jobs all"
+    echo "          admin@fw1> less mp-log auto-license.log"
+    echo "          admin@fw1> ping host api.paloaltonetworks.com"
+    echo ""
+    echo "        Raw API response (FW1) for diagnostic:"
+    curl -sk --max-time 15 \
+      "https://127.0.0.1:$FW1_PORT/api/?type=op&cmd=<show><system><info></info></system></show>&key=$FW1_KEY" 2>&1 \
+      | head -20
+    echo ""
+    echo "        If license is shown active but serial still empty, wait a"
+    echo "        few more minutes for licensing-server propagation, then re-run:"
+    echo "          bash scripts/register-fw-panorama.sh"
+    exit 1
+  fi
+
+  STATUS=""
+  is_real_serial "$FW1_SERIAL" || STATUS="FW1: no serial yet"
+  is_real_serial "$FW2_SERIAL" || STATUS="${STATUS:+$STATUS, }FW2: no serial yet"
+  echo "  [$SERIAL_TRY/$MAX_SERIAL_TRIES] $STATUS — retrying in 30s..."
+  sleep 30
+done
 
 # Auto-generate or retrieve auth-key on Panorama if missing
 if [ -z "$VM_AUTH_KEY" ]; then
