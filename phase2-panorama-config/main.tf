@@ -605,19 +605,36 @@ EOF
 }
 
 ###############################################################################
-# Step 4b: Configure Panorama Log Collector + Collector Group
+# Step 4b: Bind local Panorama LC to default Collector Group
 #
-# Full log collector setup per PANW docs:
-#   1. Get Panorama serial number
-#   2. Add Panorama as Managed Collector (local Log Collector)
-#   3. Enable logging disks
-#   4. Create Collector Group with Log Collector as member
-#   5. Enable log forwarding in Collector Group
-#   6. Commit + push Collector Group
+# Panorama in default Panorama Mode has logd running locally and is registered
+# as its own Managed Collector ("management-node: yes" in `show log-collector
+# all`). However, the default Collector Group `default` ships with EMPTY
+# members list — the local LC is NOT auto-bound to it. Logs from FWs cannot
+# be ingested until that binding exists, AND the Collector Group config must
+# be pushed to the LC daemon via a dedicated `commit-all log-collector-config`
+# (a regular Panorama commit alone leaves the LC in "Out of Sync — Ring
+# version mismatch" state).
+#
+# This is the equivalent of running on Panorama operational CLI:
+#   admin@panorama> configure
+#   admin@panorama# set log-collector-group default logfwd-setting collectors <PANORAMA_SERIAL>
+#   admin@panorama# commit
+#   admin@panorama> commit-all log-collector-config log-collector-group default
+#
+# IMPORTANT XML API trap (do NOT regress):
+#   - The CLI keyword is `log-collector-group`, NOT `collector-group`.
+#   - In XML, the xpath is /config/panorama/log-collector-group/...
+#     There is NO node /config/panorama/collector-group — using it returns
+#     "collector-group unexpected here" (this was the silent bug pre-2026-05).
+#
+# Side effect of completing this step: Panorama GUI Collector Groups → default
+# → Master Node Settings tab populates correctly. Without the binding the GUI
+# refuses to save anything in that tab (WebUI glitch — no useful error).
 #
 # Ref: https://docs.paloaltonetworks.com/panorama/11-1/panorama-admin/manage-log-collection
 ###############################################################################
-resource "null_resource" "panorama_configure_collector_group" {
+resource "null_resource" "panorama_bind_local_lc" {
   triggers = {
     collector_group = "default"
   }
@@ -628,7 +645,7 @@ resource "null_resource" "panorama_configure_collector_group" {
       PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       PAN_USER="${var.panorama_username}"
 
-      echo "=== [Step 4b] Configuring Panorama Log Collector + Collector Group ==="
+      echo "=== [Step 4b] Binding local Panorama LC to default Collector Group ==="
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
       API_KEY=$(curl -sk --max-time 30 \
@@ -645,7 +662,8 @@ print(root.findtext('.//key',''))
         echo "[ERROR] Failed to get API key"; exit 1
       fi
 
-      # 4b-1: Get Panorama serial number
+      # 4b-1: Get Panorama serial number (must come from device, not tfvars,
+      # so this stays correct even if user changed serial after deploy).
       echo "  Getting Panorama serial number..."
       PAN_SERIAL=$(curl -sk --max-time 30 \
         "$PANORAMA_URL/api/?type=op&cmd=<show><system><info></info></system></show>&key=$API_KEY" 2>/dev/null \
@@ -654,66 +672,181 @@ import sys, xml.etree.ElementTree as ET
 root = ET.fromstring(sys.stdin.read())
 print(root.findtext('.//serial','unknown'))
 " 2>/dev/null)
-      echo "  Panorama serial: $PAN_SERIAL"
 
       if [ "$PAN_SERIAL" = "unknown" ] || [ -z "$PAN_SERIAL" ]; then
-        echo "  [WARN] Could not determine Panorama serial. Skipping Log Collector setup."
-        echo "  Manual setup required: Panorama → Managed Collectors → Add"
+        echo "  [ERROR] Could not determine Panorama serial — Step 3 (license activation) probably did not run."
+        echo "          Manual recovery: Panorama CLI → set log-collector-group default logfwd-setting collectors <SERIAL> + commit + commit-all log-collector-config log-collector-group default"
+        exit 1
+      fi
+      echo "  Panorama serial: $PAN_SERIAL"
+
+      # 4b-2: Idempotency pre-check — is local LC already bound to default CG?
+      EXISTING=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=get" \
+        --data-urlencode "xpath=/config/panorama/log-collector-group/entry[@name='default']/logfwd-setting/collectors/entry[@name='$PAN_SERIAL']" \
+        --data-urlencode "key=$API_KEY" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    e = root.find(\".//entry[@name='$PAN_SERIAL']\")
+    print('FOUND' if e is not None else 'MISSING')
+except Exception:
+    print('MISSING')
+" 2>/dev/null)
+
+      if [ "$EXISTING" = "FOUND" ]; then
+        echo "  [OK] Local LC ($PAN_SERIAL) already bound to default CG — skipping set+commit"
+        echo "       (Verify In Sync with: show log-collector all)"
         exit 0
       fi
 
-      # 4b-2: Add Panorama as Managed Collector (local Log Collector)
-      echo "  Adding Panorama as Managed Collector ($PAN_SERIAL)..."
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+      # 4b-3: Bind local LC to default Collector Group.
+      # Correct xpath uses log-collector-group (NOT collector-group — see header).
+      echo "  Binding local LC to default CG..."
+      SET_RESP=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=set" \
-        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector/entry[@name='$PAN_SERIAL']" \
-        --data-urlencode "element=<deviceconfig><system><hostname>panorama-lc</hostname></system></deviceconfig>" \
-        --data-urlencode "key=$API_KEY" > /dev/null 2>&1
-      echo "  [OK] Managed Collector added"
+        --data-urlencode "xpath=/config/panorama/log-collector-group/entry[@name='default']/logfwd-setting/collectors" \
+        --data-urlencode "element=<entry name='$PAN_SERIAL'/>" \
+        --data-urlencode "key=$API_KEY")
+      SET_STATUS=$(echo "$SET_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    print(ET.fromstring(sys.stdin.read()).get('status',''))
+except Exception:
+    print('')
+" 2>/dev/null)
+      if [ "$SET_STATUS" != "success" ]; then
+        echo "  [ERROR] Set failed. Raw response:"
+        echo "$SET_RESP" | head -3
+        exit 1
+      fi
+      echo "  [OK] Set OK"
 
-      # 4b-3: Enable logging disks (virtual disk pair A)
-      echo "  Enabling logging disks..."
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=config" \
-        --data-urlencode "action=set" \
-        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector/entry[@name='$PAN_SERIAL']/deviceconfig/system/logger/disk-pair" \
-        --data-urlencode "element=<entry name='A'><disk1><path>/dev/sdb</path></disk1><disk2><path>/dev/sdc</path></disk2></entry>" \
-        --data-urlencode "key=$API_KEY" > /dev/null 2>&1 || true
-      echo "  [OK] Logging disks configured (if available)"
-
-      # 4b-4: Create Collector Group with Log Collector as member
-      echo "  Creating Collector Group 'default' with Log Collector..."
-      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=config" \
-        --data-urlencode "action=set" \
-        --data-urlencode "xpath=/config/panorama/collector-group/entry[@name='default']" \
-        --data-urlencode "element=<logfwd-setting><disabled>no</disabled></logfwd-setting><collector-member><entry name='$PAN_SERIAL'/></collector-member>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  [OK] Collector Group 'default' created with member $PAN_SERIAL"
-
-      # 4b-5: Commit to Panorama
-      echo "  Committing Log Collector + Collector Group config..."
-      curl -sk --max-time 90 "$PANORAMA_URL/api/" \
+      # 4b-4: Commit on Panorama side. Returns job ID — poll until FIN.
+      echo "  Committing Panorama config..."
+      COMMIT_JID=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
         --data-urlencode "type=commit" \
         --data-urlencode "cmd=<commit></commit>" \
-        --data-urlencode "key=$API_KEY" > /dev/null 2>&1
-      echo "  [OK] Commit submitted"
+        --data-urlencode "key=$API_KEY" \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    print(ET.fromstring(sys.stdin.read()).findtext('.//job',''))
+except Exception:
+    print('')
+" 2>/dev/null)
 
-      echo "  Waiting 30s for Panorama to stabilize..."
-      sleep 30
+      if [ -z "$COMMIT_JID" ]; then
+        echo "  [WARN] Commit returned no job ID — may already be committed (no changes). Continuing."
+      else
+        echo "  Commit job ID: $COMMIT_JID — polling for completion..."
+        for I in $(seq 1 30); do  # 30 x 5s = 150s cap
+          JOB_STATE=$(curl -sk --max-time 15 \
+            "$PANORAMA_URL/api/?type=op&cmd=<show><jobs><id>$COMMIT_JID</id></jobs></show>&key=$API_KEY" \
+            | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    j = ET.fromstring(sys.stdin.read()).find('.//job')
+    print((j.findtext('status','') or '').upper() + '|' + (j.findtext('result','') or '').upper())
+except Exception:
+    print('|')
+" 2>/dev/null)
+          STATUS=$(echo "$JOB_STATE" | cut -d'|' -f1)
+          RESULT=$(echo "$JOB_STATE" | cut -d'|' -f2)
+          if [ "$STATUS" = "FIN" ]; then
+            if [ "$RESULT" = "OK" ]; then
+              echo "  [OK] Panorama commit FIN/OK (after $((I*5))s)"
+              break
+            else
+              echo "  [ERROR] Panorama commit FIN/$RESULT — see GUI Tasks for details"
+              exit 1
+            fi
+          fi
+          sleep 5
+        done
+      fi
 
-      # 4b-6: Commit & push Collector Group
-      echo "  Pushing Collector Group to Log Collector..."
-      curl -sk --max-time 120 "$PANORAMA_URL/api/" \
+      # 4b-5: commit-all log-collector-config — pushes CG config to LC daemon.
+      # WITHOUT this step the LC stays in "Out of Sync — Ring version mismatch"
+      # and rejects/buffers incoming logs from FWs. Confirmed empirically.
+      echo "  Pushing Collector Group config to LC (commit-all log-collector-config)..."
+      CA_JID=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
         --data-urlencode "type=commit" \
         --data-urlencode "action=all" \
-        --data-urlencode "cmd=<commit-all><log-collector-config><collector-group>default</collector-group></log-collector-config></commit-all>" \
-        --data-urlencode "key=$API_KEY" > /dev/null 2>&1 || true
-      echo "  [OK] Collector Group push submitted"
+        --data-urlencode "cmd=<commit-all><log-collector-config><log-collector-group>default</log-collector-group></log-collector-config></commit-all>" \
+        --data-urlencode "key=$API_KEY" \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    print(ET.fromstring(sys.stdin.read()).findtext('.//job',''))
+except Exception:
+    print('')
+" 2>/dev/null)
 
-      echo "  Waiting 30s for Collector Group push to complete..."
-      sleep 30
+      if [ -z "$CA_JID" ]; then
+        echo "  [WARN] commit-all log-collector-config returned no job ID. Continuing — Step 4c will catch any background jobs."
+      else
+        echo "  commit-all job ID: $CA_JID — polling for completion..."
+        for I in $(seq 1 36); do  # 36 x 5s = 180s cap (CG push can be slower)
+          JOB_STATE=$(curl -sk --max-time 15 \
+            "$PANORAMA_URL/api/?type=op&cmd=<show><jobs><id>$CA_JID</id></jobs></show>&key=$API_KEY" \
+            | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    j = ET.fromstring(sys.stdin.read()).find('.//job')
+    print((j.findtext('status','') or '').upper() + '|' + (j.findtext('result','') or '').upper())
+except Exception:
+    print('|')
+" 2>/dev/null)
+          STATUS=$(echo "$JOB_STATE" | cut -d'|' -f1)
+          RESULT=$(echo "$JOB_STATE" | cut -d'|' -f2)
+          if [ "$STATUS" = "FIN" ]; then
+            if [ "$RESULT" = "OK" ]; then
+              echo "  [OK] commit-all log-collector-config FIN/OK (after $((I*5))s)"
+              break
+            else
+              echo "  [ERROR] commit-all log-collector-config FIN/$RESULT — check Panorama GUI Tasks for details"
+              exit 1
+            fi
+          fi
+          sleep 5
+        done
+      fi
+
+      # 4b-6: Verify Config Status flipped to In Sync (Ring version match).
+      echo "  Verifying log-collector Config Status..."
+      for I in $(seq 1 12); do  # 12 x 5s = 60s cap
+        SYNC_STATE=$(curl -sk --max-time 15 \
+          "$PANORAMA_URL/api/?type=op&cmd=<show><log-collector><all></all></log-collector></show>&key=$API_KEY" \
+          | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    for lc in root.findall('.//entry'):
+        if (lc.findtext('serial','') or '') == '$PAN_SERIAL':
+            print(lc.findtext('config-status','') or 'unknown')
+            break
+    else:
+        print('lc-not-found')
+except Exception:
+    print('parse-error')
+" 2>/dev/null)
+
+        case "$SYNC_STATE" in
+          *In*Sync*|*"in sync"*|*"In Sync"*)
+            echo "  [OK] Config Status: $SYNC_STATE (logs will now flow)"
+            exit 0
+            ;;
+        esac
+        echo "  [$I/12] Config Status: $SYNC_STATE — waiting 5s..."
+        sleep 5
+      done
+      echo "  [WARN] Config Status did not reach In Sync within 60s. Last seen: $SYNC_STATE"
+      echo "         Verify manually: admin@panorama> show log-collector all"
+      echo "         If Out of Sync persists, re-run: commit-all log-collector-config log-collector-group default"
     SCRIPT
   }
 
@@ -735,7 +868,7 @@ print(root.findtext('.//serial','unknown'))
 ###############################################################################
 resource "null_resource" "panorama_wait_jobs_idle" {
   triggers = {
-    after_collector_group = null_resource.panorama_configure_collector_group.id
+    after_bind_local_lc = null_resource.panorama_bind_local_lc.id
   }
 
   provisioner "local-exec" {
@@ -811,7 +944,7 @@ except Exception:
     SCRIPT
   }
 
-  depends_on = [null_resource.panorama_configure_collector_group]
+  depends_on = [null_resource.panorama_bind_local_lc]
 }
 
 ###############################################################################
@@ -841,7 +974,7 @@ module "panorama_config" {
   depends_on = [
     null_resource.panorama_activate_license,
     null_resource.panorama_set_hostname,
-    null_resource.panorama_configure_collector_group,
+    null_resource.panorama_bind_local_lc,
     null_resource.panorama_wait_jobs_idle,
   ]
 }

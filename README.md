@@ -156,7 +156,11 @@ Phase 2a automatically:
 3. ✅ Sets serial number + commit + `request license fetch`
 4. ✅ **Generates vm-auth-key** → saved to `panorama_vm_auth_key.txt` and auto-injected
    into root via `panorama_vm_auth_key.auto.tfvars`
-4b. ✅ **Configures Panorama as Log Collector** (Collector Group via XML API)
+4b. ✅ **Binds local Panorama LC to default Collector Group** via XML API
+   (`set log-collector-group default logfwd-setting collectors <SERIAL>`),
+   then runs the dedicated `commit-all log-collector-config log-collector-group default`
+   push. Without this two-step sequence the LC stays "Out of Sync — Ring
+   version mismatch" and incoming logs from FWs are rejected.
 5. ✅ Creates **Template + Template Stack + Device Group** with the full data-plane
    config: ethernet interfaces (DHCP), security zones, **multi-VR architecture**
    (VR-External + VR-Internal for Azure LB sandwich), static routes, **Log Forwarding
@@ -209,16 +213,19 @@ This script automatically:
 1. Opens Bastion tunnels to FW1, FW2, and Panorama
 2. Reads FW serial numbers (dynamically generated during license activation)
 3. Registers FW serials on Panorama (mgt-config + Device Group + Template Stack)
-4. Adds FWs to the Collector Group's Device Log Forwarding preference list
-5. Commits on Panorama
-6. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min)
-7. **Push Template Stack to devices** — interfaces, zones, virtual routers, routes
-8. **Push Device Group to devices** — security policies, NAT rules
-9. Push Collector Group (so logs from both FWs land on the Panorama log collector)
+4. Commits on Panorama
+5. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min)
+6. **Push Template Stack to devices** — interfaces, zones, virtual routers, routes
+7. **Push Device Group to devices** — security policies, NAT rules
 
 > **Without this step, firewalls will NOT appear as managed devices in Panorama**
-> and the Template Stack / Device Group / Collector Group won't be pushed,
-> so the FWs sit there licensed but unconfigured.
+> and the Template Stack / Device Group won't be pushed, so the FWs sit
+> there licensed but unconfigured.
+>
+> Note: the Collector Group push (`commit-all log-collector-config`) is
+> handled earlier, in Phase 2a Step 4b, against the local Panorama LC. FWs
+> then forward logs to the Collector Group automatically — no per-FW
+> Device Log Forwarding entry is required for this single-LC topology.
 
 ### Phase 3: Domain Controller (optional)
 
@@ -291,7 +298,7 @@ future. It carries no role assignments today.
 | Phase 2 Step 2 | XML API (config mode) | Sets hostname + timezone + NTP + EU telemetry + commit |
 | Phase 2 Step 3 | XML API (operational) | Sets serial number + commit + `request license fetch` |
 | Phase 2 Step 4 | XML API (operational) | Generates vm-auth-key (saved to file + auto.tfvars) |
-| Phase 2 Step 4b | XML API (config mode) | Configures Panorama as Managed Collector + Collector Group |
+| Phase 2 Step 4b | XML API (config mode) | Binds local Panorama LC to default Collector Group + dedicated `commit-all log-collector-config` push (otherwise LC = Out of Sync, logs rejected) |
 | Phase 2 Step 5 | panos provider | Template + Template Stack + Device Group + interfaces + zones + multi-VR + routes + NAT + App-ID-aware security rules + Log Forwarding Profile |
 | Phase 2 Step 5c | XML API (config mode) | **Zone Protection Profiles** (`Azure-Internet-Protection` on untrust, `Azure-Internal-Protection` on trust) |
 | Phase 2 Step 5d | XML API (config mode) | **Admin hardening**: password complexity, idle timeout, login banner |
@@ -464,7 +471,7 @@ This is what guarantees they always run identical config:
 |---|---|---|
 | **Template Stack** (`Transit-VNet-Stack`) | Network config — ethernet interfaces (eth1/1 untrust, eth1/2 trust), security zones (untrust, trust), virtual routers (multi-VR for Azure LB sandwich), static routes, interface management profile (HTTPS for LB health probes), system settings (timezone, NTP, telemetry), administrative-access hardening (password policy, idle timeout), log settings | A `commit-all template-stack` job (Phase 2b Step 8/9 of `register-fw-panorama.sh`) sends the SAME compiled template to every FW listed under the Stack's `devices` block |
 | **Device Group** (`Transit-VNet-DG`) | Security policy rules (Allow-Inbound-Web, Allow-East-West-*, Allow-Outbound-Internet with App-ID, Allow-Azure-LB-Probes, Deny-All), NAT rules (DNAT inbound, SNAT outbound), Log Forwarding Profile, Zone Protection Profile attachments | A `commit-all shared-policy device-group` job (Phase 2b Step 9/9) pushes the SAME policy + NAT set to every FW in the DG |
-| **Collector Group** (`default`) | Log Forwarding routing — every FW sends traffic/threat/url logs to the same Panorama log collector | Pushed in Phase 2b Step 9.5/9 |
+| **Collector Group** (`default`) | Log forwarding routing — every FW sends logs (traffic/threat/url + system/config/userid/hipmatch/iptag/globalprotect) to the local Panorama Log Collector. Local LC binding + Ring version sync handled by Phase 2a Step 4b (`commit-all log-collector-config`). | Pushed in Phase 2a Step 4b |
 
 If you change anything in `modules/panorama_config/main.tf`, the workflow is:
 

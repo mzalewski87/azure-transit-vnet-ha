@@ -744,16 +744,20 @@ resource "panos_panorama_security_rule_group" "transit" {
 }
 
 ###############################################################################
-# FW Template: Timezone, NTP, Telemetry (via XML API)
+# FW Template: Timezone, NTP, Telemetry, System-level Log Forwarding (XML API)
 #
-# The panos provider has no native resource for timezone/NTP/telemetry in
-# Panorama Templates. We set these via XML API config mode calls targeting
-# the Template's deviceconfig/system path.
+# The panos provider has no native resource for timezone/NTP/telemetry or
+# system-level Device > Log Settings in Panorama Templates. We set these via
+# XML API config mode calls.
 #
 # Settings:
 #   - Timezone: Europe/Warsaw (CEST/CET)
 #   - NTP: 0.europe.pool.ntp.org, 1.europe.pool.ntp.org
 #   - Telemetry: EU statistics service enabled
+#   - System-level log forwarding to Panorama for log types that are NOT
+#     policy-driven: system, config, userid, hipmatch, iptag, globalprotect.
+#     Traffic/threat/url logs are handled separately by the per-rule Log
+#     Forwarding Profile (panos_panorama_log_forwarding_profile.default).
 ###############################################################################
 
 resource "null_resource" "fw_template_system_settings" {
@@ -815,21 +819,42 @@ print(root.findtext('.//key',''))
         --data-urlencode "key=$API_KEY" > /dev/null
       echo "  Telemetry: EU statistics service enabled"
 
-      # System-level log settings (Device > Log Settings)
-      # Forward system, config, user-id, hip-match logs to Panorama
-      # These are separate from policy-based logs (handled by Log Forwarding Profile)
-      LOG_XPATH="$TPL_XPATH/../../../vsys/entry[@name='vsys1']/log-settings"
+      # System-level log settings (Templates > Device > Log Settings in GUI)
+      # Forward system, config, user-id, hip-match, ip-tag, GlobalProtect logs
+      # to Panorama. These are NOT policy-driven and need a match-list at
+      # /config/shared/log-settings/<TYPE> in the Template content. This is
+      # different from per-rule Log Forwarding Profile (handled by panos
+      # provider above) which only covers traffic/threat/url log types.
+      #
+      # Correct xpath: .../template/entry[@name='X']/config/shared/log-settings/<TYPE>/match-list/entry[@name='send-to-panorama']
+      # NOT          : .../deviceconfig/setting/logging/<TYPE>  (that node is for log-quotas, not forwarding)
+      LOG_BASE="/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/shared/log-settings"
 
-      for LOG_TYPE in system config userid hipmatch; do
-        echo "  Log Settings: $LOG_TYPE → Panorama"
-        curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+      for LOG_TYPE in system config userid hipmatch iptag globalprotect; do
+        HTTP_CODE=$(curl -sk --max-time 30 -o /tmp/log_setting_resp.xml -w "%%{http_code}" "$PANORAMA_URL/api/" \
           --data-urlencode "type=config" \
           --data-urlencode "action=set" \
-          --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/devices/entry[@name='localhost.localdomain']/deviceconfig/setting/logging/$LOG_TYPE" \
-          --data-urlencode "element=<match-list><entry name='send-to-panorama'><send-to-panorama>yes</send-to-panorama><filter>All Logs</filter></entry></match-list>" \
-          --data-urlencode "key=$API_KEY" > /dev/null 2>&1 || true
+          --data-urlencode "xpath=$LOG_BASE/$LOG_TYPE/match-list/entry[@name='send-to-panorama']" \
+          --data-urlencode "element=<send-to-panorama>yes</send-to-panorama><filter>All Logs</filter>" \
+          --data-urlencode "key=$API_KEY")
+        STATUS=$(python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    print(ET.parse('/tmp/log_setting_resp.xml').getroot().get('status',''))
+except Exception:
+    print('')
+" 2>/dev/null)
+        if [ "$HTTP_CODE" = "200" ] && [ "$STATUS" = "success" ]; then
+          echo "  Log Settings: $LOG_TYPE → Panorama [OK]"
+        else
+          echo "  Log Settings: $LOG_TYPE → Panorama [FAIL] (HTTP $HTTP_CODE, status $STATUS)"
+          cat /tmp/log_setting_resp.xml 2>/dev/null | head -3
+          rm -f /tmp/log_setting_resp.xml
+          exit 1
+        fi
       done
-      echo "  [OK] System-level log forwarding configured (system, config, userid, hipmatch)"
+      rm -f /tmp/log_setting_resp.xml
+      echo "  [OK] System-level log forwarding configured (system, config, userid, hipmatch, iptag, globalprotect)"
 
       echo "  [OK] FW Template system settings applied (will take effect after commit + push)"
     SCRIPT
@@ -945,36 +970,39 @@ print(root.findtext('.//key',''))
 ###############################################################################
 
 ###############################################################################
-# Log Collection
+# Log Collection — overview of the three pieces that make logs flow
 #
 # Panorama runs in default Panorama Mode with a 2 TB log disk attached
-# (modules/panorama). This is sufficient for the standalone Panorama use
-# case in this project: Panorama-managed firewalls automatically push logs
-# to the panorama-server IP (set in their bootstrap init-cfg) over PAN-OS
-# port 3978/TCP, and Panorama natively accepts those logs into its local
-# storage.
+# (modules/panorama). It is registered as its own local Managed Collector
+# (`management-node: yes` in `show log-collector all`). FWs reach Panorama
+# at the panorama-server IP set in their bootstrap init-cfg over PAN-OS
+# port 3978/TCP. There is no separate M-series Log Collector — Panorama IS
+# the LC.
 #
-# We do NOT register Panorama as a "Managed Collector" with an explicit
-# Collector Group — that pattern is required only for advanced setups:
-#   - Dedicated M-series Log Collectors (separate appliance)
-#   - Multiple Panoramas in HA with shared collectors
-#   - Log distribution across collectors based on log type or device group
-# Earlier attempts to do that registration via XML API consistently failed
-# (`show log-collector all` returned "No collectors found" + the
-# `commit-all log-collector-config` push reported
-# "collector-group unexpected here"), and even if it had worked it would
-# have added complexity for zero benefit in a single-Panorama deployment.
+# Three load-bearing configurations are required for end-to-end log flow:
 #
-# What IS configured (and what makes logs flow):
-#   1. Per-rule Log Forwarding Profile in the Device Group with
-#      `send_to_panorama = true` for traffic/threat/url types
-#      (see panos_panorama_log_forwarding_profile.default above).
-#   2. System-level log forwarding (system, config, userid, hipmatch)
-#      configured via XML API in fw_template_system_settings above.
-#   3. Each Panorama-managed FW already knows the Panorama IP from its
-#      init-cfg (panorama-server=10.255.0.4) — no additional config needed.
+#  1. Local LC bound to default Collector Group (Phase 2a Step 4b).
+#     File: phase2-panorama-config/main.tf, null_resource.panorama_bind_local_lc
+#     Without this binding, FWs send logs but the LC has no Collector Group
+#     membership for the local Panorama and the GUI Master Node Settings tab
+#     is empty (cannot save). The Phase 2a step also runs the dedicated
+#     `commit-all log-collector-config log-collector-group default` push —
+#     without it, LC stays in "Out of Sync — Ring version mismatch" and
+#     incoming logs are rejected.
+#
+#  2. Per-rule Log Forwarding Profile in Device Group (this file).
+#     Resource: panos_panorama_log_forwarding_profile.default
+#     Every security rule references it via log_setting=default + log_end=true.
+#     This handles policy-driven log types only: traffic, threat, url.
+#
+#  3. System-level log forwarding in Template (this file, below).
+#     Resource: null_resource.fw_template_system_settings
+#     Forwards non-policy log types: system, config, userid, hipmatch, iptag,
+#     globalprotect. These DO NOT come from rules — they need a match-list
+#     under /config/shared/log-settings/<type> in the Template content.
 #
 # Verify on Panorama after some traffic has flowed:
+#   admin@panorama> show log-collector all                       # Config Status: In Sync
+#   admin@panorama> show logging-status device <FW_SERIAL>       # Last Log Rcvd ≠ N/A
 #   admin@panorama> debug log-collector log-collection-stats show incoming-logs
-#   admin@panorama> show logging-status device <FW_SERIAL>
 ###############################################################################
