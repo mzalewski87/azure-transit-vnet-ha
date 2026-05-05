@@ -730,6 +730,77 @@ admin@panorama> show running security-policy | match log-setting
 # Every Allow-* rule should reference: log-setting "default"
 ```
 
+### Log Collector: "logs not visible in Panorama GUI" (but they ARE flowing)
+
+After a fresh deploy you may open **Panorama → Monitor → Traffic** and see
+no entries, then jump to **Panorama → Collector Groups → default → Device
+Log Forwarding** tab and find it empty, and conclude that logs are not
+being collected. Verify before that conclusion — usually they ARE:
+
+```bash
+# Definitive proof, on Panorama (Bastion SSH):
+admin@panorama> show logging-status device <FW_SERIAL>
+# Look at the cms0/logrcvr connection block and check the "Last Log Rcvd"
+# column for `traffic`, `system`, `config`. If timestamps are recent
+# (minutes ago, not N/A), logs ARE arriving and being persisted.
+```
+
+If `Last Log Rcvd` is recent but GUI shows no entries, the GUI is the
+problem, not the LC:
+- **Time range filter:** GUI defaults to "Last 15 minutes" or similar — set
+  it explicitly to "Last 1 Hour" or longer, especially right after deploy.
+- **Filter expression:** the "Filter" textbox at top of Monitor → Traffic
+  must match the traffic you generated. Try clearing it entirely first.
+- **Device filter:** "Devices" dropdown at top — make sure your FWs are
+  selected (sometimes defaults to none after fresh DG push).
+
+### Log Collector: Device Log Forwarding tab is empty — is that a problem?
+
+For **single-LC topology** (this project: one Panorama in default Panorama
+Mode, no separate M-series LC, no Panorama HA peer) — **no, it's not a
+blocker**. Confirmed by panorama-admin.pdf pages around line 19082:
+"*If the local Log Collector is configured as a managed collector when
+Panorama is in Panorama mode, incoming logs are received...*" The DLF tab
+exists for MULTI-LC scenarios where you want to map "FW X forwards to LC
+Y" with priority/redundancy. For single-LC there is nothing to prioritise.
+
+If you want to populate the DLF tab anyway as best practice, do it via
+GUI: **Panorama → Collector Groups → edit `default` → Device Log
+Forwarding tab → Devices section: Modify, add both FW serials → Collectors
+section: Add the local Panorama LC → OK → Commit and Push to Collector
+Groups**. Empirical attempt to automate this via the XML API (PAN-OS 12.1.5)
+failed — the underlying XML element name PAN-OS uses for this tab is not
+discoverable via the standard schema probes (28 combinations of parent
+xpath + child element name all returned `error code 13: Could not find
+schema node`). Manual GUI configuration is the documented path.
+
+### Log Collector: "No disks enabled on log collector" warning at commit
+
+Visible during `commit` on Panorama after the local LC binding (Phase 2a
+Step 4b) has run for the first time. The Managed Collector entry is
+created with an empty `<deviceconfig/>` block — disk-pair declaration is
+NOT included in the automation because the XML schema for
+`/disk-pair/entry[@name='X']/disk1/path` differs across PAN-OS versions
+and Azure VM disk topologies (single attached managed disk, no RAID hardware).
+
+Despite the warning, **logs are persisted correctly**. The logd daemon
+auto-detects the attached log volume (mounted at `/opt/panlogs/ld1` for
+the standard 2 TB Azure managed disk attached to the Panorama VM in
+`modules/panorama/main.tf`) and writes to it regardless of whether the
+config-side declaration exists. Verify physical state:
+
+```bash
+admin@panorama> show system disk-space
+# Expect: /dev/sdc1 ~2T, mounted on /opt/panlogs/ld1, with growing "Used"
+# as logs accumulate.
+```
+
+If you want to suppress the warning (cosmetic), declare the disk-pair via
+GUI: **Panorama → Managed Collectors → vm-panorama → Disks tab → Add Pair
+→ pick the available virtual disk → OK → Commit**. Same caveat as DLF —
+the underlying XML schema for this is non-trivial to drive via API across
+PAN-OS versions, so we leave it manual.
+
 ### Log Collector: cheat sheet (verification commands)
 
 ```bash
