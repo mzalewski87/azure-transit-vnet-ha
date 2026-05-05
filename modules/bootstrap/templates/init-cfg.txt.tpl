@@ -13,6 +13,10 @@ dgname=${panorama_device_group}
 %{ if authcodes != "" ~}
 authcodes=${authcodes}
 %{ endif ~}
+%{ if vm_series_auto_registration_pin_id != "" ~}
+vm-series-auto-registration-pin-id=${vm_series_auto_registration_pin_id}
+vm-series-auto-registration-pin-value=${vm_series_auto_registration_pin_value}
+%{ endif ~}
 dns-primary=168.63.129.16
 dns-secondary=8.8.8.8
 ntp-server-1=0.europe.pool.ntp.org

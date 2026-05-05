@@ -143,6 +143,9 @@ module "bootstrap" {
   panorama_vm_auth_key    = var.panorama_vm_auth_key
   fw_auth_code            = var.fw_auth_code
 
+  vm_series_auto_registration_pin_id    = var.fw_registration_pin_id
+  vm_series_auto_registration_pin_value = var.fw_registration_pin_value
+
   tags = var.tags
 }
 

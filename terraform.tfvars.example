@@ -83,14 +83,29 @@ panorama_vm_auth_key = ""   # Format: 2:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 fw_auth_code = ""   # Format: XXXXXXXX (8 alphanumeric chars)
 
 #------------------------------------------------------------------------------
-# Device Certificate OTPs
-# CSP Portal → Assets → Device Certificates → Generate OTP
-# Each FW needs its OWN OTP (per serial number), 60-min lifetime, single-use.
-# Empty = skip the fetch (FW works without a device cert in lab).
-# Used by scripts/register-fw-panorama.sh in step [5b/6].
+# VM-Series Auto-Registration PIN (for FW device certificates)
+#
+# CSP Portal → Assets → Device Certificates → Generate Registration PIN
+# Save the PIN ID and PIN Value pair. ONE pair works for BOTH FWs (PINs are
+# per-CSP-account, NOT per-serial — unlike OTPs, which require a known
+# serial up-front, which VM-Series BYOL FWs don't have until they boot).
+#
+# Used at FW first boot only. The bootstrap module emits these as
+# vm-series-auto-registration-pin-id= and vm-series-auto-registration-pin-value=
+# in init-cfg.txt. The FW then auto-registers and fetches its device cert
+# during license activation — no post-boot fetch step needed.
+#
+# Empty = skip auto-fetch (FW boots without device cert; fine for lab).
+# Choose the shortest expiration in CSP Portal that fits your deploy window.
+#
+# Note: Panorama uses a DIFFERENT mechanism (per-serial OTP) because its
+# serial IS known up-front (panorama_serial_number var). See
+# phase2-panorama-config/terraform.tfvars.example for panorama_device_otp.
+#
+# Ref: VM-Series Deployment Guide v11.1, pages 178-181.
 #------------------------------------------------------------------------------
-fw1_device_otp = ""   # OTP for FW1 from CSP Portal (against FW1 serial)
-fw2_device_otp = ""   # OTP for FW2 from CSP Portal (against FW2 serial)
+fw_registration_pin_id    = ""   # PIN ID from CSP Portal Generate Registration PIN
+fw_registration_pin_value = ""   # Matching PIN Value
 
 #------------------------------------------------------------------------------
 # Windows Domain Controller

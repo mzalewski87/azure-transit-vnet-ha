@@ -56,6 +56,36 @@ variable "fw_auth_code" {
   sensitive   = true
 }
 
+variable "vm_series_auto_registration_pin_id" {
+  description = <<-EOT
+    VM-Series Auto-Registration PIN ID from CSP Portal (Assets -> Device
+    Certificates -> Generate Registration PIN). Together with vm_series_auto_
+    registration_pin_value, this becomes vm-series-auto-registration-pin-id=
+    in init-cfg.txt and lets the FW auto-register with PANW licensing service
+    AND fetch its device certificate on FIRST BOOT — no post-boot API call
+    needed (which would not work anyway because the FW serial is unknown
+    pre-deploy, so per-serial OTPs cannot be pre-generated).
+    The same PIN is shared across all FWs in your CSP account; PINs are NOT
+    serial-specific (unlike OTPs). Empty = skip device cert auto-fetch (lab
+    deployments without Strata cloud features).
+    Ref: VM-Series Deployment Guide v11.1, pages 178-181.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "vm_series_auto_registration_pin_value" {
+  description = <<-EOT
+    Companion to vm_series_auto_registration_pin_id. PIN value from same CSP
+    Portal generation flow. Both must be non-empty for the init-cfg lines to
+    be emitted (template has a guard).
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "tags" {
   description = "Tags to apply to all resources"
   type        = map(string)

@@ -383,101 +383,29 @@ register_fw "$FW1_SERIAL" "FW1"
 register_fw "$FW2_SERIAL" "FW2"
 
 ###############################################################################
-# Fetch device certificates for FW1 and FW2 (if OTPs provided)
+# FW device certificates — handled at FW first boot, NOT here.
 #
-# OTPs come from CSP Portal -> Assets -> Device Certificates -> Generate OTP,
-# generated separately for each FW serial number. 60-min lifetime, single-use.
-# Read from root terraform.tfvars (fw1_device_otp / fw2_device_otp). If empty
-# or missing, the fetch is skipped silently — FW operates without a device
-# certificate (fine for lab; missing some Strata cloud features).
+# Earlier versions of this script tried to fetch FW device certificates
+# post-boot via per-serial OTPs read from root tfvars (fw1_device_otp /
+# fw2_device_otp). That approach was structurally broken: OTPs are generated
+# in CSP Portal AGAINST a known serial, but VM-Series BYOL serials are
+# assigned by PAN-OS at first boot during license activation — they are not
+# known pre-deploy, so per-serial OTPs cannot be pre-generated.
 #
-# Each FW is targeted via its OWN Bastion tunnel (not via Panorama target=,
-# because PAN-OS API target= does not proxy type=op for device-cert fetch).
+# Correct approach (per VM-Series Deployment Guide v11.1, pages 178-181):
+# use the VM-Series Auto-Registration PIN flow. The user generates ONE PIN
+# pair (PIN ID + PIN Value) in CSP Portal, sets it via root variables
+# fw_registration_pin_id + fw_registration_pin_value (terraform.tfvars), and
+# the bootstrap module emits vm-series-auto-registration-pin-id and
+# vm-series-auto-registration-pin-value into init-cfg.txt. The FW reads
+# these from IMDS at first boot and auto-registers + auto-fetches its
+# device certificate during license activation. No post-boot fetch step
+# from this script is possible or needed.
+#
+# Panorama device certificate is different — Panorama serial IS known
+# pre-deploy (panorama_serial_number tfvar), so the per-serial OTP flow
+# works there. See phase2-panorama-config/ for the Panorama OTP fetch.
 ###############################################################################
-fetch_fw_device_certificate() {
-  local fw_url="$1" fw_key="$2" otp="$3" label="$4"
-
-  if [ -z "$otp" ]; then
-    echo "  $label  device-cert OTP not provided in terraform.tfvars — skipping"
-    return 0
-  fi
-
-  # Skip if cert already valid (avoid burning the OTP)
-  CERT_STATUS=$(curl -sk --max-time 15 \
-    "$fw_url/api/?type=op&cmd=<show><device-cert><info></info></device-cert></show>&key=$fw_key" 2>/dev/null \
-    | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    for tag in ('current-status','status','validity'):
-        v = root.find('.//' + tag)
-        if v is not None and v.text:
-            print(v.text.strip()); sys.exit(0)
-    print('Unknown')
-except: print('parse-error')
-" 2>/dev/null)
-
-  echo "  $label  current device-cert status: $CERT_STATUS"
-  if echo "$CERT_STATUS" | grep -qi "valid"; then
-    echo "  $label  [OK] device certificate already valid — skipping fetch (OTP not consumed)"
-    return 0
-  fi
-
-  echo "  $label  fetching device certificate via OTP (${otp:0:6}...)"
-  RESP=$(curl -sk --max-time 60 "$fw_url/api/" \
-    --data-urlencode "type=op" \
-    --data-urlencode "cmd=<request><device-certificate><fetch><otp>$otp</otp></fetch></device-certificate></request>" \
-    --data-urlencode "key=$fw_key" 2>/dev/null)
-
-  STATUS=$(echo "$RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    print(ET.fromstring(sys.stdin.read()).get('status',''))
-except: print('parse-error')
-" 2>/dev/null)
-
-  if [ "$STATUS" = "success" ]; then
-    echo "  $label  [OK] device certificate fetch submitted"
-    sleep 10
-    FINAL=$(curl -sk --max-time 15 \
-      "$fw_url/api/?type=op&cmd=<show><device-cert><info></info></device-cert></show>&key=$fw_key" 2>/dev/null \
-      | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    for tag in ('current-status','status','validity'):
-        v = root.find('.//' + tag)
-        if v is not None and v.text:
-            print(v.text.strip()); sys.exit(0)
-    print('Unknown')
-except: print('parse-error')
-" 2>/dev/null)
-    echo "  $label  verification: device-cert status = $FINAL"
-  else
-    MSG=$(echo "$RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    print(root.findtext('.//msg','') or root.findtext('.//line','') or 'unknown')
-except: print('unparseable')
-" 2>/dev/null)
-    echo "  $label  [WARN] device cert fetch failed: $MSG"
-    echo "         (OTPs are 60-min single-use. Regenerate in CSP Portal if expired/used.)"
-  fi
-}
-
-# Read FW OTPs from root terraform.tfvars (NOT phase2 tfvars — these are root vars).
-FW1_OTP=""
-FW2_OTP=""
-if [ -f "$ROOT_DIR/terraform.tfvars" ]; then
-  FW1_OTP=$(grep -E '^\s*fw1_device_otp\s*=' "$ROOT_DIR/terraform.tfvars" | head -1 | sed -E 's/.*=[[:space:]]*"([^"]*)".*/\1/')
-  FW2_OTP=$(grep -E '^\s*fw2_device_otp\s*=' "$ROOT_DIR/terraform.tfvars" | head -1 | sed -E 's/.*=[[:space:]]*"([^"]*)".*/\1/')
-fi
-
-echo ""
-echo "[5b/6] Fetching FW device certificates (if OTPs provided)..."
-fetch_fw_device_certificate "https://127.0.0.1:$FW1_PORT" "$FW1_KEY" "$FW1_OTP" "FW1"
-fetch_fw_device_certificate "https://127.0.0.1:$FW2_PORT" "$FW2_KEY" "$FW2_OTP" "FW2"
 
 # Commit on Panorama
 echo ""

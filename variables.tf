@@ -219,30 +219,57 @@ variable "fw_auth_code" {
 }
 
 #------------------------------------------------------------------------------
-# Device Certificate OTPs (CSP Portal -> Assets -> Device Certificates)
+# VM-Series Auto-Registration PIN (CSP Portal -> Assets -> Device Certificates
+# -> Generate Registration PIN)
 #
-# Each device (Panorama, FW1, FW2) needs its own OTP. Generate per-serial
-# at my.paloaltonetworks.com. OTP is valid for 60 minutes and is single-use.
-# Leave empty to skip the device-certificate fetch step (device will run
-# without one — fine for lab, missing some Strata cloud features).
+# This is the device-certificate flow for the FIREWALLS.
+#
+# Why PIN instead of OTP for FWs:
+#   - OTPs are generated against a SPECIFIC serial number. VM-Series BYOL
+#     serials are assigned by PAN-OS at first boot during license activation
+#     — they are NOT known pre-deploy, so per-serial OTPs cannot be
+#     pre-generated.
+#   - Registration PIN is per-CSP-account, NOT per-serial. The same PIN ID
+#     + Value pair works for any FW launched against your account, including
+#     both FWs in this HA pair.
+#   - The PIN is consumed at FW BOOT (not via post-boot API call). It is
+#     written into the init-cfg.txt as vm-series-auto-registration-pin-id
+#     and vm-series-auto-registration-pin-value, which the FW reads from
+#     IMDS during bootstrap and uses to register itself + fetch its device
+#     certificate automatically. No separate post-boot fetch step is
+#     possible or needed.
+#
+# Panorama uses a different mechanism (per-serial OTP) — see
+# phase2-panorama-config/variables.tf for panorama_device_otp. Panorama's
+# serial IS known pre-deploy because it is supplied via panorama_serial_number.
+#
+# PIN expires after the period chosen in CSP Portal (typically 30/60/90 days).
+# For one-shot deployments (this lab), pick the shortest period that fits
+# your deploy window.
+#
+# Empty = skip the device-cert auto-fetch lines in init-cfg (FW boots without
+# a device certificate — fine for lab, missing some Strata cloud features).
+#
+# Ref: VM-Series Deployment Guide v11.1, pages 178-181 ("License the VM-Series
+# Firewall — Retrieve Licenses Automatically at Launch").
 #------------------------------------------------------------------------------
-variable "fw1_device_otp" {
+variable "fw_registration_pin_id" {
   description = <<-EOT
-    One-Time Password for FW1 device certificate, generated in CSP Portal
-    (my.paloaltonetworks.com -> Assets -> Device Certificates -> Generate OTP)
-    against FW1's serial number. 60-minute lifetime, single-use.
-    Empty = skip the fetch (FW operates without a device certificate).
+    VM-Series Auto-Registration PIN ID from CSP Portal (Assets -> Device
+    Certificates -> Generate Registration PIN). Shared across ALL FWs in your
+    CSP account — one pair (id + value) works for both FW1 and FW2 here.
+    Used at FW first boot only; not consumed via API afterwards.
+    Empty = skip device-cert auto-fetch.
   EOT
   type        = string
   default     = ""
   sensitive   = true
 }
 
-variable "fw2_device_otp" {
+variable "fw_registration_pin_value" {
   description = <<-EOT
-    One-Time Password for FW2 device certificate. Same rules as fw1_device_otp.
-    Each FW needs its OWN OTP generated against its OWN serial number — they
-    are NOT interchangeable.
+    Companion PIN Value for fw_registration_pin_id. Both must be non-empty
+    for the init-cfg to include the auto-registration lines.
   EOT
   type        = string
   default     = ""

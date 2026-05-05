@@ -45,6 +45,8 @@ resource "local_file" "fw1_init_cfg" {
     panorama_device_group   = var.panorama_device_group
     panorama_vm_auth_key    = var.panorama_vm_auth_key
     authcodes               = var.fw_auth_code
+    vm_series_auto_registration_pin_id    = var.vm_series_auto_registration_pin_id
+    vm_series_auto_registration_pin_value = var.vm_series_auto_registration_pin_value
   })
   filename = "${path.module}/rendered/fw1-init-cfg.txt"
 }
@@ -57,6 +59,8 @@ resource "local_file" "fw2_init_cfg" {
     panorama_device_group   = var.panorama_device_group
     panorama_vm_auth_key    = var.panorama_vm_auth_key
     authcodes               = var.fw_auth_code
+    vm_series_auto_registration_pin_id    = var.vm_series_auto_registration_pin_id
+    vm_series_auto_registration_pin_value = var.vm_series_auto_registration_pin_value
   })
   filename = "${path.module}/rendered/fw2-init-cfg.txt"
 }

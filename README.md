@@ -325,6 +325,7 @@ element=<serial-number>007300XXXXXXX</serial-number>
 | `admin_password` | Password for Panorama and FW (min 12 chars) |
 | `panorama_vm_auth_key` | Auto-generated in Phase 2 Step 4 |
 | `fw_auth_code` | VM-Series BYOL auth code from CSP Portal |
+| `fw_registration_pin_id` / `fw_registration_pin_value` | VM-Series Auto-Registration PIN pair (CSP Portal → Assets → Device Certificates → Generate Registration PIN). One pair shared by both FWs. Used at FW first boot via init-cfg; FW auto-fetches device cert. Empty = skip (lab without device cert). See `terraform.tfvars.example` header for why FWs use PIN and Panorama uses OTP. |
 
 ### Phase 2 – phase2-panorama-config/terraform.tfvars
 
