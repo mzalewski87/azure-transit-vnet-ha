@@ -84,3 +84,77 @@ back.
 - [ ] Re-read PANW deployment guide
       `docs/reference/pdfs/securing-apps-azure-vmseries-panorama.pdf` chapter
       "Deploying VPN to Prisma Access" if remote-access scope is added.
+
+---
+
+# v3 – Panorama Orchestrated Deployment in Azure (evaluation only — NOT planned)
+
+**Status:** Forward-looking placeholder. v2 (partial swfw-modules adoption) does
+NOT depend on this. Document captured here so the comparison is on record when
+the question comes up again.
+
+## What "Panorama Orchestrated" actually means
+
+PANW uses this term for a deployment model built around the **Panorama Plugin
+for Azure** rather than around Terraform azurerm + manual FW registration:
+
+- Plugin runs on Panorama, authenticated to the Azure subscription via a
+  managed identity with `Reader` (and optionally `Contributor`) role.
+- Panorama auto-discovers VM-Series instances in the subscription, optionally
+  filtered by Resource Group, region, or VM tags.
+- Bootstrap is centralised: FW pulls config from Panorama directly over HTTPS
+  rather than reading init-cfg from Azure custom_data / IMDS. No vm-auth-key
+  shuffling — FW identity is established via Azure metadata signed by the
+  Azure platform.
+- Typical pairing: VM Scale Set (VMSS) with autoscale rules, NOT a static
+  Active/Passive HA pair. Panorama tracks scale-out / scale-in events.
+- Tagging propagates from Azure (resource tags) into Panorama Dynamic Address
+  Groups automatically — useful for "isolate any VM tagged `compromised=true`"
+  patterns.
+
+## How v3 differs from current (v1) and v2
+
+| Concern | v1 (today) | v2 (partial swfw-modules) | v3 (Panorama Orchestrated) |
+|---|---|---|---|
+| FW provisioning | Custom `modules/firewall` | swfw-modules `vmseries` (per #4 above) | VMSS + Panorama Plugin lifecycle hooks |
+| Bootstrap | init-cfg via custom_data + IMDS | Same | Panorama-pulled config (no init-cfg files) |
+| FW serial registration | `scripts/register-fw-panorama.sh` (SSH + XML API) | Same | Auto via plugin Azure-discovery |
+| HA model | Active/Passive pair behind LB HA Ports | Same | VMSS + LB (no PAN-OS HA pair, scale events instead of failover) |
+| Tag-driven policy | None | None | Azure tags → Dynamic Address Groups (automatic) |
+| Operational complexity | Higher (manual ops) | Same | Lower at steady state, higher upfront (plugin install, RBAC, plugin upgrade flow) |
+| Suitable for | Lab / fixed prod pair | Lab / fixed prod pair (cleaner code) | Production at scale, autoscale, multi-region, tag-driven micro-segmentation |
+
+## Why v3 is NOT the v2 direction
+
+1. **Different problem class.** This project's current workload (one transit
+   VNet, fixed FW pair, lab/POC) does not need autoscale or auto-discovery.
+   Panorama Orchestrated optimises for the case we don't have.
+2. **Loss of fine-grained control.** Plugin-driven bootstrap takes init-cfg
+   choices out of Terraform's hands — harder to enforce specific PAN-OS
+   versions / panorama-server / dns-primary deviations per FW.
+3. **VMSS + autoscale is a separate refactor.** Switching from fixed pair to
+   VMSS replaces `modules/firewall` wholesale, not in pieces. This makes v3
+   a *rewrite*, not an *evolution*.
+4. **Plugin lifecycle dependency.** Panorama Plugin for Azure has its own
+   release cadence + compatibility matrix vs PAN-OS. Adds another moving
+   part to upgrade planning.
+
+## When v3 evaluation should be reopened
+
+- If/when this project is extended to a production workload that needs:
+  - Autoscaling firewalls (VMSS) for variable traffic patterns
+  - Multi-region deployment with shared Panorama
+  - Tag-driven micro-segmentation (Azure tags → DAGs)
+- OR if PANW deprecates the current init-cfg + vm-auth-key flow in a future
+  PAN-OS major version (currently no signal of this).
+
+## References to consult before starting v3
+
+- Panorama Plugin for Azure docs: <https://docs.paloaltonetworks.com/plugins/panorama-plugins/azure>
+- PANW VM-Series in Azure VMSS reference: <https://github.com/PaloAltoNetworks/azure-autoscaling>
+- This project's local PDF library: see `pdfs/securing-apps-azure-vmseries-panorama.pdf`
+  Chapter on Panorama Plugin (verify section title in current edition).
+- The "Azure Architecture Guide" landing page —
+  <https://www.paloaltonetworks.com/resources/guides/azure-architecture-guide> —
+  serves the same PDF as `pdfs/securing-apps-azure-design-guide.pdf` in this
+  project, useful as a freshness check / version provenance.

@@ -10,6 +10,13 @@ blogs, GitHub repos. Group by section. One bullet per entry.
 - **PANW Reference Architectures portal** — <https://www.paloaltonetworks.com/referencearchitectures>
   - Master index of all PANW reference-architecture guides (overview / design / deployment / solution).
 
+- **Azure Architecture Guide (landing page)** — <https://www.paloaltonetworks.com/resources/guides/azure-architecture-guide>
+  - Direct PDF download: <https://www.paloaltonetworks.com/apps/pan/public/downloadResource?pagePath=/content/pan/en_US/resources/guides/azure-architecture-guide>
+  - **Serves the SAME file** as `pdfs/securing-apps-azure-design-guide.pdf` (verified
+    2026-05-05 by Content-Length match). The portal exposes it under multiple
+    URLs / titles. Use this URL as the freshness check (compare Content-Length
+    or download date with the local copy when refreshing references).
+
 - **Azure Transit VNet Deployment Guide (legacy direct link)** — <https://www.paloaltonetworks.com/apps/pan/public/downloadResource?pagePath=/content/pan/en_US/resources/guides/azure-transit-vnet-deployment-guide>
   - Older version of the deployment guide. Newer "Securing Applications in Azure
     with VM-Series Firewalls and Panorama" PDF (DEC 2024) supersedes it.

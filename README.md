@@ -290,19 +290,19 @@ future. It carries no role assignments today.
 
 ---
 
-## Panorama Activation – How It Works
+## Phase 2 – Mechanism Reference
 
-| Step | Method | Action |
-|------|--------|--------|
-| Phase 1a | Terraform (azurerm) | Creates Panorama VM – boots with default hostname |
-| Phase 2 Step 2 | XML API (config mode) | Sets hostname + timezone + NTP + EU telemetry + commit |
-| Phase 2 Step 3 | XML API (operational) | Sets serial number + commit + `request license fetch` |
-| Phase 2 Step 4 | XML API (operational) | Generates vm-auth-key (saved to file + auto.tfvars) |
-| Phase 2 Step 4b | XML API (config mode) | Binds local Panorama LC to default Collector Group + dedicated `commit-all log-collector-config` push (otherwise LC = Out of Sync, logs rejected) |
-| Phase 2 Step 5 | panos provider | Template + Template Stack + Device Group + interfaces + zones + multi-VR + routes + NAT + App-ID-aware security rules + Log Forwarding Profile |
-| Phase 2 Step 5c | XML API (config mode) | **Zone Protection Profiles** (`Azure-Internet-Protection` on untrust, `Azure-Internal-Protection` on trust) |
-| Phase 2 Step 5d | XML API (config mode) | **Admin hardening**: password complexity, idle timeout, login banner |
-| Phase 2 Step 6 | XML API | Final commit |
+At-a-glance mapping of which provisioning mechanism handles which Phase 2 step.
+For the deliverable of each step, see the Phase 2a / 2b narrative under
+**Deployment** above; this table is the answer to *"how is each piece pushed?"*.
+
+| Mechanism | Steps |
+|---|---|
+| Terraform `azurerm` | Phase 1a – Panorama VM creation |
+| XML API – config mode | 2 (system settings), 4b (LC binding to default CG), 5c (Zone Protection), 5d (admin hardening) |
+| XML API – operational mode | 3 (serial + license fetch), 4 (vm-auth-key gen), 6 (final commit) |
+| `panos` Terraform provider | 5 (Template + Template Stack + Device Group: interfaces, zones, multi-VR, routes, NAT, App-ID security rules, Log Forwarding Profile) |
+| SSH via Bastion tunnel | Phase 2b – `register-fw-panorama.sh` (FW serial registration + Template/DG push to FWs) |
 
 **Serial number activation** uses config mode (not operational `request serial-number set`), which is more reliable across PAN-OS versions:
 ```

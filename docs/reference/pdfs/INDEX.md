@@ -18,7 +18,7 @@ Read-priority key:
 | File | Size | Pages | Notes |
 |---|---|---|---|
 | `securing-apps-azure-vmseries-panorama.pdf` | 8.1 MB | 132 | **THE deployment guide for our architecture** (DEC 2024). Transit VNet + HA + Panorama. Covers Outbound, East-West, Inbound (Public LB OR App Gateway), Panorama Templates/Stacks/DGs, bootstrap, post-deploy config. Pages 114–132 (Prisma Access VPN) are out of scope for us. |
-| `securing-apps-azure-design-guide.pdf` | 4.7 MB | — | Companion design guide to the above. Architectural rationale, topology, HA failover logic, NSG/UDR design. Required reading **before** the deployment guide per PANW's guide-types convention. |
+| `securing-apps-azure-design-guide.pdf` | 4.7 MB | — | Companion design guide to the above. Architectural rationale, topology, HA failover logic, NSG/UDR design. Required reading **before** the deployment guide per PANW's guide-types convention. **Also published by PANW under the title "Azure Architecture Guide"** at <https://www.paloaltonetworks.com/resources/guides/azure-architecture-guide> — same PDF, two URLs (verified 2026-05-05). |
 
 ## P1 — BEST PRACTICES (high-value for refactor scope)
 
