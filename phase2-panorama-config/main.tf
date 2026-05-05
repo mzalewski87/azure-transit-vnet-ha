@@ -622,11 +622,25 @@ EOF
 #   admin@panorama# commit
 #   admin@panorama> commit-all log-collector-config log-collector-group default
 #
-# IMPORTANT XML API trap (do NOT regress):
-#   - The CLI keyword is `log-collector-group`, NOT `collector-group`.
-#   - In XML, the xpath is /config/panorama/log-collector-group/...
-#     There is NO node /config/panorama/collector-group — using it returns
-#     "collector-group unexpected here" (this was the silent bug pre-2026-05).
+# CLI auto-creates BOTH the local LC entry and the CG entry in one shot.
+# XML API requires TWO explicit SETs because the deeper xpath that includes
+# the (not-yet-existing) `default` entry is rejected with "Could not find
+# schema node". Both SETs go under /config/devices/entry[@name='localhost.
+# localdomain']/* — Panorama is treated as a device-level container in the
+# XML schema, NOT under /config/panorama/* (CLI keyword namespace and XML
+# config tree namespace diverge here).
+#
+# IMPORTANT XML API traps (verified empirically 2026-05-05; do NOT regress):
+#   - Wrong xpath: /config/panorama/log-collector-group/... → schema-node-not-found
+#   - Wrong xpath: /config/panorama/collector-group/...    → schema-node-not-found
+#   - Correct xpath base: /config/devices/entry[@name='localhost.localdomain']
+#   - Member format: <member>SERIAL</member> (string reference), NOT
+#     <entry name='SERIAL'/> (which is for full objects). Using <entry> here
+#     triggers error code 12: "'SERIAL' is not a valid reference".
+#   - commit-all log-collector-config returns SYNCHRONOUSLY (no <job> element)
+#     when only the local LC is in the group. Code that requires a job ID for
+#     polling will treat this as failure. Handle BOTH sync success and async
+#     job-id paths.
 #
 # Side effect of completing this step: Panorama GUI Collector Groups → default
 # → Master Node Settings tab populates correctly. Without the binding the GUI
@@ -680,18 +694,19 @@ print(root.findtext('.//serial','unknown'))
       fi
       echo "  Panorama serial: $PAN_SERIAL"
 
-      # 4b-2: Idempotency pre-check — is local LC already bound to default CG?
+      # 4b-2: Idempotency pre-check — does default CG already have local LC as member?
+      # GET the collectors node and check if a <member> with the serial is present.
       EXISTING=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=get" \
-        --data-urlencode "xpath=/config/panorama/log-collector-group/entry[@name='default']/logfwd-setting/collectors/entry[@name='$PAN_SERIAL']" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector-group/entry[@name='default']/logfwd-setting/collectors" \
         --data-urlencode "key=$API_KEY" 2>/dev/null \
         | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
-    e = root.find(\".//entry[@name='$PAN_SERIAL']\")
-    print('FOUND' if e is not None else 'MISSING')
+    found = any((m.text or '').strip() == '$PAN_SERIAL' for m in root.iter('member'))
+    print('FOUND' if found else 'MISSING')
 except Exception:
     print('MISSING')
 " 2>/dev/null)
@@ -702,28 +717,51 @@ except Exception:
         exit 0
       fi
 
-      # 4b-3: Bind local LC to default Collector Group.
-      # Correct xpath uses log-collector-group (NOT collector-group — see header).
-      echo "  Binding local LC to default CG..."
-      SET_RESP=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+      # 4b-3a: Create the local Managed Collector entry (under device-level
+      # log-collector node — see header for the xpath rationale).
+      echo "  Creating local Managed Collector entry ($PAN_SERIAL)..."
+      SET1_RESP=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=set" \
-        --data-urlencode "xpath=/config/panorama/log-collector-group/entry[@name='default']/logfwd-setting/collectors" \
-        --data-urlencode "element=<entry name='$PAN_SERIAL'/>" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector" \
+        --data-urlencode "element=<entry name='$PAN_SERIAL'><deviceconfig/></entry>" \
         --data-urlencode "key=$API_KEY")
-      SET_STATUS=$(echo "$SET_RESP" | python3 -c "
+      SET1_STATUS=$(echo "$SET1_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     print(ET.fromstring(sys.stdin.read()).get('status',''))
 except Exception:
     print('')
 " 2>/dev/null)
-      if [ "$SET_STATUS" != "success" ]; then
-        echo "  [ERROR] Set failed. Raw response:"
-        echo "$SET_RESP" | head -3
+      if [ "$SET1_STATUS" != "success" ]; then
+        echo "  [ERROR] Managed Collector entry SET failed. Raw response:"
+        echo "$SET1_RESP" | head -3
         exit 1
       fi
-      echo "  [OK] Set OK"
+      echo "  [OK] Managed Collector entry created"
+
+      # 4b-3b: Create the Collector Group entry with local LC as member.
+      # <member>SERIAL</member> (string reference), NOT <entry name='SERIAL'/>.
+      echo "  Creating Collector Group 'default' with local LC as member..."
+      SET2_RESP=$(curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector-group" \
+        --data-urlencode "element=<entry name='default'><logfwd-setting><collectors><member>$PAN_SERIAL</member></collectors></logfwd-setting></entry>" \
+        --data-urlencode "key=$API_KEY")
+      SET2_STATUS=$(echo "$SET2_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    print(ET.fromstring(sys.stdin.read()).get('status',''))
+except Exception:
+    print('')
+" 2>/dev/null)
+      if [ "$SET2_STATUS" != "success" ]; then
+        echo "  [ERROR] Collector Group SET failed. Raw response:"
+        echo "$SET2_RESP" | head -3
+        exit 1
+      fi
+      echo "  [OK] Collector Group created with member ref"
 
       # 4b-4: Commit on Panorama side. Returns job ID — poll until FIN.
       echo "  Committing Panorama config..."
@@ -771,24 +809,33 @@ except Exception:
 
       # 4b-5: commit-all log-collector-config — pushes CG config to LC daemon.
       # WITHOUT this step the LC stays in "Out of Sync — Ring version mismatch"
-      # and rejects/buffers incoming logs from FWs. Confirmed empirically.
+      # and rejects/buffers incoming logs from FWs.
+      #
+      # SYNC vs ASYNC: when only the local Panorama LC is in the group, this
+      # commit-all returns SYNCHRONOUSLY (status=success, no <job>) — verified
+      # empirically 2026-05-05. With remote/dedicated LCs, it returns a job ID
+      # to poll. Handle both paths.
       echo "  Pushing Collector Group config to LC (commit-all log-collector-config)..."
-      CA_JID=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
+      CA_RESP=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
         --data-urlencode "type=commit" \
         --data-urlencode "action=all" \
         --data-urlencode "cmd=<commit-all><log-collector-config><log-collector-group>default</log-collector-group></log-collector-config></commit-all>" \
-        --data-urlencode "key=$API_KEY" \
-        | python3 -c "
+        --data-urlencode "key=$API_KEY")
+      CA_PARSED=$(echo "$CA_RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
-    print(ET.fromstring(sys.stdin.read()).findtext('.//job',''))
+    r = ET.fromstring(sys.stdin.read())
+    print((r.get('status','') or '') + '|' + (r.findtext('.//job','') or ''))
 except Exception:
-    print('')
+    print('|')
 " 2>/dev/null)
+      CA_STATUS=$(echo "$CA_PARSED" | cut -d'|' -f1)
+      CA_JID=$(echo "$CA_PARSED" | cut -d'|' -f2)
 
-      if [ -z "$CA_JID" ]; then
-        echo "  [WARN] commit-all log-collector-config returned no job ID. Continuing — Step 4c will catch any background jobs."
-      else
+      if [ "$CA_STATUS" = "success" ] && [ -z "$CA_JID" ]; then
+        # Sync success — Panorama returned the success message directly.
+        echo "  [OK] commit-all log-collector-config succeeded (sync — local LC only)"
+      elif [ -n "$CA_JID" ]; then
         echo "  commit-all job ID: $CA_JID — polling for completion..."
         for I in $(seq 1 36); do  # 36 x 5s = 180s cap (CG push can be slower)
           JOB_STATE=$(curl -sk --max-time 15 \
@@ -814,6 +861,10 @@ except Exception:
           fi
           sleep 5
         done
+      else
+        echo "  [ERROR] commit-all log-collector-config failed — neither sync success nor async job. Raw response:"
+        echo "$CA_RESP" | head -3
+        exit 1
       fi
 
       # 4b-6: Verify Config Status flipped to In Sync (Ring version match).
