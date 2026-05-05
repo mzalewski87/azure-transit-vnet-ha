@@ -78,12 +78,23 @@ resource "azurerm_linux_virtual_machine" "apache" {
 
   # cloud-init: install Apache2, enable it, create Hello World page
   # NOTE: #cloud-config MUST be at column 0 (no leading whitespace) or cloud-init ignores the file
+  #
+  # KNOWN RACE: this Apache VM gets deployed in Phase 1b (root terraform apply
+  # for module.app1_app), but its outbound internet path goes through the
+  # VM-Series FW data-plane. The FW security policy + NAT that ENABLE that
+  # path are pushed by Phase 2b (scripts/register-fw-panorama.sh). On a fresh
+  # deploy, cloud-init starts ~2 minutes after VM boot — at that point Phase
+  # 2b is usually still running, so apt-get cannot reach azure.archive.ubuntu.com.
+  #
+  # The standard cloud-init `packages:` directive fails-fast (one apt-get
+  # attempt; if it fails, the apache2 package is permanently not installed
+  # for this boot — cloud-init does NOT auto-retry on subsequent boots). To
+  # avoid this race, we install apache2 via runcmd with an explicit retry loop.
+  # Up to 10 attempts at 30 s = 5 min, which covers Phase 2b's typical window.
   custom_data = base64encode(<<-CLOUDINIT
 #cloud-config
-package_update: true
-package_upgrade: false
-packages:
-  - apache2
+# NOTE: do NOT use the standard `packages:` directive — see header comment
+# in main.tf about the Phase 1b/2b race. Install via runcmd retry loop instead.
 
 write_files:
   - path: /var/www/html/index.html
@@ -144,9 +155,29 @@ write_files:
       </html>
 
 runcmd:
+  - |
+    # Wait for outbound internet through VM-Series (Phase 2b race) and
+    # install apache2. Logs to /var/log/cloud-init-apache.log so the
+    # outcome is visible separately from cloud-init's main log.
+    LOG=/var/log/cloud-init-apache.log
+    echo "[$(date -Is)] starting apache2 install attempts" >> "$LOG"
+    for ATTEMPT in $(seq 1 10); do
+      if apt-get update >> "$LOG" 2>&1 \
+         && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 >> "$LOG" 2>&1; then
+        echo "[$(date -Is)] apache2 installed on attempt $ATTEMPT" >> "$LOG"
+        break
+      fi
+      echo "[$(date -Is)] attempt $ATTEMPT failed (FW outbound path likely not ready); retry in 30s" >> "$LOG"
+      sleep 30
+    done
+    if ! command -v apache2 >/dev/null 2>&1; then
+      echo "[$(date -Is)] FATAL: apache2 not installed after 10 attempts (5 min). Phase 2b probably did not complete in time." >> "$LOG"
+      exit 1
+    fi
   - systemctl enable apache2
-  - systemctl start apache2
-  - ufw allow 'Apache'
+  - systemctl restart apache2
+  - ufw allow 'Apache' || true
+  - echo "[$(date -Is)] apache2 enabled+started, listening on port 80" >> /var/log/cloud-init-apache.log
 CLOUDINIT
   )
 }

@@ -749,6 +749,58 @@ admin@panorama> debug log-collector log-collection-stats show incoming-logs   # 
 admin@panorama> show config running xpath /config/devices/entry[@name='localhost.localdomain']/template/entry[@name='Transit-VNet-Template']/config/shared/log-settings
 ```
 
+### Apache VM: cloud-init failed at first boot (Phase 1b/2b race)
+
+**Symptom:** Front Door returns HTTP 502 Bad Gateway after a fresh deploy.
+On the Apache VM, `systemctl status apache2` reports `Unit apache2.service
+could not be found` and `/var/log/apache2/` does not exist.
+
+**Cause:** This Apache VM is deployed in Phase 1b. Its outbound internet
+path goes through the VM-Series FW data-plane. The FW security policy +
+NAT rules that ENABLE that path are pushed by Phase 2b
+(`scripts/register-fw-panorama.sh`). On a fresh deploy, cloud-init starts
+~2 min after Apache VM boot — at that point Phase 2b is usually still
+running, so `apt-get install apache2` cannot reach `azure.archive.ubuntu.com`.
+
+The hardened cloud-init (current code) retries `apt-get install` up to
+10 times at 30 s intervals (5 min total), which usually covers Phase 2b's
+window. If you saw the deploy run fast and Phase 2b completed quickly,
+you'll never hit this. If Phase 2b took longer than 5 min OR you ran the
+script with errors that you fixed and re-ran, the Apache VM may have
+exhausted its 10 retries and given up.
+
+**Verify the diagnosis:**
+
+```bash
+# SSH to Apache VM (see Bastion Access section), then:
+sudo cat /var/log/cloud-init-apache.log
+# Expect either:
+#   "[<TS>] apache2 installed on attempt N"  — fix worked, no action needed
+# OR:
+#   "[<TS>] FATAL: apache2 not installed after 10 attempts" — race won, needs recovery
+```
+
+**Recovery (one-shot, no redeploy):**
+
+```bash
+# On the Apache VM (via Bastion SSH):
+sudo apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y apache2
+sudo systemctl enable apache2
+sudo systemctl start apache2
+curl -sI http://127.0.0.1/ | head -3   # expect HTTP/1.1 200 OK
+
+# Verify Front Door from your laptop:
+curl -sI "https://$(terraform output -raw frontdoor_endpoint)/"
+# expect HTTP/1.1 200 OK (may take 30-60s for AFD origin probe to flip healthy)
+```
+
+The default index.html written by cloud-init's `write_files` should already
+exist (write_files runs before runcmd, so even if apt-get failed earlier,
+the HTML was created). If it's missing, see
+`modules/spoke1_app/main.tf` for the canonical content and recreate it
+with `sudo tee /var/www/html/index.html`.
+
 ### Apache VM (Spoke1, Ubuntu) — service not responding
 
 The Apache VM (`vm-spoke1-apache`, Ubuntu 22.04 LTS) is provisioned with
