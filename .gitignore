@@ -46,10 +46,20 @@ panorama_vm_auth_key.txt
 
 # Editor / OS
 .DS_Store
+*.textClipping
 *.swp
 *.swo
 .idea/
 .vscode/settings.json
+
+# Defensive: certificate / key material and env files (none used today,
+# guard against accidental future commits)
+*.pem
+*.key
+*.crt
+*.pfx
+.env
+.env.*
 
 # Reference PDF library — vendor-copyrighted documents (PANW, etc.)
 # Track only the catalogue / index, not the binaries.

@@ -19,6 +19,16 @@ variable "panorama_password" {
   sensitive   = true
 }
 
+variable "panorama_port" {
+  description = <<-EOT
+    Local port forwarded to Panorama HTTPS via Bastion tunnel. Default 44300
+    matches scripts/configure-panorama.sh — change both if you collide with
+    something on your workstation.
+  EOT
+  type        = number
+  default     = 44300
+}
+
 variable "template_name" {
   description = "Panorama Template name"
   type        = string

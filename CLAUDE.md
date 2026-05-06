@@ -67,11 +67,18 @@ re-read the ROADMAP first.
   Storage Accounts. Don't remove without verifying the race is fixed.
 - **Phase 2a writes `panorama_vm_auth_key.auto.tfvars`** — Phase 1b auto-loads
   it. This implicit cross-workspace handoff is real.
-- **Log Collector setup** has three load-bearing pieces — see
+- **Log Collector setup** has FIVE load-bearing pieces (after 2026-05-06 fixes):
+  (1) local Panorama LC bound to default Collector Group, (2) dedicated
+  `commit-all log-collector-config` push to LC daemon, (3) system-level
+  log forwarding match-list under `/config/shared/log-settings/<TYPE>` in
+  Template, (4) **disk-pair declaration** under `.../log-collector/entry/disk-settings/disk-pair`
+  (without it logd buffers logs to RAM and drops on overflow → SearchEngine
+  Inactive → log query returns 0 even after thousands received), (5) **DLF
+  entries** under `.../log-collector-group/entry/logfwd-setting/devices`
+  binding each FW serial to the LC. See
   `~/.claude/projects/-Users-mzalewski-TF-azure-ha-project/memory/panorama_log_collector.md`
-  for the xpath traps, CLI commit-all keyword quirks, and the dedicated
-  `commit-all log-collector-config` push that prevents "Out of Sync — Ring
-  version mismatch".
+  for the empirically-verified xpaths, CLI commit-all keyword quirks, and
+  the discovery method (`debug cli on` per pan-os-panorama-api.pdf p.25).
 
 ## Where to look for context
 

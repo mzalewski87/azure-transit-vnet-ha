@@ -211,21 +211,23 @@ bash scripts/register-fw-panorama.sh
 
 This script automatically:
 1. Opens Bastion tunnels to FW1, FW2, and Panorama
-2. Reads FW serial numbers (dynamically generated during license activation)
+2. Reads FW serial numbers (dynamically generated during license activation;
+   retries 10×30s waiting for license activation to complete)
 3. Registers FW serials on Panorama (mgt-config + Device Group + Template Stack)
 4. Commits on Panorama
-5. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min)
-6. **Push Template Stack to devices** — interfaces, zones, virtual routers, routes
-7. **Push Device Group to devices** — security policies, NAT rules
+5. **Adds Device Log Forwarding (DLF) entries** binding each FW serial to the
+   local Panorama LC in the default Collector Group, then runs `commit-all
+   log-collector-config` to push the CG config to logd. **This is required
+   for log persistence** — without DLF entries, SearchEngine stays Inactive
+   and log query returns 0.
+6. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min)
+7. **Push Template Stack to devices** — interfaces, zones, virtual routers, routes
+8. **Push Device Group to devices** — security policies, NAT rules,
+   Log Forwarding Profile
 
 > **Without this step, firewalls will NOT appear as managed devices in Panorama**
-> and the Template Stack / Device Group won't be pushed, so the FWs sit
-> there licensed but unconfigured.
->
-> Note: the Collector Group push (`commit-all log-collector-config`) is
-> handled earlier, in Phase 2a Step 4b, against the local Panorama LC. FWs
-> then forward logs to the Collector Group automatically — no per-FW
-> Device Log Forwarding entry is required for this single-LC topology.
+> and the Template Stack / Device Group / DLF entries won't be configured,
+> so the FWs sit there licensed but unconfigured and no logs flow.
 
 ### Phase 3: Domain Controller (optional)
 
@@ -299,10 +301,17 @@ For the deliverable of each step, see the Phase 2a / 2b narrative under
 | Mechanism | Steps |
 |---|---|
 | Terraform `azurerm` | Phase 1a – Panorama VM creation |
-| XML API – config mode | 2 (system settings), 4b (LC binding to default CG), 5c (Zone Protection), 5d (admin hardening) |
-| XML API – operational mode | 3 (serial + license fetch), 4 (vm-auth-key gen), 6 (final commit) |
+| XML API – config mode | 2 (system settings), 4b (LC binding to default CG), **4b2 (disk-pair on local LC)**, 5c (Zone Protection), 5d (admin hardening) |
+| XML API – operational mode | 3 (serial + license fetch), **3.5 (Panorama device-cert OTP fetch — `<request><certificate><fetch>`)**, 4 (vm-auth-key gen), 6 (final commit) |
 | `panos` Terraform provider | 5 (Template + Template Stack + Device Group: interfaces, zones, multi-VR, routes, NAT, App-ID security rules, Log Forwarding Profile) |
-| SSH via Bastion tunnel | Phase 2b – `register-fw-panorama.sh` (FW serial registration + Template/DG push to FWs) |
+| SSH via Bastion tunnel | Phase 2b – `register-fw-panorama.sh` (FW serial registration + **DLF entries per FW** + Template/DG push to FWs + `commit-all log-collector-config`) |
+
+> **Step 4b2 (disk-pair) and step [5b/6] (DLF) are load-bearing for log
+> persistence**. Without 4b2 the local LC's logd accepts incoming logs into
+> a memory buffer and drops on overflow; SearchEngine stays Inactive and
+> log query returns 0 entries. Without DLF the Collector Group's Device
+> Log Forwarding tab is empty and the SearchEngine never indexes per-FW
+> logs. Both are now automated as of 2026-05-06.
 
 **Serial number activation** uses config mode (not operational `request serial-number set`), which is more reliable across PAN-OS versions:
 ```
@@ -754,52 +763,68 @@ problem, not the LC:
 - **Device filter:** "Devices" dropdown at top — make sure your FWs are
   selected (sometimes defaults to none after fresh DG push).
 
-### Log Collector: Device Log Forwarding tab is empty — is that a problem?
+### Log Collector: Device Log Forwarding tab is empty after fresh deploy
 
-For **single-LC topology** (this project: one Panorama in default Panorama
-Mode, no separate M-series LC, no Panorama HA peer) — **no, it's not a
-blocker**. Confirmed by panorama-admin.pdf pages around line 19082:
-"*If the local Log Collector is configured as a managed collector when
-Panorama is in Panorama mode, incoming logs are received...*" The DLF tab
-exists for MULTI-LC scenarios where you want to map "FW X forwards to LC
-Y" with priority/redundancy. For single-LC there is nothing to prioritise.
+**Should NOT happen** with current code (commit `44c4cb3` and later).
+Phase 2b (`scripts/register-fw-panorama.sh` step `[5b/6]`) auto-binds each
+FW serial to the local LC via:
 
-If you want to populate the DLF tab anyway as best practice, do it via
-GUI: **Panorama → Collector Groups → edit `default` → Device Log
-Forwarding tab → Devices section: Modify, add both FW serials → Collectors
-section: Add the local Panorama LC → OK → Commit and Push to Collector
-Groups**. Empirical attempt to automate this via the XML API (PAN-OS 12.1.5)
-failed — the underlying XML element name PAN-OS uses for this tab is not
-discoverable via the standard schema probes (28 combinations of parent
-xpath + child element name all returned `error code 13: Could not find
-schema node`). Manual GUI configuration is the documented path.
-
-### Log Collector: "No disks enabled on log collector" warning at commit
-
-Visible during `commit` on Panorama after the local LC binding (Phase 2a
-Step 4b) has run for the first time. The Managed Collector entry is
-created with an empty `<deviceconfig/>` block — disk-pair declaration is
-NOT included in the automation because the XML schema for
-`/disk-pair/entry[@name='X']/disk1/path` differs across PAN-OS versions
-and Azure VM disk topologies (single attached managed disk, no RAID hardware).
-
-Despite the warning, **logs are persisted correctly**. The logd daemon
-auto-detects the attached log volume (mounted at `/opt/panlogs/ld1` for
-the standard 2 TB Azure managed disk attached to the Panorama VM in
-`modules/panorama/main.tf`) and writes to it regardless of whether the
-config-side declaration exists. Verify physical state:
-
-```bash
-admin@panorama> show system disk-space
-# Expect: /dev/sdc1 ~2T, mounted on /opt/panlogs/ld1, with growing "Used"
-# as logs accumulate.
+```
+xpath: /config/devices/.../log-collector-group/entry[@name='default']/logfwd-setting/devices
+element: <entry name='FW_SERIAL'><collectors><entry name='LC_SERIAL'/></collectors></entry>
 ```
 
-If you want to suppress the warning (cosmetic), declare the disk-pair via
-GUI: **Panorama → Managed Collectors → vm-panorama → Disks tab → Add Pair
-→ pick the available virtual disk → OK → Commit**. Same caveat as DLF —
-the underlying XML schema for this is non-trivial to drive via API across
-PAN-OS versions, so we leave it manual.
+Followed by `commit-all log-collector-config log-collector-group default`.
+
+**If the tab is still empty**, Phase 2b probably did not complete. Check
+`scripts/register-fw-panorama.sh` output for the `[5b/6] Setting Device
+Log Forwarding` block — should show two `[OK] FW1 (...) -> LC ...` lines.
+
+**Manual recovery** (no redeploy needed):
+1. Open Bastion HTTPS tunnel to Panorama (`az network bastion tunnel ... --resource-port 443 --port 44300`)
+2. Browser → `https://localhost:44300` → login `panadmin`
+3. Panorama → Collector Groups → edit `default` → Device Log Forwarding tab
+4. Devices section: Modify → add both FW serials
+5. Collectors section: Add the local Panorama LC
+6. OK → **Commit → Commit and Push → Collector Groups → default**
+
+### Log Collector: SearchEngine Inactive / disk-pair missing
+
+**Should NOT happen** with current code (commit `98ad5e6` and later).
+Phase 2a Step 4b2 (`null_resource.panorama_add_log_disk`) auto-adds the
+disk-pair via:
+
+```
+xpath: /config/devices/.../log-collector/entry[@name='SERIAL']/disk-settings/disk-pair
+element: <entry name='A'/>
+```
+
+PAN-OS auto-maps pair "A" to the available attached disk
+(`/dev/sdc1` → `/opt/panlogs/ld1` for the standard Azure 2 TB managed
+disk on Panorama). Without this declaration, logd accepts incoming logs
+into a memory buffer but **never flushes to long-term disk**:
+- `searchengine-status: Inactive` in `show log-collector all`
+- `blkcount: 0` for every type in `debug log-collector log-collection-stats show incoming-logs`
+- `/dev/sdc1` Used stays at ~36 K (filesystem metadata only)
+- Log query API (`type=log&action=get`) returns `count=0` even with
+  thousands of incoming logs
+
+**Manual recovery** (no redeploy needed):
+1. Bastion SSH to Panorama
+2. `configure`
+3. `edit log-collector <PANORAMA_SERIAL>`
+4. `set disk-settings disk-pair A`
+5. `commit`
+6. `exit; exit`
+7. `commit-all log-collector-config log-collector-group default`
+
+Verify after first traffic:
+```bash
+admin@panorama> show log-collector all                # expect searchengine-status: Active
+admin@panorama> show system disk-space                # expect /dev/sdc1 Used growing
+admin@panorama> debug log-collector log-collection-stats show incoming-logs
+# expect blkcount > 0 on traffic, system, config
+```
 
 ### Log Collector: cheat sheet (verification commands)
 

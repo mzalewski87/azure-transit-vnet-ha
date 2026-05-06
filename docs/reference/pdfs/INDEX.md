@@ -19,6 +19,7 @@ Read-priority key:
 |---|---|---|---|
 | `securing-apps-azure-vmseries-panorama.pdf` | 8.1 MB | 132 | **THE deployment guide for our architecture** (DEC 2024). Transit VNet + HA + Panorama. Covers Outbound, East-West, Inbound (Public LB OR App Gateway), Panorama Templates/Stacks/DGs, bootstrap, post-deploy config. Pages 114–132 (Prisma Access VPN) are out of scope for us. |
 | `securing-apps-azure-design-guide.pdf` | 4.7 MB | — | Companion design guide to the above. Architectural rationale, topology, HA failover logic, NSG/UDR design. Required reading **before** the deployment guide per PANW's guide-types convention. **Also published by PANW under the title "Azure Architecture Guide"** at <https://www.paloaltonetworks.com/resources/guides/azure-architecture-guide> — same PDF, two URLs (verified 2026-05-05). |
+| `pan-os-panorama-api.pdf` | 2.3 MB | — | **Authoritative XML / REST API reference for PAN-OS + Panorama 11.1.** Critical for `phase2-panorama-config/main.tf` and `modules/panorama_config/main.tf` automation. Section "Use the CLI to Find XML API Syntax" (page 25, `debug cli on`) is the **canonical method to discover XML for any CLI command** — used 2026-05-06 to find the disk-pair xpath. Also documents async/sync commit semantics, error codes (13 = schema-not-found, 17 = is-unexpected), and operational vs config command structure. Source: <https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-panorama-api/get-started-with-the-pan-os-xml-api/explore-the-api>. |
 
 ## P1 — BEST PRACTICES (high-value for refactor scope)
 

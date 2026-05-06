@@ -128,7 +128,7 @@ resource "null_resource" "zone_protection_profiles" {
   provisioner "local-exec" {
     command = <<-SCRIPT
       set -e
-      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       PAN_USER="${var.panorama_username}"
       TEMPLATE_NAME="${panos_panorama_template.transit.name}"
 
@@ -219,7 +219,7 @@ resource "null_resource" "zone_protection_attach" {
   provisioner "local-exec" {
     command = <<-SCRIPT
       set -e
-      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       PAN_USER="${var.panorama_username}"
       TEMPLATE_NAME="${panos_panorama_template.transit.name}"
 
@@ -768,7 +768,7 @@ resource "null_resource" "fw_template_system_settings" {
   provisioner "local-exec" {
     command = <<-SCRIPT
       set -e
-      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       PAN_USER="${var.panorama_username}"
       TEMPLATE_NAME="${panos_panorama_template.transit.name}"
 
@@ -888,7 +888,7 @@ resource "null_resource" "fw_template_admin_hardening" {
   provisioner "local-exec" {
     command = <<-SCRIPT
       set -e
-      PANORAMA_URL="https://${var.panorama_hostname}:44300"
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
       PAN_USER="${var.panorama_username}"
       TEMPLATE_NAME="${panos_panorama_template.transit.name}"
 
@@ -925,7 +925,7 @@ print(root.findtext('.//key',''))
         --data-urlencode "key=$API_KEY" > /dev/null
       echo "  Idle timeout: 15 minutes"
 
-      # Failed login lockout (5 failed attempts -> 30 min lockout)
+      # Login banner shown on every CLI/GUI login.
       curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=set" \
@@ -934,13 +934,22 @@ print(root.findtext('.//key',''))
         --data-urlencode "key=$API_KEY" > /dev/null
       echo "  Login banner: set"
 
-      # Authentication profile lockout settings (applies to local + future TACACS/RADIUS)
+      # Failed-login lockout policy. Applies via a SHARED authentication-profile
+      # named "default-lockout" that any admin user can reference.
+      # Canonical xpath per PAN-OS API guide:
+      #   /config/shared/authentication-profile/entry[@name='X']/lockout
+      # under the Template (so it propagates to every FW in the stack).
+      AUTHPROF_XPATH="/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/shared/authentication-profile/entry[@name='default-lockout']"
       curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=set" \
-        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/template/entry[@name='$TEMPLATE_NAME']/config/shared/local-user-database" \
-        --data-urlencode "element=<user/>" \
-        --data-urlencode "key=$API_KEY" > /dev/null 2>&1 || true
+        --data-urlencode "xpath=$AUTHPROF_XPATH" \
+        --data-urlencode "element=<lockout><failed-attempts>5</failed-attempts><lockout-time>30</lockout-time></lockout><method><local-database/></method>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Auth profile 'default-lockout': 5 failed attempts -> 30 min lockout"
+      echo "  NOTE: per-user assignment (set mgt-config users <NAME> authentication-profile default-lockout)"
+      echo "        is left manual — production should bind named admin accounts to this profile via GUI"
+      echo "        or via Phase 2a customisation. Built-in panadmin uses local auth without this profile."
 
       echo "  [OK] Administrative-access hardening applied"
     SCRIPT
