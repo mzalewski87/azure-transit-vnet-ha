@@ -947,6 +947,174 @@ except Exception:
 }
 
 ###############################################################################
+# Step 4b2: Declare disk-pair on local Managed Collector entry
+#
+# WHY THIS IS REQUIRED (verified empirically 2026-05-06 on PAN-OS 12.1.5):
+# Without a disk-pair entry under the LC's <disk-settings>, logd accepts
+# incoming logs into a memory buffer but never flushes them to the attached
+# log volume (/opt/panlogs/ld1 backed by /dev/sdc1). Symptoms:
+#   - `debug log-collector log-collection-stats show incoming-logs` shows
+#     thousands of received logs but `blkcount: 0` for every type.
+#   - `show log-collector all` reports `searchengine-status: Inactive`.
+#   - Log query API (type=log&action=get) returns 0 entries even after
+#     hours of traffic.
+#   - `df -h /opt/panlogs/ld1` stays at minimal usage (filesystem metadata
+#     only, ~36K).
+# After the disk-pair entry is committed and pushed to the LC daemon,
+# searchengine-status flips to Active, sdc1 Used grows live as logs flush,
+# and Monitor → Traffic populates within minutes.
+#
+# DISCOVERY: The xpath / element name was found via `debug cli on` in the
+# Panorama CLI on 2026-05-06. Earlier guesses against
+# /deviceconfig/system/logger/disk-pair, /disk-pair, /disks, /raid, etc.
+# were all schema-rejected (8 candidates × error code 13). The actual
+# location is .../log-collector/entry/disk-settings/disk-pair, which is
+# undocumented in panorama-admin.pdf and the API reference PDF.
+#
+# Equivalent CLI (interactive) — what GUI does when you click
+# Panorama → Managed Collectors → [LC] → Disks tab → Add Pair → A → OK:
+#   admin@panorama# edit log-collector <SERIAL>
+#   admin@panorama# set disk-settings disk-pair A
+#   admin@panorama# commit
+#   admin@panorama> commit-all log-collector-config log-collector-group default
+#
+# The pair name "A" is a label; PAN-OS auto-maps it to the available
+# attached disk (Azure VM with the 2 TB managed disk attached gets
+# /dev/sdc → /opt/panlogs/ld1). Single-disk-no-mirror is acceptable in
+# this topology.
+###############################################################################
+resource "null_resource" "panorama_add_log_disk" {
+  triggers = {
+    disk_pair = "A"
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
+      PAN_USER="${var.panorama_username}"
+
+      echo "=== [Step 4b2] Adding disk-pair A to local LC ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+print(root.findtext('.//key',''))
+" 2>/dev/null)
+
+      if [ -z "$API_KEY" ]; then
+        echo "[ERROR] Failed to get API key"; exit 1
+      fi
+
+      PAN_SERIAL=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=op&cmd=<show><system><info></info></system></show>&key=$API_KEY" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+print(ET.fromstring(sys.stdin.read()).findtext('.//serial','unknown'))
+" 2>/dev/null)
+
+      if [ "$PAN_SERIAL" = "unknown" ] || [ -z "$PAN_SERIAL" ]; then
+        echo "[ERROR] Could not determine Panorama serial"; exit 1
+      fi
+      echo "  Panorama serial: $PAN_SERIAL"
+
+      # Idempotency: skip if disk-pair A already declared.
+      EXISTING=$(curl -sk --max-time 15 -X POST "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=get" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector/entry[@name='$PAN_SERIAL']/disk-settings/disk-pair/entry[@name='A']" \
+        --data-urlencode "key=$API_KEY" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    e = root.find(\".//entry[@name='A']\")
+    print('FOUND' if e is not None else 'MISSING')
+except Exception:
+    print('MISSING')
+" 2>/dev/null)
+
+      if [ "$EXISTING" = "FOUND" ]; then
+        echo "  [OK] disk-pair A already declared on LC ($PAN_SERIAL) — skipping"
+        exit 0
+      fi
+
+      # SET disk-pair entry. Element is just <entry name='A'/> — no inner
+      # config; PAN-OS auto-maps to the available disk.
+      SET_RESP=$(curl -sk --max-time 30 -X POST "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector/entry[@name='$PAN_SERIAL']/disk-settings/disk-pair" \
+        --data-urlencode "element=<entry name='A'/>" \
+        --data-urlencode "key=$API_KEY")
+      SET_STATUS=$(echo "$SET_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try: print(ET.fromstring(sys.stdin.read()).get('status',''))
+except: print('')
+" 2>/dev/null)
+      if [ "$SET_STATUS" != "success" ]; then
+        echo "  [ERROR] disk-pair SET failed. Response:"
+        echo "$SET_RESP" | head -3
+        exit 1
+      fi
+      echo "  [OK] disk-pair A set in candidate config"
+
+      # Commit and poll. Without commit, the disk-pair entry stays in the
+      # candidate config and never reaches the LC daemon.
+      echo "  Committing Panorama config..."
+      COMMIT_JID=$(curl -sk --max-time 60 -X POST "$PANORAMA_URL/api/" \
+        --data-urlencode "type=commit" \
+        --data-urlencode "cmd=<commit></commit>" \
+        --data-urlencode "key=$API_KEY" \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try: print(ET.fromstring(sys.stdin.read()).findtext('.//job',''))
+except: print('')
+" 2>/dev/null)
+
+      if [ -n "$COMMIT_JID" ]; then
+        echo "  Commit job $COMMIT_JID — polling..."
+        for I in $(seq 1 60); do  # 60 x 5s = 300s — disk init can take longer
+          JOB_STATE=$(curl -sk --max-time 10 \
+            "$PANORAMA_URL/api/?type=op&cmd=<show><jobs><id>$COMMIT_JID</id></jobs></show>&key=$API_KEY" \
+            | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    j = ET.fromstring(sys.stdin.read()).find('.//job')
+    print((j.findtext('status','') or '').upper() + '|' + (j.findtext('result','') or '').upper())
+except: print('|')
+" 2>/dev/null)
+          STATUS=$(echo "$JOB_STATE" | cut -d'|' -f1)
+          RESULT=$(echo "$JOB_STATE" | cut -d'|' -f2)
+          if [ "$STATUS" = "FIN" ]; then
+            [ "$RESULT" = "OK" ] && echo "  [OK] commit FIN/OK after $((I*5))s" && break
+            echo "  [ERROR] commit FIN/$RESULT"; exit 1
+          fi
+          sleep 5
+        done
+      fi
+
+      # Push CG config to LC daemon (sync response for single-LC).
+      echo "  Pushing CG to LC daemon (commit-all log-collector-config)..."
+      curl -sk --max-time 60 -X POST "$PANORAMA_URL/api/" \
+        --data-urlencode "type=commit" \
+        --data-urlencode "action=all" \
+        --data-urlencode "cmd=<commit-all><log-collector-config><log-collector-group>default</log-collector-group></log-collector-config></commit-all>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+
+      echo "  [OK] disk-pair A active. SearchEngine will flip to Active within ~30s of first traffic."
+      echo "       Verify: show log-collector all (searchengine-status: Active)"
+      echo "       Verify: show system disk-space (Used on /opt/panlogs/ld1 grows with traffic)"
+    SCRIPT
+  }
+
+  depends_on = [null_resource.panorama_bind_local_lc]
+}
+
+###############################################################################
 # Step 4c: Wait for all pending Panorama jobs to finish
 #
 # `commit` and `commit-all` over the XML API are asynchronous — they return a
@@ -961,7 +1129,7 @@ except Exception:
 ###############################################################################
 resource "null_resource" "panorama_wait_jobs_idle" {
   triggers = {
-    after_bind_local_lc = null_resource.panorama_bind_local_lc.id
+    after_add_log_disk = null_resource.panorama_add_log_disk.id
   }
 
   provisioner "local-exec" {
