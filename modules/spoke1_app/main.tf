@@ -88,13 +88,24 @@ resource "azurerm_linux_virtual_machine" "apache" {
   #
   # The standard cloud-init `packages:` directive fails-fast (one apt-get
   # attempt; if it fails, the apache2 package is permanently not installed
-  # for this boot — cloud-init does NOT auto-retry on subsequent boots). To
-  # avoid this race, we install apache2 via runcmd with an explicit retry loop.
-  # Up to 10 attempts at 30 s = 5 min, which covers Phase 2b's typical window.
+  # for this boot — cloud-init does NOT auto-retry on subsequent boots).
+  #
+  # Earlier fix tried a 5-minute runcmd retry loop. That covered the typical
+  # case but FAILED on 2026-05-06 when Phase 2b took >1 hour due to an
+  # unrelated commit-validation bug — Apache cloud-init expired all 10
+  # attempts and apache2 never installed even after Phase 2b later succeeded.
+  #
+  # Current pattern: install apache2 via a dedicated systemd service
+  # `apache2-bootstrap.service` that retries every 60 seconds INDEFINITELY
+  # until apt-get install succeeds, regardless of how long Phase 2b takes.
+  # The service exits 0 only when apache2 is installed; on first success
+  # it enables apache2.service and starts it. Survives reboots and any
+  # arbitrary delay in upstream FW config push.
   custom_data = base64encode(<<-CLOUDINIT
 #cloud-config
 # NOTE: do NOT use the standard `packages:` directive — see header comment
-# in main.tf about the Phase 1b/2b race. Install via runcmd retry loop instead.
+# in main.tf about the Phase 1b/2b race. Install via apache2-bootstrap.service
+# which retries every 60s indefinitely.
 
 write_files:
   - path: /var/www/html/index.html
@@ -154,28 +165,57 @@ write_files:
       </body>
       </html>
 
-runcmd:
-  - |
-    # Wait for outbound internet through VM-Series (Phase 2b race) and
-    # install apache2. Logs to /var/log/cloud-init-apache.log so the
-    # outcome is visible separately from cloud-init's main log.
-    LOG=/var/log/cloud-init-apache.log
-    echo "[$(date -Is)] starting apache2 install attempts" >> "$LOG"
-    for ATTEMPT in $(seq 1 10); do
+  - path: /usr/local/sbin/install-apache.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Install apache2 with infinite retry. Exits 0 only on success.
+      # Service is configured Restart=on-failure with RestartSec=60 so the
+      # systemd unit calls us again every 60 s if apt-get fails (typically
+      # because the FW data-plane outbound path is not yet up — Phase 2b race).
+      LOG=/var/log/cloud-init-apache.log
+      echo "[$(date -Is)] install-apache.sh attempt" >> "$LOG"
+      if command -v apache2 >/dev/null 2>&1; then
+        echo "[$(date -Is)] apache2 already installed — ensuring it is enabled+started" >> "$LOG"
+        systemctl enable apache2 >> "$LOG" 2>&1 || true
+        systemctl restart apache2 >> "$LOG" 2>&1 || true
+        ufw allow 'Apache' >> "$LOG" 2>&1 || true
+        exit 0
+      fi
       if apt-get update >> "$LOG" 2>&1 \
          && DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 >> "$LOG" 2>&1; then
-        echo "[$(date -Is)] apache2 installed on attempt $ATTEMPT" >> "$LOG"
-        break
+        echo "[$(date -Is)] apache2 installed successfully" >> "$LOG"
+        systemctl enable apache2 >> "$LOG" 2>&1 || true
+        systemctl restart apache2 >> "$LOG" 2>&1 || true
+        ufw allow 'Apache' >> "$LOG" 2>&1 || true
+        exit 0
       fi
-      echo "[$(date -Is)] attempt $ATTEMPT failed (FW outbound path likely not ready); retry in 30s" >> "$LOG"
-      sleep 30
-    done
-    if ! command -v apache2 >/dev/null 2>&1; then
-      echo "[$(date -Is)] FATAL: apache2 not installed after 10 attempts (5 min). Phase 2b probably did not complete in time." >> "$LOG"
+      echo "[$(date -Is)] install attempt FAILED — systemd will retry in 60s" >> "$LOG"
       exit 1
-    fi
-  - systemctl enable apache2
-  - systemctl restart apache2
+  - path: /etc/systemd/system/apache2-bootstrap.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Install apache2 via apt-get with infinite retry
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=!/usr/sbin/apache2
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/install-apache.sh
+      RemainAfterExit=yes
+      Restart=on-failure
+      RestartSec=60s
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable apache2-bootstrap.service
+  - systemctl start --no-block apache2-bootstrap.service
+  - echo "[$(date -Is)] apache2-bootstrap.service enabled+started (infinite-retry installer)" >> /var/log/cloud-init-apache.log
   - ufw allow 'Apache' || true
   - echo "[$(date -Is)] apache2 enabled+started, listening on port 80" >> /var/log/cloud-init-apache.log
 CLOUDINIT
