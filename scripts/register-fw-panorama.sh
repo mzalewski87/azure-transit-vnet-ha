@@ -456,6 +456,75 @@ register_fw "$FW1_SERIAL" "FW1"
 register_fw "$FW2_SERIAL" "FW2"
 
 ###############################################################################
+# Device Log Forwarding — bind FW serials to default Collector Group with
+# local Panorama LC as the preferred collector.
+#
+# Without this, the GUI "Panorama → Collector Groups → default → Device Log
+# Forwarding" tab is empty. Per panorama-admin.pdf p.19082-19090 it is
+# technically not a hard requirement for single-LC topology (logs are still
+# accepted), but in practice with PAN-OS 12.1.5 the buffer behaviour without
+# DLF causes logd to drop logs after a small in-memory accumulation
+# (incoming log counters increment but blkcount stays at 0 → nothing
+# persists to disk). Adding DLF entries fixes the persistence path.
+#
+# Empirically discovered XML structure (PAN-OS 12.1.5, 2026-05-06) by
+# inspecting the live config after a manual GUI add:
+#   xpath: /config/devices/entry[@name='localhost.localdomain']/
+#          log-collector-group/entry[@name='default']/logfwd-setting/devices
+#   element: <entry name='FW_SERIAL'>
+#              <collectors>
+#                <entry name='LC_SERIAL'/>     <!-- entry name= for DLF members,
+#              </collectors>                        NOT <member>SERIAL</member>
+#            </entry>                              like the parent collectors -->
+###############################################################################
+echo ""
+echo "[5b/6] Setting Device Log Forwarding (FW -> local Panorama LC)..."
+
+# Discover Panorama serial via API (panorama_serial_number could be embedded in
+# tfvars but pulling from the device avoids drift).
+PAN_SERIAL=$(curl -sk --max-time 15 \
+  "$PAN_URL?type=op&cmd=<show><system><info></info></system></show>&key=$PAN_KEY" 2>/dev/null \
+  | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try: print(ET.fromstring(sys.stdin.read()).findtext('.//serial','') or '')
+except: print('')
+" 2>/dev/null)
+
+if [ -z "$PAN_SERIAL" ]; then
+  echo "  [WARN] Could not discover Panorama serial via API — skipping DLF setup."
+  echo "         Configure manually: Panorama -> Collector Groups -> default -> Device Log Forwarding"
+else
+  echo "  Panorama LC serial: $PAN_SERIAL"
+  for FW_LABEL in "FW1:$FW1_SERIAL" "FW2:$FW2_SERIAL"; do
+    LABEL="${FW_LABEL%%:*}"
+    SERIAL="${FW_LABEL##*:}"
+    DLF_RESP=$(curl -sk --max-time 20 "$PAN_URL" \
+      --data-urlencode "type=config" \
+      --data-urlencode "action=set" \
+      --data-urlencode "xpath=/config/devices/entry[@name='localhost.localdomain']/log-collector-group/entry[@name='default']/logfwd-setting/devices" \
+      --data-urlencode "element=<entry name='$SERIAL'><collectors><entry name='$PAN_SERIAL'/></collectors></entry>" \
+      --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+    DLF_STATUS=$(echo "$DLF_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try: print(ET.fromstring(sys.stdin.read()).get('status',''))
+except: print('parse-error')
+" 2>/dev/null)
+    if [ "$DLF_STATUS" = "success" ]; then
+      echo "  [OK] $LABEL ($SERIAL) -> LC $PAN_SERIAL"
+    else
+      MSG=$(echo "$DLF_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    r = ET.fromstring(sys.stdin.read())
+    print(r.findtext('.//msg','') or r.findtext('.//line','') or 'unknown')
+except: print('unparseable')
+" 2>/dev/null)
+      echo "  [WARN] $LABEL DLF set failed: $MSG"
+    fi
+  done
+fi
+
+###############################################################################
 # FW device certificates — handled at FW first boot, NOT here.
 #
 # Earlier versions of this script tried to fetch FW device certificates
@@ -500,6 +569,33 @@ try:
         print('  [WARN] Commit: ' + str(msg))
 except Exception as e:
     print('  [WARN] ' + str(e))
+" 2>/dev/null
+
+# Push CG config (incl. new DLF entries) to LC daemon. Without this push the
+# DLF entries are committed in Panorama config but the LC daemon does not
+# learn about them — same as the Phase 2a panorama_bind_local_lc reasoning.
+# Sync response (no <job>) is normal for single-LC; treat success+empty-job
+# as completed.
+echo "  Pushing CG default to LC (commit-all log-collector-config)..."
+CGPUSH_RESP=$(curl -sk --max-time 60 "$PAN_URL" \
+  --data-urlencode "type=commit" \
+  --data-urlencode "action=all" \
+  --data-urlencode "cmd=<commit-all><log-collector-config><log-collector-group>default</log-collector-group></log-collector-config></commit-all>" \
+  --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+echo "$CGPUSH_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    r = ET.fromstring(sys.stdin.read())
+    status = r.get('status','')
+    job = r.findtext('.//job','')
+    if status == 'success' and not job:
+        print('  [OK] CG push succeeded (sync — single-LC)')
+    elif job:
+        print(f'  [OK] CG push job {job} enqueued')
+    else:
+        print('  [WARN] CG push: ' + (r.findtext('.//msg','') or r.findtext('.//line','') or 'unknown'))
+except Exception as e:
+    print('  [WARN] CG push parse error: ' + str(e))
 " 2>/dev/null
 
 # Wait for FWs to connect to Panorama

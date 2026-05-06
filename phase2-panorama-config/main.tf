@@ -371,6 +371,13 @@ resource "null_resource" "panorama_fetch_device_certificate" {
 
       echo "=== [Step 3.5] Fetching Panorama device certificate ==="
 
+      # IMPORTANT: Panorama device-cert API syntax differs from FW. Pre-fix
+      # code used FW syntax (<show><device-cert>, <request><device-certificate>)
+      # which silently fails on Panorama with "is unexpected" (error code 17),
+      # so the resource always reported success while doing nothing. Empirically
+      # verified 2026-05-06 against PAN-OS 12.1.5:
+      #   FW:       <show><device-cert>...      <request><device-certificate>...
+      #   Panorama: <show><device-certificate>... <request><certificate>...
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
       API_KEY=$(curl -sk --max-time 30 \
         "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
@@ -384,74 +391,109 @@ print(root.findtext('.//key',''))
         echo "[ERROR] Could not get API key for cert fetch"; exit 1
       fi
 
-      # Skip if certificate already valid (avoid burning the OTP)
+      # Pre-check: skip if certificate already installed and valid (Panorama
+      # syntax). On a fresh Panorama with no cert, <result> is empty —
+      # treat as MISSING. If <result> contains a <not-valid-after> field with
+      # a future date, treat as VALID.
       CERT_STATUS=$(curl -sk --max-time 15 \
-        "$PANORAMA_URL/api/?type=op&cmd=<show><device-cert><info></info></device-cert></show>&key=$API_KEY" 2>/dev/null \
+        "$PANORAMA_URL/api/?type=op&cmd=<show><device-certificate><info></info></device-certificate></show>&key=$API_KEY" 2>/dev/null \
         | python3 -c "
-import sys, xml.etree.ElementTree as ET
+import sys, xml.etree.ElementTree as ET, datetime
 try:
     root = ET.fromstring(sys.stdin.read())
-    # Different PAN-OS versions place the status field differently
-    for tag in ('current-status','status','validity'):
-        val = root.find('.//' + tag)
-        if val is not None and val.text:
-            print(val.text.strip()); sys.exit(0)
-    print('Unknown')
-except Exception as e:
-    print('parse-error: ' + str(e))
+    if root.get('status','') != 'success':
+        print('UNKNOWN'); sys.exit(0)
+    result = root.find('.//result')
+    if result is None or len(list(result)) == 0:
+        print('MISSING'); sys.exit(0)
+    # Check for an explicit valid status or non-empty subject + future expiry
+    status = (result.findtext('.//status','') or result.findtext('.//validity','') or '').strip()
+    if status and 'valid' in status.lower():
+        print('VALID'); sys.exit(0)
+    subject = (result.findtext('.//subject','') or result.findtext('.//certificate-subject-name','') or '').strip()
+    print('VALID' if subject else 'MISSING')
+except Exception:
+    print('UNKNOWN')
 " 2>/dev/null)
 
       echo "  Current device-cert status: $CERT_STATUS"
-      if echo "$CERT_STATUS" | grep -qi "valid"; then
-        echo "  [OK] Device certificate already valid — skipping fetch (OTP not consumed)"
+      if [ "$CERT_STATUS" = "VALID" ]; then
+        echo "  [OK] Device certificate already installed — skipping fetch (OTP not consumed)"
         exit 0
       fi
 
-      echo "  Calling: request device-certificate fetch otp <OTP>"
+      # Fetch via Panorama syntax (<request><certificate><fetch>...). Returns
+      # async job ID; poll until FIN.
+      echo "  Calling: request certificate fetch otp <OTP>"
       RESP=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
         --data-urlencode "type=op" \
-        --data-urlencode "cmd=<request><device-certificate><fetch><otp>$OTP</otp></fetch></device-certificate></request>" \
+        --data-urlencode "cmd=<request><certificate><fetch><otp>$OTP</otp></fetch></certificate></request>" \
         --data-urlencode "key=$API_KEY" 2>/dev/null)
 
-      RESP_STATUS=$(echo "$RESP" | python3 -c "
+      JID=$(echo "$RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
-    print(ET.fromstring(sys.stdin.read()).get('status',''))
-except: print('parse-error')
+    r = ET.fromstring(sys.stdin.read())
+    if r.get('status','') != 'success':
+        print('')
+    else:
+        print(r.findtext('.//job','') or '')
+except: print('')
 " 2>/dev/null)
 
-      if [ "$RESP_STATUS" = "success" ]; then
-        echo "  [OK] Device certificate fetch submitted"
-        # Verify after a few seconds
-        sleep 10
-        FINAL_STATUS=$(curl -sk --max-time 15 \
-          "$PANORAMA_URL/api/?type=op&cmd=<show><device-cert><info></info></device-cert></show>&key=$API_KEY" 2>/dev/null \
-          | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    for tag in ('current-status','status','validity'):
-        val = root.find('.//' + tag)
-        if val is not None and val.text:
-            print(val.text.strip()); sys.exit(0)
-    print('Unknown')
-except: print('parse-error')
-" 2>/dev/null)
-        echo "  Verification: device-cert status = $FINAL_STATUS"
-      else
+      if [ -z "$JID" ]; then
+        # Submit failed entirely — extract error message
         MSG=$(echo "$RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
-    root = ET.fromstring(sys.stdin.read())
-    print(root.findtext('.//msg','') or root.findtext('.//line','') or 'unknown')
-except: print('unparseable')
+    r = ET.fromstring(sys.stdin.read())
+    print(r.findtext('.//msg','') or r.findtext('.//line','') or 'no message')
+except: print('unparseable response')
 " 2>/dev/null)
-        echo "  [WARN] Device cert fetch failed: $MSG"
-        echo "  Common causes:"
-        echo "    - OTP expired (60-min lifetime) -> regenerate in CSP Portal"
-        echo "    - OTP already used -> generate a fresh one"
-        echo "    - OTP for wrong device serial -> verify CSP Portal selected Panorama serial"
+        echo "  [ERROR] Device cert fetch submit failed: $MSG"
+        echo "  Raw response: $RESP" | head -c 500
+        exit 1
       fi
+
+      echo "  Cert fetch job $JID enqueued — polling for FIN..."
+      for I in $(seq 1 30); do  # 30 x 5s = 150s cap
+        JOB_STATE=$(curl -sk --max-time 10 \
+          "$PANORAMA_URL/api/?type=op&cmd=<show><jobs><id>$JID</id></jobs></show>&key=$API_KEY" 2>/dev/null \
+          | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    j = ET.fromstring(sys.stdin.read()).find('.//job')
+    s = (j.findtext('status','') or '').upper()
+    r = (j.findtext('result','') or '').upper()
+    d = ' | '.join((line.text or '') for line in j.iter('line') if line.text)
+    print(s + '|' + r + '|' + d[:300])
+except: print('||')
+" 2>/dev/null)
+        STATUS=$(echo "$JOB_STATE" | cut -d'|' -f1)
+        RESULT=$(echo "$JOB_STATE" | cut -d'|' -f2)
+        DETAILS=$(echo "$JOB_STATE" | cut -d'|' -f3)
+        if [ "$STATUS" = "FIN" ]; then
+          if [ "$RESULT" = "OK" ]; then
+            echo "  [OK] Device certificate installed after $((I*5))s"
+            exit 0
+          fi
+          echo "  [ERROR] Device cert fetch FIN/$RESULT after $((I*5))s"
+          echo "          Job details: $DETAILS"
+          if echo "$DETAILS" | grep -qi "OTP is not valid"; then
+            echo ""
+            echo "  >>> OTP is invalid (already used OR expired — OTPs are single-use, 60-min lifetime)"
+            echo "  >>> RECOVERY:"
+            echo "  >>>   1. CSP Portal -> Assets -> Device Certificates -> Generate OTP"
+            echo "  >>>      against Panorama serial: ${var.panorama_serial_number}"
+            echo "  >>>   2. Update phase2-panorama-config/terraform.tfvars: panorama_device_otp = \"<NEW_OTP>\""
+            echo "  >>>   3. terraform apply -target=null_resource.panorama_fetch_device_certificate"
+          fi
+          exit 1
+        fi
+        sleep 5
+      done
+      echo "  [WARN] Cert fetch job did not finish within 150s — investigate via show jobs id $JID"
+      exit 1
     SCRIPT
   }
 
