@@ -1115,6 +1115,129 @@ except: print('|')
 }
 
 ###############################################################################
+# Step 4b3: Restart Panorama (REQUIRED for ES indices reinit on disk-pair)
+#
+# WHY THIS IS REQUIRED (verified empirically 2026-05-07 on PAN-OS 12.1.5):
+# After Step 4b2 adds the disk-pair config and `commit-all log-collector-config`
+# pushes it to logd, the logd daemon accepts the new disk and starts writing
+# logs to it (`/dev/sdc → /opt/panlogs/ld1`, Used grows). However, the
+# Elasticsearch (ES) daemon does NOT automatically reinitialize its indices
+# against the new storage backend — it keeps using stale indices that were
+# associated with the empty `<deviceconfig/>` block from before disk-pair
+# was declared.
+#
+# Symptoms without this restart:
+#   - `show log-collector all` shows searchengine-status: Active, es: GREEN.
+#   - `debug log-collector log-collection-stats show incoming-logs` shows
+#     thousands of log entries received and counted by inline reports.
+#   - `df -h /opt/panlogs/ld1` shows Used growing live as logs flush to disk.
+#   - BUT `type=log&action=get` queries return count=0 every time, even
+#     after hours of waiting and many fresh traffic samples.
+#   - GUI Panorama → Monitor → Traffic remains empty.
+# After Panorama reboot:
+#   - Same disk, same config, same DLF entries → ES rebuilds indices on
+#     boot from the disk-pair declared in config.
+#   - Log query API returns actual results within ~1 minute of API back online.
+#   - GUI Monitor → Traffic populates with all historical + new logs.
+#
+# Cost: ~5-10 minutes Panorama boot time on Azure VM. One-shot per fresh
+# deploy; subsequent re-runs of `terraform apply` skip this step (count=0
+# guard plus the trigger only fires when after_add_log_disk changes).
+#
+# Implementation: send `<request><restart><system></system></restart></request>`
+# via op API. Connection drops within seconds. Sleep 8 minutes (typical boot),
+# then poll API up to 5 more minutes for keygen success.
+###############################################################################
+resource "null_resource" "panorama_restart_for_es_reinit" {
+  count = var.panorama_restart_after_disk_pair ? 1 : 0
+
+  triggers = {
+    after_add_log_disk = null_resource.panorama_add_log_disk.id
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PANORAMA_URL="https://${var.panorama_hostname}:${var.panorama_port}"
+      PAN_USER="${var.panorama_username}"
+
+      echo "=== [Step 4b3] Restarting Panorama for ES indices reinit on new disk-pair ==="
+      echo "  This adds ~8-13 minutes to Phase 2a duration but is required for"
+      echo "  log queries to work on a fresh deploy. Set var.panorama_restart_after_disk_pair=false"
+      echo "  to skip this step (e.g. if Panorama is already in steady state)."
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      API_KEY=$(curl -sk --max-time 30 \
+        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+print(ET.fromstring(sys.stdin.read()).findtext('.//key',''))
+" 2>/dev/null)
+
+      if [ -z "$API_KEY" ]; then
+        echo "[ERROR] Cannot get API key — Panorama may already be down. Skipping restart."
+        exit 0
+      fi
+
+      # Idempotency probe: if log query returns >0 results, ES indices are
+      # already healthy — no need to restart. Useful for re-runs of terraform apply.
+      JID=$(curl -sk --max-time 15 \
+        "$PANORAMA_URL/api/?type=log&log-type=traffic&nlogs=1&key=$API_KEY" \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try: print(ET.fromstring(sys.stdin.read()).findtext('.//job',''))
+except: print('')
+" 2>/dev/null)
+
+      if [ -n "$JID" ]; then
+        sleep 10
+        COUNT=$(curl -sk --max-time 15 \
+          "$PANORAMA_URL/api/?type=log&action=get&job-id=$JID&key=$API_KEY" \
+          | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    r = ET.fromstring(sys.stdin.read())
+    logs = r.find('.//logs')
+    print(logs.get('count','0') if logs is not None else '0')
+except: print('0')
+" 2>/dev/null)
+        if [ -n "$COUNT" ] && [ "$COUNT" != "0" ]; then
+          echo "  [OK] Log query already returns $COUNT entries — ES indices healthy, skipping restart"
+          exit 0
+        fi
+      fi
+
+      echo "  Sending request system restart (connection will drop)..."
+      curl -sk --max-time 5 \
+        "$PANORAMA_URL/api/?type=op&cmd=<request><restart><system></system></restart></request>&key=$API_KEY" \
+        2>/dev/null || true
+
+      echo "  Waiting 8 minutes for boot..."
+      sleep 480
+
+      echo "  Probing API for readiness (up to 5 min)..."
+      for I in $(seq 1 30); do
+        HTTP=$(curl -sk --max-time 10 -o /dev/null -w "%%{http_code}" \
+          "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null || echo "000")
+        if [ "$HTTP" = "200" ]; then
+          echo "  [OK] Panorama API back online (attempt $I)"
+          # Brief settle so ES finishes index init
+          sleep 30
+          exit 0
+        fi
+        sleep 10
+      done
+
+      echo "  [WARN] Panorama API not back after 13 min total. Manual check recommended."
+      echo "         If reachable: show log-collector all (expect searchengine-status: Active)"
+      exit 0
+    SCRIPT
+  }
+
+  depends_on = [null_resource.panorama_add_log_disk]
+}
+
+###############################################################################
 # Step 4c: Wait for all pending Panorama jobs to finish
 #
 # `commit` and `commit-all` over the XML API are asynchronous — they return a
@@ -1129,7 +1252,7 @@ except: print('|')
 ###############################################################################
 resource "null_resource" "panorama_wait_jobs_idle" {
   triggers = {
-    after_add_log_disk = null_resource.panorama_add_log_disk.id
+    after_restart = var.panorama_restart_after_disk_pair ? null_resource.panorama_restart_for_es_reinit[0].id : null_resource.panorama_add_log_disk.id
   }
 
   provisioner "local-exec" {

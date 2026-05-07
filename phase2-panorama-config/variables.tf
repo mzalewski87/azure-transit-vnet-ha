@@ -50,6 +50,22 @@ variable "panorama_port" {
   default     = 44300
 }
 
+variable "panorama_restart_after_disk_pair" {
+  description = <<-EOT
+    Whether Phase 2a Step 4b3 should restart Panorama after disk-pair add.
+    REQUIRED on a fresh deploy: PAN-OS 12.1.5 does not auto-reinit ES indices
+    on the new storage backend after `set log-collector ... disk-settings
+    disk-pair A`, so log queries return count=0 even though logs are received
+    and persisted to disk. A reboot fixes this once and for all.
+    Adds ~8-13 min to Phase 2a duration. The step has an idempotency probe
+    (skips restart if log query already returns >0), so re-runs of terraform
+    apply on an already-working Panorama do not trigger another reboot.
+    Set to false to skip entirely (e.g. if you'll restart manually via GUI).
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "panorama_username" {
   description = "Panorama administrator username"
   type        = string
