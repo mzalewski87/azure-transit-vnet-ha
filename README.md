@@ -788,6 +788,46 @@ Log Forwarding` block — should show two `[OK] FW1 (...) -> LC ...` lines.
 5. Collectors section: Add the local Panorama LC
 6. OK → **Commit → Commit and Push → Collector Groups → default**
 
+### Log Collector: log query returns count=0 despite logs being received
+
+**Should NOT happen** with current code (commit `0986fc8` and later).
+Phase 2a Step 4b3 (`null_resource.panorama_restart_for_es_reinit`)
+auto-restarts Panorama after disk-pair add to force ES indices reinit.
+
+**The trap:** PAN-OS 12.1.5 does NOT auto-reinit Elasticsearch indices
+when disk-pair config is added at runtime via XML API (Step 4b2). The
+result is a *very confusing* state where everything looks healthy but
+log queries return nothing:
+- `show log-collector all` reports `searchengine-status: Active`,
+  `connected: yes`, all daemons GREEN.
+- `debug log-collector log-collection-stats show incoming-logs` shows
+  thousands of logs received and being counted by inline reports
+  (top-ingress, top-egress, etc.).
+- `df -h /opt/panlogs/ld1` shows Used growing live as logs flush to disk.
+- BUT `type=log&action=get` returns `count=0` for every query.
+- AND GUI Monitor → Traffic remains empty.
+
+ES daemon keeps using stale indices associated with the empty
+`<deviceconfig/>` from before disk-pair was declared. Only a Panorama
+reboot rebuilds indices from the disk content. Verified empirically
+2026-05-07: `az vm restart vm-panorama` → 6 min boot → log query
+returned 100 entries instantly with real Front Door edge IPs as src.
+
+**If you find yourself in this state** (e.g. you ran with `var.panorama_restart_after_disk_pair = false`,
+or Step 4b3 timed out):
+
+```bash
+# Either via Panorama CLI:
+admin@panorama> request restart system
+
+# Or from your laptop (faster, more reliable):
+az vm restart -g rg-transit-hub -n vm-panorama
+# Wait ~6-8 min for boot, then re-test log query
+```
+
+After reboot, log query will return results within ~1 minute of the API
+coming back online.
+
 ### Log Collector: SearchEngine Inactive / disk-pair missing
 
 **Should NOT happen** with current code (commit `98ad5e6` and later).
@@ -817,6 +857,7 @@ into a memory buffer but **never flushes to long-term disk**:
 5. `commit`
 6. `exit; exit`
 7. `commit-all log-collector-config log-collector-group default`
+8. **`request restart system`** (or `az vm restart -g rg-transit-hub -n vm-panorama` from your laptop) — see next subsection for why
 
 Verify after first traffic:
 ```bash

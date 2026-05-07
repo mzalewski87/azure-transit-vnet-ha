@@ -67,15 +67,18 @@ re-read the ROADMAP first.
   Storage Accounts. Don't remove without verifying the race is fixed.
 - **Phase 2a writes `panorama_vm_auth_key.auto.tfvars`** — Phase 1b auto-loads
   it. This implicit cross-workspace handoff is real.
-- **Log Collector setup** has FIVE load-bearing pieces (after 2026-05-06 fixes):
+- **Log Collector setup** has SIX load-bearing pieces (after 2026-05-07 fixes):
   (1) local Panorama LC bound to default Collector Group, (2) dedicated
   `commit-all log-collector-config` push to LC daemon, (3) system-level
   log forwarding match-list under `/config/shared/log-settings/<TYPE>` in
-  Template, (4) **disk-pair declaration** under `.../log-collector/entry/disk-settings/disk-pair`
-  (without it logd buffers logs to RAM and drops on overflow → SearchEngine
-  Inactive → log query returns 0 even after thousands received), (5) **DLF
-  entries** under `.../log-collector-group/entry/logfwd-setting/devices`
-  binding each FW serial to the LC. See
+  Template, (4) **disk-pair declaration** under `.../log-collector/entry/disk-settings/disk-pair`,
+  (5) **DLF entries** under `.../log-collector-group/entry/logfwd-setting/devices`
+  binding each FW serial to the LC, (6) **Panorama restart after disk-pair
+  add** — PAN-OS 12.1.5 does not auto-reinit ES indices when disk-pair is
+  added at runtime, so log queries return 0 even with thousands of received
+  logs persisted to disk; only a reboot rebuilds the indices (Step 4b3,
+  `null_resource.panorama_restart_for_es_reinit`, ~8-13 min). All six are
+  automated in Phase 2a/2b. See
   `~/.claude/projects/-Users-mzalewski-TF-azure-ha-project/memory/panorama_log_collector.md`
   for the empirically-verified xpaths, CLI commit-all keyword quirks, and
   the discovery method (`debug cli on` per pan-os-panorama-api.pdf p.25).

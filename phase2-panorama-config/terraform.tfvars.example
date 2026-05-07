@@ -33,6 +33,19 @@ panorama_serial_number = ""   # e.g. "007300202012345"
 # Empty = skip device-cert fetch (Panorama works without one for on-prem logs).
 panorama_device_otp = ""      # e.g. "abc123def456..."
 
+# Step 4b3 — restart Panorama after disk-pair add (REQUIRED on fresh deploy)
+# PAN-OS 12.1.5 does not auto-reinit ES indices when disk-pair config is
+# added at runtime, so log queries return count=0 even though logs are
+# being received and persisted to disk. A reboot rebuilds the indices.
+# The step has an idempotency probe (skips if log query already returns
+# results), so re-runs of `terraform apply` on a working Panorama do not
+# trigger another restart.
+# true  = automatic restart, +8-13 min Phase 2a duration (default; recommended)
+# false = skip; you'll need to reboot Panorama manually via GUI for log
+#         queryability ("Device → Setup → Operations → Reboot Device" or
+#         `az vm restart -g rg-transit-hub -n vm-panorama`)
+panorama_restart_after_disk_pair = true
+
 # vm-auth-key lifetime in minutes (1440 = 24h, max 8760 = 365 days)
 vm_auth_key_lifetime = 1440
 
