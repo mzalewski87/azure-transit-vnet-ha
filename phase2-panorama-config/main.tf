@@ -1097,13 +1097,20 @@ except: print('|')
         done
       fi
 
-      # Push CG config to LC daemon (sync response for single-LC).
-      echo "  Pushing CG to LC daemon (commit-all log-collector-config)..."
-      curl -sk --max-time 60 -X POST "$PANORAMA_URL/api/" \
+      # Push CG config to LC daemon. On a fresh deploy ES initializes against
+      # the new disk and the API call can hang well beyond 60 s. Bumped to 240 s
+      # cap, AND wrap in `|| true` so a curl timeout (exit 28) does not abort
+      # the whole step — Step 4c (panorama_wait_jobs_idle) will catch any
+      # background commit that is still running, and Step 4b3 verifies ES
+      # actually flipped to Active. Worst case the user re-runs apply and
+      # the idempotency pre-check above skips.
+      echo "  Pushing CG to LC daemon (commit-all log-collector-config; up to 240 s)..."
+      curl -sk --max-time 240 -X POST "$PANORAMA_URL/api/" \
         --data-urlencode "type=commit" \
         --data-urlencode "action=all" \
         --data-urlencode "cmd=<commit-all><log-collector-config><log-collector-group>default</log-collector-group></log-collector-config></commit-all>" \
-        --data-urlencode "key=$API_KEY" > /dev/null
+        --data-urlencode "key=$API_KEY" > /dev/null 2>&1 || \
+        echo "  [WARN] commit-all log-collector-config timed out or failed — Step 4c + 4b3 will reconcile"
 
       echo "  [OK] disk-pair A active. SearchEngine will flip to Active within ~30s of first traffic."
       echo "       Verify: show log-collector all (searchengine-status: Active)"
