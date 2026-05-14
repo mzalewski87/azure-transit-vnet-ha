@@ -810,14 +810,28 @@ print(root.findtext('.//key',''))
         --data-urlencode "key=$API_KEY" > /dev/null
       echo "  NTP: 0.europe.pool.ntp.org, 1.europe.pool.ntp.org"
 
-      # Telemetry (EU statistics service)
+      # Statistics Service in the Template (propagates to every FW in the stack).
       curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=set" \
         --data-urlencode "xpath=$TPL_XPATH/update-schedule/statistics-service" \
         --data-urlencode "element=<application-reports>yes</application-reports><threat-prevention-reports>yes</threat-prevention-reports><threat-prevention-pcap>yes</threat-prevention-pcap><passive-dns-monitoring>yes</passive-dns-monitoring><url-reports>yes</url-reports><health-performance-reports>yes</health-performance-reports><file-identification-reports>yes</file-identification-reports>" \
         --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  Telemetry: EU statistics service enabled"
+      echo "  Statistics Service (Template): enabled"
+
+      # Device Telemetry region in the Template — propagates to every FW in
+      # the stack so the FWs also send telemetry to the same region as Panorama.
+      # This is the equivalent of the GUI checkbox "Apply this telemetry
+      # setting to all existing Template Stacks" — by setting it directly
+      # in the Template content, every Template Stack that includes this
+      # Template inherits the region.
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$TPL_XPATH/device-telemetry" \
+        --data-urlencode "element=<region>${var.telemetry_region}</region>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Device Telemetry (Template): region=${var.telemetry_region}"
 
       # System-level log settings (Templates > Device > Log Settings in GUI)
       # Forward system, config, user-id, hip-match, ip-tag, GlobalProtect logs

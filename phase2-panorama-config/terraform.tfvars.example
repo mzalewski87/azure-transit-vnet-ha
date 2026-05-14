@@ -33,6 +33,17 @@ panorama_serial_number = ""   # e.g. "007300202012345"
 # Empty = skip device-cert fetch (Panorama works without one for on-prem logs).
 panorama_device_otp = ""      # e.g. "abc123def456..."
 
+# Device Telemetry region (Panorama → Setup → Telemetry → Region in GUI).
+# Default `pl` (Poland) keeps telemetry in the Polish region. Otherwise PAN-OS
+# defaults to `americas`. Other valid 2-letter codes (PAN-OS 12.1.5):
+#   americas, au, ca, ch, de, de-rg, es, europe, fed, fr, gov, id, il, in,
+#   it, jp, kr, pl, qa, sa, sg, tw, uk, za
+# Setting is applied to BOTH Panorama itself and the Template content,
+# so every FW in the Template Stack inherits the same region — equivalent
+# to ticking the GUI checkbox "Apply this telemetry setting to all existing
+# Template Stacks".
+telemetry_region = "pl"
+
 # Step 4b3 — restart Panorama after disk-pair add (REQUIRED on fresh deploy)
 # PAN-OS 12.1.5 does not auto-reinit ES indices when disk-pair config is
 # added at runtime, so log queries return count=0 even though logs are

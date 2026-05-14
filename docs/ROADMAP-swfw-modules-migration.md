@@ -2,8 +2,7 @@
 
 **Status:** Future scope — not implemented in current code.
 **Why deferred:** the official `bootstrap` sub-module is incompatible with this
-deployment environment (corporate SSL inspection blocks PUT-with-body to
-`*.file.core.windows.net`). The remaining sub-modules are good candidates for
+deployment environment. The remaining sub-modules are good candidates for
 a partial adoption that would cut ~1,500 LOC of custom code.
 
 This document captures the migration plan so v2 work can pick up cleanly.

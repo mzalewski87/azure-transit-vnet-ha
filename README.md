@@ -231,11 +231,75 @@ This script automatically:
 
 ### Phase 3: Domain Controller (optional)
 
+This phase has two parts. **Part A is part of Phase 1b** (the bare Windows
+Server VM is deployed alongside the FWs). **Part B is fully optional** —
+only run it if you want the Windows Server promoted to an Active Directory
+Domain Controller for User-ID integration with PAN-OS.
+
+**Part A — deploy the bare DC VM** (already covered in Phase 1b above):
+
 ```bash
 terraform apply -target=module.app2_dc
 ```
 
-See `optional/dc-promote/` for Active Directory promotion.
+This creates `vm-spoke2-dc` (Windows Server 2022, joined to the Spoke2
+VNet) but leaves it as a plain Windows VM — no AD DS role installed yet.
+
+**Part B — promote to AD Domain Controller (optional, ~30-45 min):**
+
+The promotion is in a SEPARATE workspace (`optional/dc-promote/`) so it
+does not block the main deploy and can be skipped without consequence.
+
+1. Set up tfvars:
+   ```bash
+   cd optional/dc-promote/
+   cp terraform.tfvars.example terraform.tfvars
+   ```
+   Edit `terraform.tfvars` and fill in:
+   ```hcl
+   spoke2_subscription_id = "<YOUR_SPOKE2_SUBSCRIPTION_ID>"   # same as in root terraform.tfvars
+   admin_password         = "<SAME_AS_dc_admin_password_FROM_ROOT>"
+   # Optional overrides (defaults shown):
+   # spoke2_resource_group_name = "rg-spoke2-dc"
+   # dc_vm_name                 = "vm-spoke2-dc"
+   # domain_name                = "panw.labs"
+   ```
+
+2. Apply:
+   ```bash
+   terraform init
+   terraform apply
+   ```
+   The Custom Script Extension installs `AD-Domain-Services` + `DNS` +
+   RSAT tools, then runs `Install-ADDSForest` with the supplied password
+   as the Safe Mode Admin password. The VM reboots automatically when
+   promotion completes. Allocate **30-45 minutes** total — Terraform's
+   `create` timeout is set to 60 min and `lifecycle.ignore_changes = all`
+   so re-applies do not re-trigger the extension.
+
+3. Verify (via Bastion → RDP → vm-spoke2-dc):
+   ```powershell
+   nltest /sc_verify:panw.labs
+   Get-ADDomain | Select Name,DomainMode
+   ```
+   Expected: `Verifying secure channel ... Trusted DC Connection Status =
+   Success` and the domain `panw.labs` in `Windows2016Domain` mode or
+   higher.
+
+4. Tear down (if you only wanted to test):
+   ```bash
+   cd optional/dc-promote/
+   terraform destroy
+   ```
+   Note: `destroy` here only removes the Custom Script Extension Terraform
+   resource record — the AD DS role inside Windows is NOT uninstalled.
+   To fully clean, also `terraform destroy -target=module.app2_dc` from
+   the root.
+
+**After promotion — User-ID integration:** configure PAN-OS User-ID Agent
+to point at the DC's private IP (`10.113.0.4` by default) for user/group-
+based security policies. This is a manual step in Panorama → Device →
+User Identification → User Mapping.
 
 ### Verification
 

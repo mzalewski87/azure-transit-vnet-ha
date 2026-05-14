@@ -116,14 +116,32 @@ print(root.findtext('.//key',''))
         --data-urlencode "key=$API_KEY" > /dev/null
       echo "  NTP: 0.europe.pool.ntp.org, 1.europe.pool.ntp.org"
 
-      # 2d: Enable telemetry/statistics service (EU region)
+      # 2d: Enable Statistics Service (sends application/threat/URL reports to PANW).
       curl -sk --max-time 30 "$PANORAMA_URL/api/" \
         --data-urlencode "type=config" \
         --data-urlencode "action=set" \
         --data-urlencode "xpath=$SYSTEM_XPATH/update-schedule/statistics-service" \
         --data-urlencode "element=<application-reports>yes</application-reports><threat-prevention-reports>yes</threat-prevention-reports><threat-prevention-pcap>yes</threat-prevention-pcap><passive-dns-monitoring>yes</passive-dns-monitoring><url-reports>yes</url-reports><health-performance-reports>yes</health-performance-reports><file-identification-reports>yes</file-identification-reports>" \
         --data-urlencode "key=$API_KEY" > /dev/null
-      echo "  Telemetry: enabled (EU statistics service)"
+      echo "  Statistics Service: enabled (application/threat/URL reports)"
+
+      # 2e: Device Telemetry region (separate from Statistics Service — controls
+      # where the device sends telemetry data; defaults to "americas" otherwise).
+      # CLI keyword: `set deviceconfig system device-telemetry region <CODE>`.
+      # Valid 2-letter codes (verified via `debug cli on` on PAN-OS 12.1.5):
+      #   americas, au, ca, ch, de, de-rg, es, europe, fed, fr, gov, id, il,
+      #   in, it, jp, kr, pl, qa, sa, sg, tw, uk, za
+      # Default for this project = "pl" (Poland) — override via tfvar
+      # `telemetry_region`. The Template-side equivalent is set in
+      # modules/panorama_config (Step 5) so FWs in the Template Stack also
+      # send telemetry to the same region.
+      curl -sk --max-time 30 "$PANORAMA_URL/api/" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=set" \
+        --data-urlencode "xpath=$SYSTEM_XPATH/device-telemetry" \
+        --data-urlencode "element=<region>${var.telemetry_region}</region>" \
+        --data-urlencode "key=$API_KEY" > /dev/null
+      echo "  Device Telemetry: region=${var.telemetry_region}"
 
       # Commit all system settings
       curl -sk --max-time 60 "$PANORAMA_URL/api/" \
@@ -1361,6 +1379,8 @@ module "panorama_config" {
 
   apache_server_ip      = var.apache_server_ip
   external_lb_public_ip = var.external_lb_public_ip
+
+  telemetry_region = var.telemetry_region
 
   depends_on = [
     null_resource.panorama_activate_license,

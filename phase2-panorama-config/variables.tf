@@ -50,6 +50,23 @@ variable "panorama_port" {
   default     = 44300
 }
 
+variable "telemetry_region" {
+  description = <<-EOT
+    Device Telemetry region — 2-letter PAN-OS code that determines where
+    the device sends telemetry data. Default `pl` (Poland) keeps data in
+    the Polish region. Other valid codes (verified via `debug cli on` on
+    PAN-OS 12.1.5): americas, au, ca, ch, de, de-rg, es, europe, fed, fr,
+    gov, id, il, in, it, jp, kr, pl, qa, sa, sg, tw, uk, za.
+    Applied both on Panorama itself (Phase 2a Step 2) AND inside the
+    Template content (Step 5 module.panorama_config) so every FW in the
+    Template Stack inherits the same region — equivalent to ticking the
+    GUI checkbox "Apply this telemetry setting to all existing Template
+    Stacks" in Panorama → Setup → Telemetry.
+  EOT
+  type        = string
+  default     = "pl"
+}
+
 variable "panorama_restart_after_disk_pair" {
   description = <<-EOT
     Whether Phase 2a Step 4b3 should restart Panorama after disk-pair add.

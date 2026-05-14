@@ -44,6 +44,9 @@ modules/bootstrap/rendered/
 # Generated auth key files
 panorama_vm_auth_key.txt
 
+# AI assistant guidance — keep local only, do not publish to GitHub
+CLAUDE.md
+
 # Editor / OS
 .DS_Store
 *.textClipping

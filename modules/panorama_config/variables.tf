@@ -19,6 +19,12 @@ variable "panorama_password" {
   sensitive   = true
 }
 
+variable "telemetry_region" {
+  description = "Device Telemetry region for FW Template (propagates to every FW in the stack). Default `pl` (Poland). See phase2-panorama-config/variables.tf for the full list of valid 2-letter codes."
+  type        = string
+  default     = "pl"
+}
+
 variable "panorama_port" {
   description = <<-EOT
     Local port forwarded to Panorama HTTPS via Bastion tunnel. Default 44300
