@@ -658,6 +658,58 @@ admin@fw1> less mp-log bootstrap.log
 admin@fw1> show system bootstrap status
 ```
 
+### Panorama stuck in reboot loop (`Timed out waiting for device /dev/vdb7`)
+
+Symptom: Panorama VM cycles through boot/shutdown every ~5 minutes. Serial
+console (Azure Portal → Panorama VM → Boot diagnostics → Serial log) shows:
+
+```
+[ TIME ] Timed out waiting for device /dev/vdb7.
+hv_netvsc ... eth0: VF slot 1 added
+hv_netvsc ... eth0_tmp0: renamed from eth0      ← key line
+mlx5_core ... eth0: renamed from eth1
+pannet[..]: /proc/net/route contains no routes
+pansw[..]:  INFO MainThread Increment Reboot Counter
+pansw[..]:  INFO MainThread Shutdown PanOS
+```
+
+Root cause: **Accelerated Networking enabled on Panorama MGMT NIC.** The
+Mellanox VF (`mlx5_core`) attaches asynchronously and udev renames the
+synthetic `hv_netvsc` interface from `eth0` to `eth0_tmp0`. PAN-OS 12.1
+`PANNET`/`cfgif` configured the management IP on the original name and does
+not reconfigure after the rename, so the default route is never installed.
+waagent then loops 12 × 10 s waiting for `/proc/net/route` and triggers a
+forced shutdown. The `vdb7` timeout is a *secondary symptom*: Panorama
+auto-partitions the log disk on first boot, but the waagent-triggered
+reboots happen faster than partitioning can finish.
+
+Verify (Azure CLI):
+
+```bash
+az network nic show -g <rg> -n nic-panorama-mgmt \
+  --query "{name:name, accelerated:enableAcceleratedNetworking}" -o table
+```
+
+If `accelerated` is `true`, that is the cause. The Terraform module pins it
+to `false` (see `modules/panorama/main.tf` and `CLAUDE.md` → *Load-bearing
+details*), so this usually means someone toggled it manually in the Portal.
+
+Fix:
+
+```bash
+# Re-assert the Terraform-declared state (preferred — also clears any other
+# drift on the NIC):
+terraform apply -target=module.panorama
+
+# Or, if you cannot run Terraform right now, fix the NIC manually:
+az network nic update -g <rg> -n nic-panorama-mgmt \
+  --accelerated-networking false
+az vm restart -g <rg> -n vm-panorama
+```
+
+After the first stable boot (~15–20 min), Panorama finishes log-disk
+partitioning by itself; no manual disk intervention is needed.
+
 ### Panorama license fetch fails
 ```bash
 # Check serial number

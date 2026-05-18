@@ -35,6 +35,14 @@ resource "azurerm_network_interface" "panorama" {
   resource_group_name = var.resource_group_name
   tags                = var.tags
 
+  # MUST stay false on Panorama MGMT NIC.
+  # PAN-OS 12.1 on Hyper-V renames eth0 to eth0_tmp0 when a Mellanox VF
+  # attaches; PANNET then misconfigures the management interface, /proc/net/route
+  # stays empty, and waagent reboots the VM in a loop. Explicit `false` here
+  # also re-asserts the setting on every apply, so a manual Portal toggle
+  # gets reverted.
+  accelerated_networking_enabled = false
+
   ip_configuration {
     name                          = "ipconfig-panorama"
     subnet_id                     = var.management_subnet_id
