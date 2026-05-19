@@ -5,7 +5,7 @@
 # Run after Phase 1a and Phase 1b completion if you need AD DS.
 #
 # REQUIREMENTS:
-#   - DC VM (vm-spoke2-dc) must be running (deployed in Phase 1a)
+#   - DC VM (vm-dc-app2) must be running (deployed in Phase 1a)
 #   - Bastion tunnel or Azure API access
 #
 # USAGE:
@@ -16,7 +16,7 @@
 #   terraform apply
 #   # Wait 30-45 min for promotion completion and reboot
 #
-# VERIFICATION (via Azure Bastion -> RDP -> vm-spoke2-dc):
+# VERIFICATION (via Azure Bastion -> RDP -> vm-dc-app2):
 #   nltest /sc_verify:panw.labs
 #   Get-ADDomain | Select Name,DomainMode
 #

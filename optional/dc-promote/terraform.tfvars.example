@@ -7,7 +7,7 @@
 #   terraform init && terraform apply
 #
 # CZAS: ~30-45 minut (instalacja AD DS + reboot)
-# WERYFIKACJA (przez Bastion → RDP → vm-spoke2-dc):
+# WERYFIKACJA (przez Bastion → RDP → vm-dc-app2):
 #   nltest /sc_verify:panw.labs
 #   Get-ADDomain | Select Name,DomainMode
 ###############################################################################
@@ -19,6 +19,6 @@ spoke2_subscription_id = "REPLACE_ME"
 admin_password = "REPLACE_ME"
 
 # Optional — change if different from defaults:
-# spoke2_resource_group_name = "rg-spoke2-dc"
-# dc_vm_name                 = "vm-spoke2-dc"
+# spoke2_resource_group_name = "rg-app2-dc"
+# dc_vm_name                 = "vm-dc-app2"
 # domain_name                = "panw.labs"

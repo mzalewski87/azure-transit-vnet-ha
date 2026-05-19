@@ -2,13 +2,14 @@
 # Phase 2 – Panorama Configuration via panos provider
 #
 # The panos provider connects to Panorama via an active Bastion Tunnel.
-# Panorama does NOT have a public IP – access is only via the Spoke2 Bastion.
+# Panorama does NOT have a public IP – access is only via the management
+# Bastion in the transit hub (bastion-management / rg-transit-hub).
 #
 # STEP 1 (terminal 1) – start an HTTPS tunnel to Panorama (leave it open):
 #   PANORAMA_ID=$(cd .. && terraform output -raw panorama_vm_id)
 #   az network bastion tunnel \
-#     --name bastion-spoke2 \
-#     --resource-group rg-spoke2-dc \
+#     --name bastion-management \
+#     --resource-group rg-transit-hub \
 #     --target-resource-id "$PANORAMA_ID" \
 #     --resource-port 443 \
 #     --port 44300

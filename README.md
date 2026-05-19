@@ -242,7 +242,7 @@ Domain Controller for User-ID integration with PAN-OS.
 terraform apply -target=module.app2_dc
 ```
 
-This creates `vm-spoke2-dc` (Windows Server 2022, joined to the Spoke2
+This creates `vm-dc-app2` (Windows Server 2022, joined to the Spoke2
 VNet) but leaves it as a plain Windows VM — no AD DS role installed yet.
 
 **Part B — promote to AD Domain Controller (optional, ~30-45 min):**
@@ -260,8 +260,8 @@ does not block the main deploy and can be skipped without consequence.
    spoke2_subscription_id = "<YOUR_SPOKE2_SUBSCRIPTION_ID>"   # same as in root terraform.tfvars
    admin_password         = "<SAME_AS_dc_admin_password_FROM_ROOT>"
    # Optional overrides (defaults shown):
-   # spoke2_resource_group_name = "rg-spoke2-dc"
-   # dc_vm_name                 = "vm-spoke2-dc"
+   # spoke2_resource_group_name = "rg-app2-dc"
+   # dc_vm_name                 = "vm-dc-app2"
    # domain_name                = "panw.labs"
    ```
 
@@ -277,7 +277,7 @@ does not block the main deploy and can be skipped without consequence.
    `create` timeout is set to 60 min and `lifecycle.ignore_changes = all`
    so re-applies do not re-trigger the extension.
 
-3. Verify (via Bastion → RDP → vm-spoke2-dc):
+3. Verify (via Bastion → RDP → vm-dc-app2):
    ```powershell
    nltest /sc_verify:panw.labs
    Get-ADDomain | Select Name,DomainMode
