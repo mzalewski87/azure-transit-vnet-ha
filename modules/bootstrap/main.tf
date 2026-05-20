@@ -39,12 +39,12 @@ resource "azurerm_user_assigned_identity" "bootstrap" {
 
 resource "local_file" "fw1_init_cfg" {
   content = templatefile("${path.module}/templates/init-cfg.txt.tpl", {
-    hostname                = "fw1-transit-hub"
-    panorama_server         = var.panorama_private_ip
-    panorama_template_stack = var.panorama_template_stack
-    panorama_device_group   = var.panorama_device_group
-    panorama_vm_auth_key    = var.panorama_vm_auth_key
-    authcodes               = var.fw_auth_code
+    hostname                              = "fw1-transit-hub"
+    panorama_server                       = var.panorama_private_ip
+    panorama_template_stack               = var.panorama_template_stack
+    panorama_device_group                 = var.panorama_device_group
+    panorama_vm_auth_key                  = var.panorama_vm_auth_key
+    authcodes                             = var.fw_auth_code
     vm_series_auto_registration_pin_id    = var.vm_series_auto_registration_pin_id
     vm_series_auto_registration_pin_value = var.vm_series_auto_registration_pin_value
   })
@@ -53,12 +53,12 @@ resource "local_file" "fw1_init_cfg" {
 
 resource "local_file" "fw2_init_cfg" {
   content = templatefile("${path.module}/templates/init-cfg.txt.tpl", {
-    hostname                = "fw2-transit-hub"
-    panorama_server         = var.panorama_private_ip
-    panorama_template_stack = var.panorama_template_stack
-    panorama_device_group   = var.panorama_device_group
-    panorama_vm_auth_key    = var.panorama_vm_auth_key
-    authcodes               = var.fw_auth_code
+    hostname                              = "fw2-transit-hub"
+    panorama_server                       = var.panorama_private_ip
+    panorama_template_stack               = var.panorama_template_stack
+    panorama_device_group                 = var.panorama_device_group
+    panorama_vm_auth_key                  = var.panorama_vm_auth_key
+    authcodes                             = var.fw_auth_code
     vm_series_auto_registration_pin_id    = var.vm_series_auto_registration_pin_id
     vm_series_auto_registration_pin_value = var.vm_series_auto_registration_pin_value
   })
