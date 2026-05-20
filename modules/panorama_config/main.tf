@@ -610,8 +610,12 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_zones     = [panos_panorama_zone.trust.name]
     destination_addresses = [var.spoke2_vnet_cidr]
 
+    # NOTE: `ping` and `icmp` are SEPARATE App-IDs in PAN-OS — `ping` covers
+    # ICMP echo request/reply, `icmp` covers other ICMP types
+    # (destination-unreachable, time-exceeded, redirect, etc.). Rules that
+    # list only `icmp` will silently deny ping traffic. Always add both.
     applications = [
-      "web-browsing", "ssl", "ssh", "dns", "icmp",
+      "web-browsing", "ssl", "ssh", "dns", "icmp", "ping",
       "kerberos", "ldap", "ms-ds-smb", "msrpc-base",
       "ms-rdp", "ntp-base",
     ]
@@ -637,8 +641,9 @@ resource "panos_panorama_security_rule_group" "transit" {
     destination_zones     = [panos_panorama_zone.trust.name]
     destination_addresses = [var.spoke1_vnet_cidr]
 
+    # See note on `ping` vs `icmp` App-ID split in Spoke1-to-Spoke2 rule above.
     applications = [
-      "web-browsing", "ssl", "ssh", "dns", "icmp",
+      "web-browsing", "ssl", "ssh", "dns", "icmp", "ping",
       "kerberos", "ldap", "ms-ds-smb", "msrpc-base",
       "ms-rdp", "ntp-base",
     ]
@@ -673,8 +678,13 @@ resource "panos_panorama_security_rule_group" "transit" {
     # If something else legitimate gets denied (Monitor -> Traffic, rule =
     # Deny-All), add the resolved App-ID here after verifying it via
     #   admin@panorama> show application all | match <name>
+    # `ping` is included so outbound ICMP echo is permitted by App-ID, but
+    # see the Azure SLB outbound-ICMP limitation in README ("Known Azure
+    # limitations") — echo-reply still won't return to spoke VMs because
+    # Azure Standard LB outbound rules don't NAT ICMP. The rule is correct;
+    # the limitation is platform-level.
     applications = [
-      "web-browsing", "ssl", "dns", "ntp-base", "icmp",
+      "web-browsing", "ssl", "dns", "ntp-base", "icmp", "ping",
       "apt-get", "yum", "ms-update",
       "github", "git",
     ]

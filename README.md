@@ -493,6 +493,22 @@ az network bastion tunnel --name bastion-management --resource-group rg-transit-
 
 DC outbound traffic flow: `DC (10.113.0.4) → UDR 0/0 → ILB → FW (SNAT) → ELB → Internet`
 
+> **Known Azure limitation — outbound ICMP to Internet does NOT work.**
+> Azure Standard Load Balancer outbound rules support TCP and UDP only —
+> ICMP is not translated. So `ping 1.1.1.1` from a spoke VM hits
+> `Allow-Outbound-Internet` (allow), echo-request leaves, but echo-reply
+> never returns and the session ages out. Real apps are unaffected
+> (HTTPS browsing, `apt update`, `yum`, NTP all work). For Internet
+> connectivity tests, use TCP probes:
+> `Test-NetConnection 1.1.1.1 -Port 443` (Windows) or
+> `curl -sI https://1.1.1.1` (Linux), not `ping`.
+> Reference: <https://learn.microsoft.com/en-us/azure/load-balancer/outbound-rules>
+> ("Outbound rules support TCP and UDP. ICMP is not supported.")
+>
+> East-west ping spoke ↔ spoke DOES work (intra-Azure, no SLB outbound
+> involved) — provided the relevant Security Policy rule lists both
+> `icmp` AND `ping` App-IDs (they are separate in PAN-OS).
+
 ### East-West: DC ↔ Ubuntu (via FW)
 
 ```bash
