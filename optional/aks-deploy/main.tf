@@ -46,36 +46,18 @@ module "edl_server" {
   tags = var.tags
 }
 
-# Wait for nginx to start serving the EDL files. Phase C (panos_panorama_edl)
-# uses these URLs, but PAN-OS would happily accept a 503/404 at creation time
-# and only mark the EDL list "empty" until it gets a real response. Better
-# to block here so the first apply runs end-to-end with valid lists from the
-# very first refresh.
-resource "null_resource" "wait_for_edl_http" {
-  triggers = {
-    edl_ip = module.edl_server.private_ip
-  }
-
-  provisioner "local-exec" {
-    command = <<-SCRIPT
-      set -e
-      EDL_URL="${module.edl_server.fqdn_edl_url}"
-      echo "Waiting for EDL nginx to respond at $EDL_URL (up to 10 min)..."
-      for i in $(seq 1 60); do
-        if curl -fsS --max-time 5 "$EDL_URL" 2>/dev/null | grep -q '^[^#]'; then
-          echo "  [$i/60] EDL FQDN list reachable"
-          exit 0
-        fi
-        echo "  [$i/60] not ready yet — sleep 10s..."
-        sleep 10
-      done
-      echo "  [FAIL] EDL nginx did not start serving within 10 min"
-      echo "  Investigate: ssh into vm-edl-server, check /var/log/cloud-init-edl.log"
-      exit 1
-    SCRIPT
-  }
-
-  depends_on = [module.edl_server]
+# Give the EDL VM cloud-init enough time to install nginx + python3 and run
+# the generator once. We can't poll the EDL server directly from the machine
+# running terraform because the EDL IP (10.255.2.x) sits inside the Azure
+# private network — there's no path from a local laptop without a Bastion
+# tunnel just for this check, and that's more plumbing than the value it
+# adds. Instead, sleep 5 min after VM creation and rely on PAN-OS's own
+# EDL retry (5-min default) to converge once the file IS being served.
+# Worst case: first EDL pull returns 503, PAN-OS retries 5 min later, list
+# populates. Cluster creation has its own ~10-15 min boot window anyway.
+resource "time_sleep" "wait_for_edl_bootstrap" {
+  depends_on      = [module.edl_server]
+  create_duration = "300s"
 }
 
 ###############################################################################
@@ -106,7 +88,7 @@ module "aks_network" {
 
   tags = var.tags
 
-  depends_on = [null_resource.wait_for_edl_http]
+  depends_on = [time_sleep.wait_for_edl_bootstrap]
 }
 
 ###############################################################################
@@ -133,7 +115,7 @@ module "panorama_aks_rules" {
 
   depends_on = [
     module.aks_network,
-    null_resource.wait_for_edl_http,
+    time_sleep.wait_for_edl_bootstrap,
   ]
 }
 
