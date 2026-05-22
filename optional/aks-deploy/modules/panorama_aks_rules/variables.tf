@@ -62,6 +62,36 @@ variable "trust_interface" {
   default     = "ethernet1/2"
 }
 
+variable "template_name_for_routes" {
+  description = "Existing Template name where the VR static routes for spoke3 will be added (must match modules/panorama_config)"
+  type        = string
+  default     = "Transit-VNet-Template"
+}
+
+variable "template_stack_name" {
+  description = "Existing Template Stack name (for commit-all template-stack push after adding routes)"
+  type        = string
+  default     = "Transit-VNet-Stack"
+}
+
+variable "vr_internal_name" {
+  description = "Existing VR-Internal name (modules/panorama_config)"
+  type        = string
+  default     = "VR-Internal"
+}
+
+variable "vr_external_name" {
+  description = "Existing VR-External name (modules/panorama_config)"
+  type        = string
+  default     = "VR-External"
+}
+
+variable "trust_subnet_gateway" {
+  description = "Gateway IP on the trust subnet (used as next-hop for VR-Internal route to spoke3). Typically cidrhost(snet-private, 1) = 10.110.0.1"
+  type        = string
+  default     = "10.110.0.1"
+}
+
 variable "edl_server_ip" {
   description = "Private IP of the EDL nginx server (source URL for panos_panorama_edl)"
   type        = string

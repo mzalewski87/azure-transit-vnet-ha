@@ -47,6 +47,41 @@ terraform {
 }
 
 ###############################################################################
+# Spoke3 routes in the existing VR-Internal / VR-External
+#
+# Without these, FW's VR-Internal has no route back to 10.114.0.0/16 when
+# return traffic for AKS-initiated outbound arrives. Symptom: traffic logs
+# show `app=incomplete` because FW gets the SYN but the SYN-ACK return is
+# dropped — empirically verified on test deploy 2026-05-22.
+#
+# Mirrors the spoke1/spoke2 routes already in modules/panorama_config:
+#   VR-Internal:  route 10.114.0.0/16 → trust gateway (interface ethernet1/2)
+#   VR-External:  route 10.114.0.0/16 → next-vr VR-Internal (so any external
+#                                       traffic destined to spoke3 is handed
+#                                       off to the internal VR for delivery)
+###############################################################################
+
+resource "panos_panorama_static_route_ipv4" "int_spoke3" {
+  name           = "route-to-spoke3"
+  template       = var.template_name_for_routes
+  virtual_router = var.vr_internal_name
+  destination    = var.aks_spoke_cidr
+  next_hop       = var.trust_subnet_gateway
+  interface      = var.trust_interface
+  metric         = 10
+}
+
+resource "panos_panorama_static_route_ipv4" "ext_to_spoke3" {
+  name           = "spoke3-via-internal"
+  template       = var.template_name_for_routes
+  virtual_router = var.vr_external_name
+  destination    = var.aks_spoke_cidr
+  type           = "next-vr"
+  next_hop       = var.vr_internal_name
+  metric         = 10
+}
+
+###############################################################################
 # External Dynamic Lists
 ###############################################################################
 
@@ -428,9 +463,10 @@ except Exception:
 resource "null_resource" "commit_all_to_fws" {
   triggers = {
     # Re-run only when rule contents change (rule names list change triggers).
-    rule_names   = "${panos_panorama_security_rule_group.aks_rules.id}|${panos_panorama_nat_rule_group.aks_dnat.id}"
+    rule_names   = "${panos_panorama_security_rule_group.aks_rules.id}|${panos_panorama_nat_rule_group.aks_dnat.id}|${panos_panorama_static_route_ipv4.int_spoke3.id}|${panos_panorama_static_route_ipv4.ext_to_spoke3.id}"
     panorama_url = "https://${var.panorama_hostname}:${var.panorama_port}"
     dg_name      = var.device_group_name
+    stack_name   = var.template_stack_name
   }
 
   provisioner "local-exec" {
@@ -439,8 +475,9 @@ resource "null_resource" "commit_all_to_fws" {
       PAN_URL="${self.triggers.panorama_url}/api/"
       PAN_USER="${var.panorama_username}"
       DEVICE_GROUP="${self.triggers.dg_name}"
+      TEMPLATE_STACK="${self.triggers.stack_name}"
 
-      echo "=== commit-all shared-policy → Device Group $DEVICE_GROUP ==="
+      echo "=== Pushing Template Stack ($TEMPLATE_STACK) + Device Group ($DEVICE_GROUP) ==="
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
       PAN_KEY=$(curl -sk --max-time 30 \
@@ -458,13 +495,47 @@ print(root.findtext('.//key',''))
         exit 1
       fi
 
-      DG_PUSH_RESP=$(curl -sk --max-time 180 "$PAN_URL" \
-        --data-urlencode "type=commit" \
-        --data-urlencode "action=all" \
-        --data-urlencode "cmd=<commit-all><shared-policy><device-group><entry name='$DEVICE_GROUP'/></device-group></shared-policy></commit-all>" \
-        --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+      # Helper: poll a job-id until FIN (timeout 10 min)
+      poll_job() {
+        local JOB_ID="$1"
+        local LABEL="$2"
+        for i in $(seq 1 60); do
+          sleep 10
+          local STATUS_RESP=$(curl -sk --max-time 30 "$PAN_URL" \
+            --data-urlencode "type=op" \
+            --data-urlencode "cmd=<show><jobs><id>$JOB_ID</id></jobs></show>" \
+            --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+          local STATUS=$(echo "$STATUS_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try: print(ET.fromstring(sys.stdin.read()).findtext('.//job/status',''))
+except: print('')
+" 2>/dev/null)
+          if [ "$STATUS" = "FIN" ]; then
+            local RESULT=$(echo "$STATUS_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try: print(ET.fromstring(sys.stdin.read()).findtext('.//job/result',''))
+except: print('')
+" 2>/dev/null)
+            echo "  [OK] $LABEL FIN result=$RESULT"
+            [ "$RESULT" = "OK" ] && return 0
+            echo "  [WARN] $LABEL completed with result=$RESULT (check Panorama Task Manager)"
+            return 0
+          fi
+          echo "  [$i/60] $LABEL in progress (status=$STATUS) — wait 10s..."
+        done
+        echo "  [ERROR] $LABEL timed out after 10 min"
+        return 1
+      }
 
-      JOB_ID=$(echo "$DG_PUSH_RESP" | python3 -c "
+      submit_push() {
+        local CMD="$1"
+        local LABEL="$2"
+        local RESP=$(curl -sk --max-time 180 "$PAN_URL" \
+          --data-urlencode "type=commit" \
+          --data-urlencode "action=all" \
+          --data-urlencode "cmd=$CMD" \
+          --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+        local JOB_ID=$(echo "$RESP" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     root = ET.fromstring(sys.stdin.read())
@@ -477,71 +548,23 @@ except SystemExit:
 except Exception as e:
     print(f'ERROR: {e}', file=sys.stderr); sys.exit(1)
 " 2>&1)
+        if echo "$JOB_ID" | grep -q "ERROR"; then
+          echo "[ERROR] $LABEL submission failed: $JOB_ID"
+          return 1
+        fi
+        echo "  [OK] $LABEL submitted (job $JOB_ID)"
+        poll_job "$JOB_ID" "$LABEL"
+      }
 
-      if echo "$JOB_ID" | grep -q "ERROR"; then
-        echo "[ERROR] commit-all submission failed: $JOB_ID"
-        exit 1
-      fi
+      # Order matters: template-stack first (so VR routes reach FW BEFORE the
+      # security/NAT rules that depend on them), then shared-policy.
+      submit_push "<commit-all><template-stack><name>$TEMPLATE_STACK</name></template-stack></commit-all>" "Template Stack push" || exit 1
 
-      if [ -z "$JOB_ID" ]; then
-        echo "[WARN] No job ID returned — push may have completed synchronously"
-        exit 0
-      fi
+      echo "  Waiting 20s for template push to settle on FWs..."
+      sleep 20
 
-      echo "  [OK] commit-all submitted (job $JOB_ID); polling for completion..."
-
-      # Poll the job status — timeout 10 min (template + DG push to 2 FWs ~3-5 min)
-      for i in $(seq 1 60); do
-        sleep 10
-        STATUS_RESP=$(curl -sk --max-time 30 "$PAN_URL" \
-          --data-urlencode "type=op" \
-          --data-urlencode "cmd=<show><jobs><id>$JOB_ID</id></jobs></show>" \
-          --data-urlencode "key=$PAN_KEY" 2>/dev/null)
-
-        STATUS=$(echo "$STATUS_RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    print(root.findtext('.//job/status',''))
-except Exception:
-    print('')
-" 2>/dev/null)
-
-        case "$STATUS" in
-          FIN)
-            RESULT=$(echo "$STATUS_RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    print(root.findtext('.//job/result',''))
-except Exception:
-    print('')
-" 2>/dev/null)
-            echo "  [OK] commit-all FIN result=$RESULT"
-            if [ "$RESULT" != "OK" ]; then
-              echo "  [WARN] commit-all completed with result=$RESULT (check Panorama Task Manager)"
-            fi
-            exit 0
-            ;;
-          ACT|PEND)
-            PROGRESS=$(echo "$STATUS_RESP" | python3 -c "
-import sys, xml.etree.ElementTree as ET
-try:
-    root = ET.fromstring(sys.stdin.read())
-    print(root.findtext('.//job/progress','?'))
-except Exception:
-    print('?')
-" 2>/dev/null)
-            echo "  [$i/60] commit-all in progress (status=$STATUS, progress=$PROGRESS%) — wait 10s..."
-            ;;
-          *)
-            echo "  [$i/60] unexpected status='$STATUS' — wait 10s..."
-            ;;
-        esac
-      done
-
-      echo "[ERROR] commit-all timed out after 10 minutes — investigate on Panorama"
-      exit 1
+      submit_push "<commit-all><shared-policy><device-group><entry name='$DEVICE_GROUP'/></device-group></shared-policy></commit-all>" "Device Group push" || exit 1
+      exit 0
     SCRIPT
   }
 
