@@ -88,6 +88,11 @@ resource "panos_panorama_static_route_ipv4" "ext_to_spoke3" {
 # URL EDL — wildcards supported, e.g. *.hcp.<region>.azmk8s.io/
 # The trailing slash on each entry is added by generate_aks_edl.py — without
 # it PAN-OS silently fails the wildcard match. See README/aks-rules-structure.
+#
+# repeat=hourly + repeat_at=minute (0-59). Without repeat_at PAN-OS validation
+# fails ("recurring hourly is missing 'at'"), which BLOCKS commit-all to FW
+# — entire Panorama push stalls (silent in commit-all "OK with warnings"
+# status, only visible via `validate full`). Lesson learned 2026-05-22.
 resource "panos_panorama_edl" "aks_fqdn" {
   name         = "AKS-Egress-FQDN"
   device_group = var.device_group_name
@@ -95,10 +100,14 @@ resource "panos_panorama_edl" "aks_fqdn" {
   type         = "url"
   source       = "http://${var.edl_server_ip}/edl/aks-egress-fqdn.txt"
   repeat       = var.fqdn_edl_refresh
+  repeat_at    = var.fqdn_edl_refresh == "hourly" ? "07" : null # minute of the hour
 }
 
 # IP EDL — CIDRs from Azure Service Tags (AzureCloud.<region>). Required for
 # Konnectivity tunnel (UDP 1194 + TCP 9000) where AKS does NOT use FQDNs.
+# repeat=daily requires repeat_at=HH:MM (24-hour clock). 03:23 UTC chosen
+# to be off-the-hour (avoid sync with other cron-style jobs) and after the
+# EDL server's own 03:17 UTC generator timer.
 resource "panos_panorama_edl" "aks_ips" {
   name         = "AKS-Egress-IPs"
   device_group = var.device_group_name
@@ -106,6 +115,7 @@ resource "panos_panorama_edl" "aks_ips" {
   type         = "ip"
   source       = "http://${var.edl_server_ip}/edl/aks-egress-ips.txt"
   repeat       = var.ips_edl_refresh
+  repeat_at    = var.ips_edl_refresh == "daily" ? "03:23" : null # HH:MM 24-hour
 }
 
 ###############################################################################
