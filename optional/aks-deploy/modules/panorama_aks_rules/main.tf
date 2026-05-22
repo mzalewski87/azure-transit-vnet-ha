@@ -105,9 +105,10 @@ resource "panos_panorama_edl" "aks_fqdn" {
 
 # IP EDL — CIDRs from Azure Service Tags (AzureCloud.<region>). Required for
 # Konnectivity tunnel (UDP 1194 + TCP 9000) where AKS does NOT use FQDNs.
-# repeat=daily requires repeat_at=HH:MM (24-hour clock). 03:23 UTC chosen
-# to be off-the-hour (avoid sync with other cron-style jobs) and after the
-# EDL server's own 03:17 UTC generator timer.
+# repeat=daily requires repeat_at as exactly 2 chars (hour 00-23, NOT HH:MM
+# — verified empirically 2026-05-22 after "needs to be exactly 2 characters"
+# validation error). 03 = 03:00 UTC, just after the EDL server's own 03:17
+# regeneration timer fires (so PAN-OS pulls the fresh file).
 resource "panos_panorama_edl" "aks_ips" {
   name         = "AKS-Egress-IPs"
   device_group = var.device_group_name
@@ -115,7 +116,7 @@ resource "panos_panorama_edl" "aks_ips" {
   type         = "ip"
   source       = "http://${var.edl_server_ip}/edl/aks-egress-ips.txt"
   repeat       = var.ips_edl_refresh
-  repeat_at    = var.ips_edl_refresh == "daily" ? "03:23" : null # HH:MM 24-hour
+  repeat_at    = var.ips_edl_refresh == "daily" ? "03" : null # hour 00-23 (no minutes)
 }
 
 ###############################################################################
