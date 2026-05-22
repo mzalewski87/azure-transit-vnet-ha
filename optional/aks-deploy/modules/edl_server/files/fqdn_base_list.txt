@@ -1,0 +1,63 @@
+# AKS Egress FQDN Baseline
+#
+# Hardcoded fallback list used by generate_aks_edl.py when the dynamic update
+# from Microsoft docs/APIs fails. Sourced from:
+#   https://learn.microsoft.com/en-us/azure/aks/outbound-rules-control-egress
+#
+# Format: one FQDN per line. Wildcards permitted. Lines starting with # or
+# ; are comments. The ${REGION} placeholder is substituted at generation
+# time with the value of aks_region from settings.yaml.
+#
+# NOTE: trailing slashes are NOT included here — the generator appends "/"
+# to every non-comment line when writing aks-egress-fqdn.txt. PAN-OS URL EDL
+# requires the trailing slash for wildcard matches to work.
+#
+# Re-read the MS docs page when you suspect missing endpoints; categories
+# below mirror the structure of that page so cross-checks are mechanical.
+
+# --- Required: AKS control plane + Azure global ---
+*.hcp.${REGION}.azmk8s.io
+mcr.microsoft.com
+*.data.mcr.microsoft.com
+mcr-0001.mcr-msedge.net
+management.azure.com
+login.microsoftonline.com
+packages.microsoft.com
+acs-mirror.azureedge.net
+packages.aks.azure.com
+
+# --- Required: Ubuntu package mirrors (node OS updates) ---
+security.ubuntu.com
+azure.archive.ubuntu.com
+changelogs.ubuntu.com
+snapshot.ubuntu.com
+
+# --- Optional: Azure Monitor / Container Insights ---
+*.ods.opinsights.azure.com
+*.oms.opinsights.azure.com
+*.monitoring.azure.com
+*.ingest.monitor.azure.com
+global.handler.control.monitor.azure.com
+
+# --- Optional: Azure Policy add-on ---
+data.policy.core.windows.net
+store.policy.core.windows.net
+
+# --- Optional: Cluster Extensions / Arc ---
+*.dp.kubernetesconfiguration.azure.com
+arcmktplaceprod.azurecr.io
+
+# --- WordPress workload: image pulls (Bitnami via Docker Hub) ---
+docker.io
+registry-1.docker.io
+auth.docker.io
+production.cloudflare.docker.com
+*.docker.com
+
+# --- WordPress workload: Helm chart repos ---
+charts.bitnami.com
+kubernetes.github.io
+
+# --- ingress-nginx controller image ---
+registry.k8s.io
+*.pkg.dev

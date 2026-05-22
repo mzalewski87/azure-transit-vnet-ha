@@ -21,6 +21,20 @@ Read-priority key:
 | `securing-apps-azure-design-guide.pdf` | 4.7 MB | — | Companion design guide to the above. Architectural rationale, topology, HA failover logic, NSG/UDR design. Required reading **before** the deployment guide per PANW's guide-types convention. **Also published by PANW under the title "Azure Architecture Guide"** at <https://www.paloaltonetworks.com/resources/guides/azure-architecture-guide> — same PDF, two URLs (verified 2026-05-05). |
 | `pan-os-panorama-api.pdf` | 2.3 MB | — | **Authoritative XML / REST API reference for PAN-OS + Panorama 11.1.** Critical for `phase2-panorama-config/main.tf` and `modules/panorama_config/main.tf` automation. Section "Use the CLI to Find XML API Syntax" (page 25, `debug cli on`) is the **canonical method to discover XML for any CLI command** — used 2026-05-06 to find the disk-pair xpath. Also documents async/sync commit semantics, error codes (13 = schema-not-found, 17 = is-unexpected), and operational vs config command structure. Source: <https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-panorama-api/get-started-with-the-pan-os-xml-api/explore-the-api>. |
 
+## P1 — AZURE KUBERNETES SERVICE (AKS) — optional/aks-deploy/
+
+Microsoft Learn does not provide a stable PDF download URL for these articles;
+they live on web pages only. Pull as HTML/PDF manually when you need offline copies
+(File > Print > Save as PDF in the browser). Index entries here so the docs are
+discoverable from this catalogue even when the local PDFs are absent.
+
+| Source URL | Notes |
+|---|---|
+| <https://learn.microsoft.com/en-us/azure/aks/outbound-rules-control-egress> | **AKS egress allow-list reference.** Source of truth for FQDNs in `optional/aks-deploy/modules/edl_server/files/fqdn_base_list.txt`. Re-read when MS adds new endpoints. |
+| <https://learn.microsoft.com/en-us/azure/aks/learn/quick-kubernetes-deploy-cli> | AKS quickstart via az CLI — reference for the AKS object model. The Terraform `azurerm_kubernetes_cluster` in `optional/aks-deploy/modules/aks_cluster/` supersedes the imperative flow. |
+| <https://learn.microsoft.com/en-us/azure/aks/concepts-network-azure-cni-overlay> | Azure CNI Overlay design — pods get IPs from `pod_cidr` instead of VNet. Required reading for the `network_plugin_mode=overlay` choice. |
+| <https://learn.microsoft.com/en-us/azure/aks/limit-egress-traffic> | `outbound_type=userDefinedRouting` mode + how to force AKS traffic through a firewall via UDR. Justifies our design. |
+
 ## P1 — BEST PRACTICES (high-value for refactor scope)
 
 | File | Size | Notes |

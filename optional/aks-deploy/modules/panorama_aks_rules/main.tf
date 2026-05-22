@@ -1,0 +1,547 @@
+###############################################################################
+# Panorama AKS Rules Module
+#
+# Extends the existing Panorama Device Group + Template with the objects and
+# rules required for AKS egress (per Microsoft docs) and WordPress inbound
+# DNAT. Must be applied BEFORE the AKS cluster is created — without these
+# rules the cluster creation API requests from AKS-managed nodes (image pulls
+# from MCR, Konnectivity tunnel to *.hcp.<region>.azmk8s.io) are denied by
+# the FW Deny-All catch-all and the cluster gets stuck in "Creating".
+#
+# What we add:
+#   1. Two EDL objects backed by our nginx server:
+#        - AKS-Egress-FQDN  (URL list, refresh hourly) — FQDN allowlist
+#        - AKS-Egress-IPs   (IP list,  refresh daily ) — AzureCloud.<region>
+#                                                       CIDRs (for UDP 1194 /
+#                                                       TCP 9000 Konnectivity)
+#   2. Address object AKS-Spoke3-CIDR — spoke3 VNet (source for AKS rules)
+#   3. Custom service objects for non-default Konnectivity + WordPress ports
+#   4. Three security rules inserted BEFORE Allow-Outbound-Internet:
+#        - Allow-AKS-Egress-FQDN
+#        - Allow-AKS-Egress-AzureCloud
+#        - Allow-Inbound-WordPress
+#   5. One DNAT NAT rule: External LB:8080 → AKS ingress 10.114.0.10:80
+#   6. commit + commit-all shared-policy push to the FW Device Group
+#
+# Why position BEFORE Allow-Outbound-Internet:
+#   The existing Allow-Outbound-Internet rule has source=any/trust → any/untrust
+#   and permits web-browsing+ssl+dns+...+apt-get etc. For AKS traffic we want
+#   stricter EDL-based allowlists (FQDN match → only MS endpoints, IP match →
+#   only AzureCloud) so traffic that DOESN'T match the EDL falls through to
+#   Allow-Outbound-Internet for App-ID based broader filtering. If we put the
+#   AKS rules AFTER, Allow-Outbound-Internet would match first and the EDL
+#   discipline would never apply.
+###############################################################################
+
+terraform {
+  required_providers {
+    panos = {
+      source  = "PaloAltoNetworks/panos"
+      version = "~> 1.11"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
+  }
+}
+
+###############################################################################
+# External Dynamic Lists
+###############################################################################
+
+# URL EDL — wildcards supported, e.g. *.hcp.<region>.azmk8s.io/
+# The trailing slash on each entry is added by generate_aks_edl.py — without
+# it PAN-OS silently fails the wildcard match. See README/aks-rules-structure.
+resource "panos_panorama_edl" "aks_fqdn" {
+  name         = "AKS-Egress-FQDN"
+  device_group = var.device_group_name
+  description  = "AKS egress FQDN allowlist (source: learn.microsoft.com/en-us/azure/aks/outbound-rules-control-egress) — served by EDL server in mgmt VNet"
+  type         = "url"
+  source       = "http://${var.edl_server_ip}/edl/aks-egress-fqdn.txt"
+  repeat       = var.fqdn_edl_refresh
+}
+
+# IP EDL — CIDRs from Azure Service Tags (AzureCloud.<region>). Required for
+# Konnectivity tunnel (UDP 1194 + TCP 9000) where AKS does NOT use FQDNs.
+resource "panos_panorama_edl" "aks_ips" {
+  name         = "AKS-Egress-IPs"
+  device_group = var.device_group_name
+  description  = "Azure Service Tags IPv4 CIDRs for AzureCloud.<region> — regenerated daily from MS JSON download"
+  type         = "ip"
+  source       = "http://${var.edl_server_ip}/edl/aks-egress-ips.txt"
+  repeat       = var.ips_edl_refresh
+}
+
+###############################################################################
+# Address + service objects
+###############################################################################
+
+resource "panos_panorama_address_object" "aks_spoke" {
+  name         = "AKS-Spoke3-CIDR"
+  device_group = var.device_group_name
+  description  = "Spoke3 (AKS) VNet CIDR — source for AKS egress rules"
+  type         = "ip-netmask"
+  value        = var.aks_spoke_cidr
+}
+
+resource "panos_panorama_address_object" "ext_lb_pip" {
+  name         = "External-LB-PIP"
+  device_group = var.device_group_name
+  description  = "External LB public IP — DNAT pre-NAT destination for WordPress (PAN-OS rules match this BEFORE Azure LB rewrites)"
+  type         = "ip-netmask"
+  # /32 — single host. panos_panorama_address_object always wants a netmask.
+  value = "${var.external_lb_public_ip}/32"
+}
+
+# Custom service objects. panos provider 1.11 has no panos_panorama_service_object;
+# we use panos_service_object inside the device-group via the device_group argument
+# (which the resource exposes). Naming follows existing tcp-port-N / udp-port-N style.
+resource "panos_panorama_service_object" "tcp_9000" {
+  name             = "tcp-9000-konnectivity"
+  device_group     = var.device_group_name
+  description      = "TCP 9000 — AKS Konnectivity tunnel (node ↔ API server)"
+  protocol         = "tcp"
+  destination_port = "9000"
+}
+
+resource "panos_panorama_service_object" "udp_1194" {
+  name             = "udp-1194-konnectivity-legacy"
+  device_group     = var.device_group_name
+  description      = "UDP 1194 — AKS Konnectivity legacy OpenVPN fallback (per MS outbound-rules docs)"
+  protocol         = "udp"
+  destination_port = "1194"
+}
+
+resource "panos_panorama_service_object" "tcp_8080" {
+  name             = "tcp-8080-wordpress"
+  device_group     = var.device_group_name
+  description      = "TCP 8080 — External LB → FW → AKS ingress-nginx (WordPress)"
+  protocol         = "tcp"
+  destination_port = "8080"
+}
+
+###############################################################################
+# NAT rule — WordPress inbound DNAT
+#
+# External LB rule on port 8080 (added separately by frontdoor_wordpress module
+# attached to the existing LB) forwards traffic to FW untrust NICs. PAN-OS DNAT
+# here translates External-LB-PIP:8080 → 10.114.0.10:80 (ingress-nginx internal
+# LB in spoke3). SNAT to TRUST interface mirrors the Apache pattern in
+# modules/panorama_config — required for symmetric routing.
+###############################################################################
+
+resource "panos_panorama_nat_rule_group" "aks_dnat" {
+  device_group = var.device_group_name
+  # position "top" — inbound DNAT rules must be evaluated before any pre-existing
+  # SNAT/east-west NAT rules so the destination match wins. Same pattern as the
+  # existing modules/panorama_config NAT group.
+  position_keyword = "top"
+
+  rule {
+    name        = "DNAT-Inbound-WordPress"
+    description = "DNAT: External LB port 8080 → AKS ingress-nginx (WordPress) — SNAT to trust"
+
+    original_packet {
+      source_zones          = [var.untrust_zone]
+      destination_zone      = var.untrust_zone
+      destination_interface = var.untrust_interface
+      source_addresses      = ["any"]
+      destination_addresses = [panos_panorama_address_object.ext_lb_pip.name]
+      service               = panos_panorama_service_object.tcp_8080.name
+    }
+
+    translated_packet {
+      source {
+        # SNAT-to-trust pattern. See modules/panorama_config/main.tf lines
+        # 408-420 for the full reasoning — short version: without it, the
+        # ingress-nginx response (to the FW untrust IP) comes back via VNet
+        # peering on the WRONG FW interface and the session is dropped as
+        # asymmetric. SNAT'ing to the FW trust IP makes return traffic
+        # arrive on the trust interface where the session lives.
+        dynamic_ip_and_port {
+          interface_address {
+            interface = var.trust_interface
+          }
+        }
+      }
+      destination {
+        static_translation {
+          address = var.aks_ingress_ip
+          port    = 80
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    panos_panorama_address_object.ext_lb_pip,
+    panos_panorama_service_object.tcp_8080,
+  ]
+}
+
+###############################################################################
+# Security rules (inserted BEFORE Allow-Outbound-Internet)
+###############################################################################
+
+resource "panos_panorama_security_rule_group" "aks_rules" {
+  device_group = var.device_group_name
+
+  # position_keyword=before + position_reference=Allow-Outbound-Internet places
+  # these rules ABOVE the catch-all outbound rule so EDL-based matching wins.
+  # If Allow-Outbound-Internet does not exist yet (Phase 2a not run), apply
+  # fails with a clear error — that's by design (prerequisite check).
+  position_keyword   = "before"
+  position_reference = "Allow-Outbound-Internet"
+
+  rule {
+    name        = "Allow-AKS-Egress-FQDN"
+    description = "AKS nodes/pods → MS FQDN allowlist (EDL: AKS-Egress-FQDN). Falls through if no match — Allow-Outbound-Internet may then catch general web traffic."
+    type        = "universal"
+
+    source_zones     = [var.trust_zone]
+    source_addresses = [panos_panorama_address_object.aks_spoke.name]
+    source_users     = ["any"]
+    hip_profiles     = ["any"]
+
+    destination_zones     = [var.untrust_zone]
+    destination_addresses = [panos_panorama_edl.aks_fqdn.name]
+
+    # App-ID list mirrors MS docs: AKS control-plane uses HTTPS (ssl), MCR uses
+    # https (ssl + web-browsing), Konnectivity uses ssl, packages.microsoft.com
+    # is ssl, Ubuntu mirrors use apt-get + web-browsing. dns + ntp-base are
+    # required for in-band name resolution + time sync. ping/icmp included for
+    # health checks (see ping vs icmp App-ID note in modules/panorama_config).
+    applications = [
+      "web-browsing", "ssl", "dns", "ntp-base",
+      "apt-get", "github", "git",
+      "icmp", "ping",
+    ]
+    services   = ["application-default"]
+    categories = ["any"]
+
+    action = "allow"
+
+    log_setting = "default-logging"
+    log_end     = true
+  }
+
+  rule {
+    name        = "Allow-AKS-Egress-AzureCloud"
+    description = "AKS nodes → AzureCloud.<region> on Konnectivity ports (TCP 9000 + UDP 1194). EDL-driven IP allowlist refreshed daily from Azure Service Tags JSON."
+    type        = "universal"
+
+    source_zones     = [var.trust_zone]
+    source_addresses = [panos_panorama_address_object.aks_spoke.name]
+    source_users     = ["any"]
+    hip_profiles     = ["any"]
+
+    destination_zones     = [var.untrust_zone]
+    destination_addresses = [panos_panorama_edl.aks_ips.name]
+
+    # No App-ID match — Konnectivity uses a custom protocol; rely on service
+    # ports + IP allowlist for granularity.
+    applications = ["any"]
+    services = [
+      panos_panorama_service_object.tcp_9000.name,
+      panos_panorama_service_object.udp_1194.name,
+    ]
+    categories = ["any"]
+
+    action = "allow"
+
+    log_setting = "default-logging"
+    log_end     = true
+  }
+
+  rule {
+    name        = "Allow-Inbound-WordPress"
+    description = "Internet → WordPress via External LB DNAT (port 8080 → 10.114.0.10:80). Destination address is PRE-NAT per PAN-OS DNAT semantics."
+    type        = "universal"
+
+    source_zones     = [var.untrust_zone]
+    source_addresses = ["any"]
+    source_users     = ["any"]
+    hip_profiles     = ["any"]
+
+    destination_zones     = [var.trust_zone]
+    destination_addresses = [panos_panorama_address_object.ext_lb_pip.name]
+
+    applications = ["web-browsing", "ssl"]
+    services     = [panos_panorama_service_object.tcp_8080.name]
+    categories   = ["any"]
+
+    action = "allow"
+
+    log_setting = "default-logging"
+    log_end     = true
+  }
+
+  depends_on = [
+    panos_panorama_edl.aks_fqdn,
+    panos_panorama_edl.aks_ips,
+    panos_panorama_address_object.aks_spoke,
+    panos_panorama_address_object.ext_lb_pip,
+    panos_panorama_service_object.tcp_9000,
+    panos_panorama_service_object.udp_1194,
+    panos_panorama_service_object.tcp_8080,
+    panos_panorama_nat_rule_group.aks_dnat,
+  ]
+}
+
+###############################################################################
+# Commit on Panorama + commit-all to FW Device Group
+#
+# panos_commit handles the Panorama-side commit. The follow-up commit-all
+# shared-policy push (which actually distributes the rules to FW1 + FW2) has
+# no native panos provider resource in 1.x — we issue it via XML API using
+# the same curl-based pattern as scripts/register-fw-panorama.sh:664-686.
+#
+# Both must complete BEFORE the aks_cluster module starts creating the AKS
+# resource; the optional/aks-deploy root main.tf orchestrates this via
+# depends_on.
+###############################################################################
+
+###############################################################################
+# Commit on Panorama via XML API
+#
+# panos provider 1.x exposes resources to write config but NOT a `commit`
+# resource. The existing phase2-panorama-config uses null_resource + curl
+# for the same reason — copy that pattern here for consistency.
+#
+# This is a regular commit (no `<commit-all>`, no device-targeting): just
+# persists the staged config to Panorama. The downstream commit-all
+# (next resource) is what actually pushes to the FWs.
+###############################################################################
+
+resource "null_resource" "panorama_commit" {
+  triggers = {
+    # Fire whenever any of the rule/object resources change.
+    rule_grp_id  = panos_panorama_security_rule_group.aks_rules.id
+    nat_grp_id   = panos_panorama_nat_rule_group.aks_dnat.id
+    edl_fqdn_id  = panos_panorama_edl.aks_fqdn.id
+    edl_ips_id   = panos_panorama_edl.aks_ips.id
+    panorama_url = "https://${var.panorama_hostname}:${var.panorama_port}"
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PAN_URL="${self.triggers.panorama_url}/api/"
+      PAN_USER="${var.panorama_username}"
+
+      echo "=== Panorama commit (AKS rules + EDL objects) ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      PAN_KEY=$(curl -sk --max-time 30 \
+        "$PAN_URL?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR', file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
+" 2>&1)
+
+      if [ -z "$PAN_KEY" ] || echo "$PAN_KEY" | grep -q "ERROR"; then
+        echo "[ERROR] Panorama API keygen failed — is the Bastion tunnel up on port ${var.panorama_port}?"
+        exit 1
+      fi
+
+      COMMIT_RESP=$(curl -sk --max-time 180 "$PAN_URL" \
+        --data-urlencode "type=commit" \
+        --data-urlencode "cmd=<commit></commit>" \
+        --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+
+      JOB_ID=$(echo "$COMMIT_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    if root.get('status') != 'success':
+        msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'unknown'
+        print(f'ERROR: {msg}', file=sys.stderr); sys.exit(1)
+    print(root.findtext('.//job',''))
+except SystemExit:
+    raise
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr); sys.exit(1)
+" 2>&1)
+
+      if echo "$JOB_ID" | grep -q "ERROR"; then
+        echo "[ERROR] Panorama commit submission failed: $JOB_ID"
+        exit 1
+      fi
+
+      if [ -z "$JOB_ID" ]; then
+        echo "  [OK] Panorama commit returned no job id (synchronous / nothing to commit)"
+        exit 0
+      fi
+
+      echo "  [OK] Panorama commit submitted (job $JOB_ID); polling for completion..."
+
+      for i in $(seq 1 30); do
+        sleep 10
+        STATUS_RESP=$(curl -sk --max-time 30 "$PAN_URL" \
+          --data-urlencode "type=op" \
+          --data-urlencode "cmd=<show><jobs><id>$JOB_ID</id></jobs></show>" \
+          --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+
+        STATUS=$(echo "$STATUS_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(root.findtext('.//job/status',''))
+except Exception:
+    print('')
+" 2>/dev/null)
+
+        if [ "$STATUS" = "FIN" ]; then
+          RESULT=$(echo "$STATUS_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(root.findtext('.//job/result',''))
+except Exception:
+    print('')
+" 2>/dev/null)
+          echo "  [OK] Panorama commit FIN result=$RESULT"
+          [ "$RESULT" = "OK" ] && exit 0
+          echo "  [WARN] commit completed with result=$RESULT"
+          exit 0
+        fi
+        echo "  [$i/30] Panorama commit in progress (status=$STATUS) — wait 10s..."
+      done
+
+      echo "[ERROR] Panorama commit timed out after 5 min"
+      exit 1
+    SCRIPT
+  }
+
+  depends_on = [
+    panos_panorama_security_rule_group.aks_rules,
+    panos_panorama_nat_rule_group.aks_dnat,
+  ]
+}
+
+resource "null_resource" "commit_all_to_fws" {
+  triggers = {
+    # Re-run only when rule contents change (rule names list change triggers).
+    rule_names   = "${panos_panorama_security_rule_group.aks_rules.id}|${panos_panorama_nat_rule_group.aks_dnat.id}"
+    panorama_url = "https://${var.panorama_hostname}:${var.panorama_port}"
+    dg_name      = var.device_group_name
+  }
+
+  provisioner "local-exec" {
+    command = <<-SCRIPT
+      set -e
+      PAN_URL="${self.triggers.panorama_url}/api/"
+      PAN_USER="${var.panorama_username}"
+      DEVICE_GROUP="${self.triggers.dg_name}"
+
+      echo "=== commit-all shared-policy → Device Group $DEVICE_GROUP ==="
+
+      ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+      PAN_KEY=$(curl -sk --max-time 30 \
+        "$PAN_URL?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+        | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+if root.get('status') != 'success':
+    print('ERROR', file=sys.stderr); sys.exit(1)
+print(root.findtext('.//key',''))
+" 2>&1)
+
+      if [ -z "$PAN_KEY" ] || echo "$PAN_KEY" | grep -q "ERROR"; then
+        echo "[ERROR] Panorama API keygen failed — is the Bastion tunnel up on port ${var.panorama_port}?"
+        exit 1
+      fi
+
+      DG_PUSH_RESP=$(curl -sk --max-time 180 "$PAN_URL" \
+        --data-urlencode "type=commit" \
+        --data-urlencode "action=all" \
+        --data-urlencode "cmd=<commit-all><shared-policy><device-group><entry name='$DEVICE_GROUP'/></device-group></shared-policy></commit-all>" \
+        --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+
+      JOB_ID=$(echo "$DG_PUSH_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    if root.get('status') != 'success':
+        msg = root.findtext('.//msg','') or root.findtext('.//line','') or 'unknown'
+        print(f'ERROR: {msg}', file=sys.stderr); sys.exit(1)
+    print(root.findtext('.//job',''))
+except SystemExit:
+    raise
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr); sys.exit(1)
+" 2>&1)
+
+      if echo "$JOB_ID" | grep -q "ERROR"; then
+        echo "[ERROR] commit-all submission failed: $JOB_ID"
+        exit 1
+      fi
+
+      if [ -z "$JOB_ID" ]; then
+        echo "[WARN] No job ID returned — push may have completed synchronously"
+        exit 0
+      fi
+
+      echo "  [OK] commit-all submitted (job $JOB_ID); polling for completion..."
+
+      # Poll the job status — timeout 10 min (template + DG push to 2 FWs ~3-5 min)
+      for i in $(seq 1 60); do
+        sleep 10
+        STATUS_RESP=$(curl -sk --max-time 30 "$PAN_URL" \
+          --data-urlencode "type=op" \
+          --data-urlencode "cmd=<show><jobs><id>$JOB_ID</id></jobs></show>" \
+          --data-urlencode "key=$PAN_KEY" 2>/dev/null)
+
+        STATUS=$(echo "$STATUS_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(root.findtext('.//job/status',''))
+except Exception:
+    print('')
+" 2>/dev/null)
+
+        case "$STATUS" in
+          FIN)
+            RESULT=$(echo "$STATUS_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(root.findtext('.//job/result',''))
+except Exception:
+    print('')
+" 2>/dev/null)
+            echo "  [OK] commit-all FIN result=$RESULT"
+            if [ "$RESULT" != "OK" ]; then
+              echo "  [WARN] commit-all completed with result=$RESULT (check Panorama Task Manager)"
+            fi
+            exit 0
+            ;;
+          ACT|PEND)
+            PROGRESS=$(echo "$STATUS_RESP" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(root.findtext('.//job/progress','?'))
+except Exception:
+    print('?')
+" 2>/dev/null)
+            echo "  [$i/60] commit-all in progress (status=$STATUS, progress=$PROGRESS%) — wait 10s..."
+            ;;
+          *)
+            echo "  [$i/60] unexpected status='$STATUS' — wait 10s..."
+            ;;
+        esac
+      done
+
+      echo "[ERROR] commit-all timed out after 10 minutes — investigate on Panorama"
+      exit 1
+    SCRIPT
+  }
+
+  depends_on = [null_resource.panorama_commit]
+}

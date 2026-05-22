@@ -37,6 +37,74 @@ blogs, GitHub repos. Group by section. One bullet per entry.
 
 ---
 
+## 3a. Microsoft Azure – Azure Kubernetes Service (AKS)
+
+Relevant for `optional/aks-deploy/` — AKS cluster, egress rules, networking.
+
+- **AKS outbound rules / egress control** — <https://learn.microsoft.com/en-us/azure/aks/outbound-rules-control-egress>
+  - **Source of truth** for AKS egress FQDNs and IP/port requirements. Consumed by
+    `optional/aks-deploy/modules/edl_server/files/fqdn_base_list.txt` (hardcoded
+    fallback list). Re-read this page when refreshing the EDL baseline.
+
+- **AKS quickstart (CLI)** — <https://learn.microsoft.com/en-us/azure/aks/learn/quick-kubernetes-deploy-cli>
+  - Walks through `az aks create` + sample app deploy. Useful reference; the
+    `optional/aks-deploy/` module supersedes the imperative az CLI flow.
+
+- **Azure CNI Overlay networking** — <https://learn.microsoft.com/en-us/azure/aks/concepts-network-azure-cni-overlay>
+  - Why we use overlay: pods get IPs from a non-VNet `pod_cidr` (10.244.0.0/16)
+    instead of consuming VNet subnet IPs. Node IPs come from `snet-aks-nodes`.
+
+- **AKS userDefinedRouting outbound type** — <https://learn.microsoft.com/en-us/azure/aks/limit-egress-traffic>
+  - The `outbound_type=userDefinedRouting` mode we use to force AKS egress through
+    the VM-Series firewalls via UDR → ILB → FW. Without UDR + this setting AKS
+    would create its own public LB and bypass the firewalls.
+
+- **AKS Bring-your-own-VNet** — <https://learn.microsoft.com/en-us/azure/aks/configure-azure-cni>
+  - How to deploy AKS into an existing VNet/subnet (our spoke3 pattern).
+
+- **Bitnami WordPress Helm chart** — <https://github.com/bitnami/charts/tree/main/bitnami/wordpress>
+  - The Helm chart used for the sample WordPress workload. Includes MariaDB
+    sub-chart by default. Values reference for the `helm_release.wordpress`
+    resource.
+
+- **Bitnami ingress-nginx chart** — <https://kubernetes.github.io/ingress-nginx/>
+  - Ingress controller (LoadBalancer service type) we install via Helm to expose
+    WordPress to the AKS internal LB.
+
+---
+
+## 3b. Microsoft Azure – Service Tags / IP Ranges
+
+Relevant for the dynamic IP EDL generator in `optional/aks-deploy/modules/edl_server/`.
+
+- **Azure IP Ranges and Service Tags – Public Cloud (weekly JSON)** — <https://www.microsoft.com/en-us/download/details.aspx?id=56519>
+  - Microsoft publishes the JSON weekly. URL on the page changes every refresh —
+    `generate_aks_edl.py` scrapes the confirmation page to discover the current
+    JSON URL, then extracts `AzureCloud.<region>` IP prefixes for the IP EDL.
+
+- **Service Tag Discovery REST API** — <https://learn.microsoft.com/en-us/rest/api/virtualnetwork/service-tags/list>
+  - Alternative source if the JSON download path fails. Requires an Azure AD
+    token (Managed Identity on the EDL server VM could be configured later).
+
+- **Using Azure IP Ranges and Service Tags (blog, J. Mattila)** — <https://www.jannemattila.com/azure/2024/01/22/using-azure-ip-ranges-and-service-tags.html>
+  - Background reading: scraping pattern + JSON structure.
+
+---
+
+## 3c. Palo Alto Networks – External Dynamic Lists (EDL)
+
+Relevant for `modules/panorama_aks_rules/` and `modules/edl_server/`.
+
+- **EDL — concept and policy use** — <https://docs.paloaltonetworks.com/pan-os/11-0/pan-os-admin/policy/use-an-external-dynamic-list-in-policy/external-dynamic-list>
+- **EDL — formatting guidelines** — <https://docs.paloaltonetworks.com/pan-os/10-1/pan-os-admin/policy/use-an-external-dynamic-list-in-policy/formatting-guidelines-for-an-external-dynamic-list>
+  - **Critical:** URL list entries with wildcards need a trailing slash
+    (`*.example.com/`). Without the slash the match silently fails.
+- **PAN-OS support for wildcard FQDN in EDL (Reddit thread)** — <https://www.reddit.com/r/paloaltonetworks/comments/1p5oj65/does_external_dynamic_lists_support_wild_card/>
+  - URL EDL supports wildcards; Domain EDL does NOT. We use URL EDL for AKS
+    wildcards like `*.hcp.<region>.azmk8s.io/`.
+
+---
+
 ## 4. Terraform Providers (panos, scm, azurerm)
 
 - **panos provider** — <https://registry.terraform.io/providers/PaloAltoNetworks/panos/latest>

@@ -1,0 +1,58 @@
+###############################################################################
+# optional/aks-deploy/terraform.tfvars.example
+#
+# Copy to terraform.tfvars and fill in REPLACE_ME values:
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Then START THE BASTION TUNNEL to Panorama (separate terminal — keep open):
+#
+#   PANORAMA_ID=$(cd ../.. && terraform output -raw panorama_vm_id)
+#   az network bastion tunnel \
+#     --name bastion-management \
+#     --resource-group rg-transit-hub \
+#     --target-resource-id "$PANORAMA_ID" \
+#     --resource-port 443 \
+#     --port 44300
+#
+# Then in this directory:
+#   terraform init
+#   terraform apply
+#
+# Expected duration: ~25-35 min (dominated by AKS cluster creation).
+# Smoke tests run automatically at the end — non-zero exit fails the apply.
+###############################################################################
+
+# --- Hub subscription (same as in root terraform.tfvars) ---
+hub_subscription_id = "REPLACE_ME_HUB_SUBSCRIPTION_ID"
+
+# --- Region (must match the existing transit VNet's region) ---
+location   = "germanywestcentral"
+aks_region = "germanywestcentral"
+
+# --- External LB public IP (look up via: cd ../.. && terraform output -raw external_lb_public_ip_address) ---
+external_lb_public_ip = "REPLACE_ME_EXTERNAL_LB_PUBLIC_IP"
+
+# --- Panorama credentials (same as root tfvars admin_password) ---
+panorama_password = "REPLACE_ME_PANORAMA_PASSWORD"
+
+# --- EDL server SSH password (can reuse panorama_password or set a separate one) ---
+edl_admin_password = "REPLACE_ME_EDL_ADMIN_PASSWORD"
+
+# --- WordPress admin password (will be displayed once on terraform apply) ---
+wp_admin_password = "REPLACE_ME_WP_ADMIN_PASSWORD"
+
+# --- Optional overrides (defaults work for most cases) ---
+
+# spoke3_vnet_address_space = "10.114.0.0/16"
+# aks_nodes_subnet_cidr     = "10.114.0.0/24"
+# aks_ilb_subnet_cidr       = "10.114.1.0/27"
+# aks_ingress_internal_lb_ip = "10.114.0.10"
+
+# edl_subnet_cidr = "10.255.2.0/27"
+# edl_private_ip  = "10.255.2.4"
+
+# aks_node_count   = 2
+# aks_node_vm_size = "Standard_D2s_v3"
+
+# wp_admin_username = "wpadmin"
+# wp_blog_name      = "PANW Demo – AKS WordPress"

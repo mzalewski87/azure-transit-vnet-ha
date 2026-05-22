@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily refresh of AKS egress EDL files
+Documentation=https://www.microsoft.com/en-us/download/details.aspx?id=56519
+
+[Timer]
+# Fire once at boot (10 min after boot) so the EDL files exist before PAN-OS
+# pulls them, then daily at 03:17 UTC (off-the-hour to avoid sync with other
+# cron-like jobs). Persistent so a missed run during downtime fires on next boot.
+OnBootSec=10min
+OnCalendar=*-*-* 03:17:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+Unit=aks-edl-update.service
+
+[Install]
+WantedBy=timers.target

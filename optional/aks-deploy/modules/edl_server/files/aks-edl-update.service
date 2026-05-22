@@ -1,0 +1,18 @@
+[Unit]
+Description=Regenerate AKS Egress External Dynamic Lists
+Documentation=https://learn.microsoft.com/en-us/azure/aks/outbound-rules-control-egress
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/aks-edl/generate_aks_edl.py
+TimeoutStartSec=120
+# Restart on transient failure (e.g. Service Tags JSON briefly unreachable).
+# Generator still writes the FQDN list on every run, so the failure is only
+# about the IP list freshness — not a blocker.
+Restart=on-failure
+RestartSec=300
+
+[Install]
+WantedBy=multi-user.target

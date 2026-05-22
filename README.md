@@ -301,6 +301,41 @@ to point at the DC's private IP (`10.113.0.4` by default) for user/group-
 based security policies. This is a manual step in Panorama → Device →
 User Identification → User Mapping.
 
+### Phase 4: AKS + WordPress (optional)
+
+A second standalone workspace (`optional/aks-deploy/`) that deploys an AKS
+cluster in a new spoke (`spoke3`, 10.114.0.0/16) running WordPress, fronted
+by a new Azure Front Door endpoint, with FW egress controlled by a custom
+EDL server in the management VNet.
+
+Total deploy time: **~25-35 min** (one `terraform apply` runs all six
+deployment phases + smoke tests). Destroy reverses cleanly with
+`terraform destroy`.
+
+See `docs/aks-runbook.md` for the full runbook and `docs/aks-rules-structure.md`
+for EDL anatomy + Panorama rule design rationale. Quick start:
+
+```bash
+# Prerequisite: Bastion tunnel to Panorama on port 44300 (same as Phase 2a)
+PANORAMA_ID=$(terraform output -raw panorama_vm_id)
+az network bastion tunnel \
+  --name bastion-management --resource-group rg-transit-hub \
+  --target-resource-id "$PANORAMA_ID" --resource-port 443 --port 44300
+
+cd optional/aks-deploy/
+cp terraform.tfvars.example terraform.tfvars
+# Fill in REPLACE_ME values (hub subscription, External LB PIP, passwords)
+terraform init && terraform apply
+# Output: wordpress_url = "https://wordpress-XXXX.z01.azurefd.net"
+```
+
+The module is fully self-contained: it adds a new spoke VNet (with peering
+and UDR), a small Ubuntu EDL server in the management VNet, two External
+Dynamic Lists + security rules + a NAT rule to the existing Panorama Device
+Group, the AKS cluster, the WordPress Helm chart, and one new Front Door
+endpoint under the existing `afd-panos-transit` profile. No changes to the
+root module's state.
+
 ### Verification
 
 ```bash
