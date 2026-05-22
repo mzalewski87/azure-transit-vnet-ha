@@ -103,9 +103,9 @@ variable "aks_spoke_cidr" {
 }
 
 variable "aks_ingress_ip" {
-  description = "Internal LB IP of ingress-nginx in AKS (DNAT destination for WordPress inbound)"
+  description = "Internal LB IP of ingress-nginx in AKS (DNAT destination for WordPress inbound). MUST be inside snet-aks-ilb."
   type        = string
-  default     = "10.114.0.10"
+  default     = "10.114.1.4"
 }
 
 variable "external_lb_public_ip" {

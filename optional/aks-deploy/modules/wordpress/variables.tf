@@ -3,9 +3,9 @@
 ###############################################################################
 
 variable "ingress_internal_lb_ip" {
-  description = "Static IP for the AKS internal LB (ingress-nginx frontend) — must match Panorama DNAT target"
+  description = "Static IP for the AKS internal LB (ingress-nginx frontend) — MUST be inside snet-aks-ilb (10.114.1.0/27), NOT snet-aks-nodes, because that's where Azure provisions the LB frontend per the annotation. Must also match the Panorama DNAT target."
   type        = string
-  default     = "10.114.0.10"
+  default     = "10.114.1.4"
 }
 
 variable "ingress_subnet_name" {

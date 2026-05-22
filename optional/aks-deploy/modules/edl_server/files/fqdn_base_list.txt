@@ -20,6 +20,10 @@
 mcr.microsoft.com
 *.data.mcr.microsoft.com
 mcr-0001.mcr-msedge.net
+# MCR data path actually downloads from *.blob.core.windows.net (Azure Storage
+# CDN); without this, PAN-OS sees the traffic as azure-storage-account and the
+# URL category match fails because there's no blob.core.windows.net entry.
+*.blob.core.windows.net
 management.azure.com
 login.microsoftonline.com
 packages.microsoft.com

@@ -260,8 +260,17 @@ resource "panos_panorama_security_rule_group" "aks_rules" {
     # to the broader Allow-Outbound-Internet rule (which has explicit dns +
     # ntp-base + icmp + ping App-IDs). web-browsing covers MCR + ARM + AAD,
     # ssl covers Konnectivity + HTTPS APIs, apt-get covers Ubuntu mirrors.
-    applications = ["web-browsing", "ssl", "apt-get", "github", "git"]
-    services     = ["application-default"]
+    # azure-storage-account is what PAN-OS classifies MCR data path traffic
+    # as (verified empirically 2026-05-22 — without it traffic hits Deny-All
+    # because Allow-Outbound-Internet's App-IDs don't include it). The MS
+    # docs technically list mcr.microsoft.com as an FQDN, but the actual
+    # data fetch goes to *.blob.core.windows.net (Azure Storage CDN), which
+    # PAN-OS App-ID engine recognises and renames.
+    applications = [
+      "web-browsing", "ssl", "apt-get", "github", "git",
+      "azure-storage-account",
+    ]
+    services = ["application-default"]
 
     # KEY: URL EDL is referenced as URL Category. The rule only matches when
     # the URL category resolved at L7 equals the EDL name (PAN-OS treats
@@ -364,12 +373,28 @@ resource "panos_panorama_security_rule_group" "aks_rules" {
 
 resource "null_resource" "panorama_commit" {
   triggers = {
-    # Fire whenever any of the rule/object resources change.
-    rule_grp_id  = panos_panorama_security_rule_group.aks_rules.id
-    nat_grp_id   = panos_panorama_nat_rule_group.aks_dnat.id
-    edl_fqdn_id  = panos_panorama_edl.aks_fqdn.id
-    edl_ips_id   = panos_panorama_edl.aks_ips.id
-    panorama_url = "https://${var.panorama_hostname}:${var.panorama_port}"
+    # Fire whenever any of the rule/object resources change. Routes MUST be in
+    # this list — otherwise terraform sees "no triggers changed" after a route
+    # is added on a later apply and skips the commit, leaving the new route in
+    # Panorama's candidate config and silently absent from the FWs (verified
+    # 2026-05-22 against test deployment).
+    rule_grp_id    = panos_panorama_security_rule_group.aks_rules.id
+    nat_grp_id     = panos_panorama_nat_rule_group.aks_dnat.id
+    edl_fqdn_id    = panos_panorama_edl.aks_fqdn.id
+    edl_ips_id     = panos_panorama_edl.aks_ips.id
+    route_int_id   = panos_panorama_static_route_ipv4.int_spoke3.id
+    route_ext_id   = panos_panorama_static_route_ipv4.ext_to_spoke3.id
+    addr_aks_spoke = panos_panorama_address_object.aks_spoke.id
+    addr_ext_lb    = panos_panorama_address_object.ext_lb_pip.id
+    # Content triggers — terraform won't re-run the commit on a panos
+    # resource MODIFY-in-place (resource ID stays the same) so we also key
+    # off the actual values that get written into those resources. If the
+    # AKS ingress IP or external LB PIP changes, this trigger fires and
+    # the commit re-runs.
+    content_aks_ingress = var.aks_ingress_ip
+    content_ext_lb_pip  = var.external_lb_public_ip
+    content_aks_cidr    = var.aks_spoke_cidr
+    panorama_url        = "https://${var.panorama_hostname}:${var.panorama_port}"
   }
 
   provisioner "local-exec" {
@@ -468,6 +493,8 @@ except Exception:
   depends_on = [
     panos_panorama_security_rule_group.aks_rules,
     panos_panorama_nat_rule_group.aks_dnat,
+    panos_panorama_static_route_ipv4.int_spoke3,
+    panos_panorama_static_route_ipv4.ext_to_spoke3,
   ]
 }
 

@@ -166,12 +166,12 @@ write_files:
   - path: /opt/aks-edl/fqdn_base_list.txt
     permissions: '0644'
     content: |
-${indent(6, file("${path.module}/files/fqdn_base_list.txt"))}
+      ${join("\n      ", split("\n", file("${path.module}/files/fqdn_base_list.txt")))}
 
   - path: /opt/aks-edl/generate_aks_edl.py
     permissions: '0755'
     content: |
-${indent(6, file("${path.module}/files/generate_aks_edl.py"))}
+      ${join("\n      ", split("\n", file("${path.module}/files/generate_aks_edl.py")))}
 
   - path: /opt/aks-edl/settings.json
     permissions: '0644'
@@ -183,17 +183,17 @@ ${indent(6, file("${path.module}/files/generate_aks_edl.py"))}
   - path: /etc/nginx/sites-available/edl.conf
     permissions: '0644'
     content: |
-${indent(6, replace(file("${path.module}/files/nginx-edl.conf"), "$${MGMT_CIDR}", var.fw_mgmt_subnet_cidr))}
+      ${join("\n      ", split("\n", replace(file("${path.module}/files/nginx-edl.conf"), "$${MGMT_CIDR}", var.fw_mgmt_subnet_cidr)))}
 
   - path: /etc/systemd/system/aks-edl-update.service
     permissions: '0644'
     content: |
-${indent(6, file("${path.module}/files/aks-edl-update.service"))}
+      ${join("\n      ", split("\n", file("${path.module}/files/aks-edl-update.service")))}
 
   - path: /etc/systemd/system/aks-edl-update.timer
     permissions: '0644'
     content: |
-${indent(6, file("${path.module}/files/aks-edl-update.timer"))}
+      ${join("\n      ", split("\n", file("${path.module}/files/aks-edl-update.timer")))}
 
   - path: /usr/local/sbin/install-edl-server.sh
     permissions: '0755'

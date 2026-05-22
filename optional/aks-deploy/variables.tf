@@ -211,9 +211,9 @@ variable "aks_region" {
 }
 
 variable "aks_ingress_internal_lb_ip" {
-  description = "Static IP for AKS internal LB (DNAT target on FW). Must be inside aks_nodes_subnet_cidr."
+  description = "Static IP for AKS internal LB (DNAT target on FW). MUST be inside aks_ilb_subnet_cidr (snet-aks-ilb) because that's where Azure provisions the LB frontend per the ingress-nginx annotation."
   type        = string
-  default     = "10.114.0.10"
+  default     = "10.114.1.4"
 }
 
 #------------------------------------------------------------------------------
