@@ -87,13 +87,10 @@ resource "azurerm_kubernetes_cluster" "aks" {
     identity_ids = [azurerm_user_assigned_identity.aks.id]
   }
 
-  # Reuse the user-assigned identity for kubelet too — keeps the principal
-  # count minimal and simplifies RBAC auditing.
-  kubelet_identity {
-    user_assigned_identity_id = azurerm_user_assigned_identity.aks.id
-    client_id                 = azurerm_user_assigned_identity.aks.client_id
-    object_id                 = azurerm_user_assigned_identity.aks.principal_id
-  }
+  # Letting AKS auto-create + manage the kubelet identity (in the MC_* RG)
+  # — sidesteps the "Managed Identity Operator" role-assignment requirement
+  # we'd otherwise need on a BYO kubelet identity. The cluster identity
+  # above (uai-<cluster>) still owns the AKS control-plane operations.
 
   network_profile {
     network_plugin      = "azure"
