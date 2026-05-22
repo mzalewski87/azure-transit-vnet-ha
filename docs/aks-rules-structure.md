@@ -156,11 +156,27 @@ to `deny` and only EDL-allowed traffic gets out).
 | Source zone | trust |
 | Source addr | `AKS-Spoke3-CIDR` (10.114.0.0/16) |
 | Dest zone | untrust |
-| Dest addr | `AKS-Egress-FQDN` (URL EDL) |
-| Applications | web-browsing, ssl, dns, ntp-base, apt-get, github, git, icmp, ping |
+| Dest addr | **`any`** (URL EDL can NOT be used as an address object in PAN-OS) |
+| **Category** | **`AKS-Egress-FQDN` (URL EDL referenced as URL Category)** |
+| Applications | web-browsing, ssl, apt-get, github, git (HTTP/HTTPS only — URL category only applies at L7) |
 | Service | application-default |
 | Action | allow |
 | Log | yes (default-logging profile) |
+
+**Important gotcha (verified empirically 2026-05-22):** PAN-OS does NOT accept
+URL EDLs in the `destination_addresses` field of a security rule — that
+field only accepts IP addresses, ranges, FQDN address objects, or IP EDLs.
+URL EDLs are treated as **custom URL categories** and must be referenced via
+the `categories` field. The rule then matches when the destination URL
+(resolved at Layer 7 from HTTP/HTTPS traffic) belongs to the EDL.
+
+This means:
+- HTTP/HTTPS traffic to AKS FQDNs → matches this rule
+- DNS / NTP / ICMP from AKS → does NOT match (no URL to categorize) →
+  falls through to `Allow-Outbound-Internet` which has explicit App-IDs
+  for these protocols
+- Konnectivity (TCP 9000 / UDP 1194) — NOT HTTP/HTTPS — matches the
+  IP-based `Allow-AKS-Egress-AzureCloud` rule instead
 
 ### Rule 2: `Allow-AKS-Egress-AzureCloud`
 

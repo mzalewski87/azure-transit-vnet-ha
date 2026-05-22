@@ -196,7 +196,7 @@ resource "panos_panorama_security_rule_group" "aks_rules" {
 
   rule {
     name        = "Allow-AKS-Egress-FQDN"
-    description = "AKS nodes/pods → MS FQDN allowlist (EDL: AKS-Egress-FQDN). Falls through if no match — Allow-Outbound-Internet may then catch general web traffic."
+    description = "AKS nodes/pods → MS FQDN allowlist via URL Category match (EDL: AKS-Egress-FQDN). PAN-OS treats URL EDL as a custom URL category — applies to HTTP/HTTPS traffic only (which is what AKS control-plane + image pulls actually use)."
     type        = "universal"
 
     source_zones     = [var.trust_zone]
@@ -204,21 +204,23 @@ resource "panos_panorama_security_rule_group" "aks_rules" {
     source_users     = ["any"]
     hip_profiles     = ["any"]
 
-    destination_zones     = [var.untrust_zone]
-    destination_addresses = [panos_panorama_edl.aks_fqdn.name]
+    destination_zones = [var.untrust_zone]
+    # destination_addresses=any because URL EDL cannot be used as an address
+    # object in PAN-OS — it's only valid as a URL Category. The category
+    # match below restricts which destinations are allowed.
+    destination_addresses = ["any"]
 
-    # App-ID list mirrors MS docs: AKS control-plane uses HTTPS (ssl), MCR uses
-    # https (ssl + web-browsing), Konnectivity uses ssl, packages.microsoft.com
-    # is ssl, Ubuntu mirrors use apt-get + web-browsing. dns + ntp-base are
-    # required for in-band name resolution + time sync. ping/icmp included for
-    # health checks (see ping vs icmp App-ID note in modules/panorama_config).
-    applications = [
-      "web-browsing", "ssl", "dns", "ntp-base",
-      "apt-get", "github", "git",
-      "icmp", "ping",
-    ]
-    services   = ["application-default"]
-    categories = ["any"]
+    # App-IDs cover HTTP/HTTPS only here — DNS/NTP/ICMP from AKS fall through
+    # to the broader Allow-Outbound-Internet rule (which has explicit dns +
+    # ntp-base + icmp + ping App-IDs). web-browsing covers MCR + ARM + AAD,
+    # ssl covers Konnectivity + HTTPS APIs, apt-get covers Ubuntu mirrors.
+    applications = ["web-browsing", "ssl", "apt-get", "github", "git"]
+    services     = ["application-default"]
+
+    # KEY: URL EDL is referenced as URL Category. The rule only matches when
+    # the URL category resolved at L7 equals the EDL name (PAN-OS treats
+    # custom URL categories — including URL EDLs — interchangeably here).
+    categories = [panos_panorama_edl.aks_fqdn.name]
 
     action = "allow"
 
