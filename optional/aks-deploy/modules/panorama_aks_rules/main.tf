@@ -259,18 +259,15 @@ resource "panos_panorama_security_rule_group" "aks_rules" {
     # App-IDs cover HTTP/HTTPS only here — DNS/NTP/ICMP from AKS fall through
     # to the broader Allow-Outbound-Internet rule (which has explicit dns +
     # ntp-base + icmp + ping App-IDs). web-browsing covers MCR + ARM + AAD,
-    # ssl covers Konnectivity + HTTPS APIs, apt-get covers Ubuntu mirrors.
-    # azure-storage-account is what PAN-OS classifies MCR data path traffic
-    # as (verified empirically 2026-05-22 — without it traffic hits Deny-All
-    # because Allow-Outbound-Internet's App-IDs don't include it). The MS
-    # docs technically list mcr.microsoft.com as an FQDN, but the actual
-    # data fetch goes to *.blob.core.windows.net (Azure Storage CDN), which
-    # PAN-OS App-ID engine recognises and renames.
-    applications = [
-      "web-browsing", "ssl", "apt-get", "github", "git",
-      "azure-storage-account",
-    ]
-    services = ["application-default"]
+    # ssl covers Konnectivity + HTTPS APIs + Azure Storage (MCR data path on
+    # *.blob.core.windows.net), apt-get covers Ubuntu mirrors. PAN-OS App-ID
+    # `azure-storage-account` looks like the right keyword from traffic logs
+    # but is NOT a predefined App-ID in current content versions — it shows
+    # up only as a SUB-classification under `ssl`. ssl (the parent) is
+    # enough to allow the traffic; the URL category match on the EDL is
+    # what gates the destination.
+    applications = ["web-browsing", "ssl", "apt-get", "github", "git"]
+    services     = ["application-default"]
 
     # KEY: URL EDL is referenced as URL Category. The rule only matches when
     # the URL category resolved at L7 equals the EDL name (PAN-OS treats
