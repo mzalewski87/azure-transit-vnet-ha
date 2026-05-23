@@ -92,6 +92,40 @@ python3 >= 3.8
 - **Panorama BYOL**: auth-code → registered on [CSP Portal](https://my.paloaltonetworks.com) → Serial Number
 - **VM-Series BYOL**: auth-code(s) from CSP Portal
 
+### Accept Azure Marketplace terms (one-off, per subscription)
+
+PAN-OS Panorama and VM-Series BYOL images on Azure Marketplace require the
+subscription owner to accept the publisher's legal terms BEFORE any VM can
+be deployed from them. Without this, Phase 1a fails on `module.panorama`
+with `ResourcePurchaseValidationFailed: You have not accepted the legal
+terms on this subscription`.
+
+Run the helper script once per subscription (idempotent):
+
+```bash
+bash scripts/accept-marketplace-terms.sh
+```
+
+…or the two raw commands directly:
+
+```bash
+# Panorama BYOL — required for Phase 1a (module.panorama)
+az vm image terms accept --publisher paloaltonetworks --offer panorama --plan byol
+
+# VM-Series BYOL (firewall pair) — required for Phase 1b (module.firewall)
+az vm image terms accept --publisher paloaltonetworks --offer vmseries-flex --plan byol
+
+# Verify both show "accepted": true
+az vm image terms show --publisher paloaltonetworks --offer panorama      --plan byol --query accepted
+az vm image terms show --publisher paloaltonetworks --offer vmseries-flex --plan byol --query accepted
+```
+
+Other images used in this deployment (Ubuntu Canonical for Apache / EDL
+server, Windows Server for DC, AKS managed images) do NOT require terms
+acceptance — they are stock images without a `plan {}` block.
+
+Reference: [Azure docs — Accept marketplace image terms](https://learn.microsoft.com/en-us/cli/azure/vm/image/terms).
+
 ---
 
 ## Deployment – 5 Phases
