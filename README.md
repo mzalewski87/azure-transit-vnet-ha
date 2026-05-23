@@ -92,6 +92,36 @@ python3 >= 3.8
 - **Panorama BYOL**: auth-code → registered on [CSP Portal](https://my.paloaltonetworks.com) → Serial Number
 - **VM-Series BYOL**: auth-code(s) from CSP Portal
 
+### Check VM-Series BYOL auth-code credit balance (per redeployment)
+
+VM-Series BYOL auth codes have a **credit pool** in PANW Customer Support
+Portal. Every FW deployment consumes one credit. After ~5 redeployments
+to fresh subscriptions (typical with 5-week Torque project cycles), the
+pool runs dry and bootstrap reports:
+
+```
+License Install   Failed   NOV-021 - Insufficient credits to create/update
+                           Consumption record.
+```
+
+Symptom is identical to PIN-expiration up to a point: FW boots, init-cfg
+parses, but `show system info` returns `serial=unknown`, device-cert
+fetch reports "Device certificate not found", and Panorama lists the
+serial as `connected=no`. **Key diagnostic differentiator** is the
+`show system bootstrap status` line `License Install   Failed` (NOT
+"Successful as with the PIN-expiration case). If you see this, the
+auth code itself is the problem, not the PIN.
+
+Fix:
+1. <https://support.paloaltonetworks.com> → **Assets** → **VM-Series
+   Auth-Codes** → check remaining credit count
+2. If zero: either purchase additional capacity or generate a fresh
+   auth-code with credits attached
+3. Update `terraform.tfvars`: `fw_auth_code = "<NEW_AUTH_CODE>"`
+4. Replace the FW VMs: `terraform apply -target=module.bootstrap -target=module.firewall`
+   (the bootstrap_hash change forces VM replace, which triggers a fresh
+   license install)
+
 ### Refresh VM-Series Registration PIN (per redeployment to fresh subscription)
 
 VM-Series firewalls need a device certificate to connect to Panorama in
