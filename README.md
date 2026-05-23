@@ -92,6 +92,35 @@ python3 >= 3.8
 - **Panorama BYOL**: auth-code → registered on [CSP Portal](https://my.paloaltonetworks.com) → Serial Number
 - **VM-Series BYOL**: auth-code(s) from CSP Portal
 
+### Refresh VM-Series Registration PIN (per redeployment to fresh subscription)
+
+VM-Series firewalls need a device certificate to connect to Panorama in
+PAN-OS 11+/12.x. The certificate is auto-fetched at first boot using
+`vm-series-auto-registration-pin-id` + `pin-value` from init-cfg. **The PIN
+expires** (1 / 7 / 30-day TTL on CSP Portal) — if you reuse PIN values
+from an earlier deployment to a fresh Azure subscription, PAN-OS silently
+rejects the expired PIN, leaves the `vm-series-auto-registration` node
+empty in deviceconfig, and the device-cert fetch fails. Symptom: FW
+boots successfully (`bootstrap` phase OK), bootstrap status shows
+"License Install Successful", but `show panorama-status` reports
+`Connected: no` and `show device-certificate status` reports
+`Failed to fetch device certificate`. Phase 2b commit-all then fails
+with "not connected" for every FW serial.
+
+Generate a fresh PIN before each redeploy:
+
+1. <https://support.paloaltonetworks.com> → **Assets** → **Device
+   Certificates** → **Generate Registration PIN** (TTL: 30 days max)
+2. Update `terraform.tfvars`:
+   ```hcl
+   fw_registration_pin_id    = "<NEW_PIN_ID>"
+   fw_registration_pin_value = "<NEW_PIN_VALUE>"
+   ```
+3. If you've already deployed FWs with an expired PIN, apply the new
+   PIN directly via the FW XML API without re-deploying — see
+   `docs/troubleshooting-fw-cert.md` (or just paste your NEW values
+   into a chat with the assistant and it'll push them).
+
 ### Accept Azure Marketplace terms (one-off, per subscription)
 
 PAN-OS Panorama and VM-Series BYOL images on Azure Marketplace require the
