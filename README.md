@@ -95,9 +95,10 @@ python3 >= 3.8
 ### Check VM-Series BYOL auth-code credit balance (per redeployment)
 
 VM-Series BYOL auth codes have a **credit pool** in PANW Customer Support
-Portal. Every FW deployment consumes one credit. After ~5 redeployments
-to fresh subscriptions (typical with 5-week Torque project cycles), the
-pool runs dry and bootstrap reports:
+Portal. Every FW deployment consumes one credit, and a re-deployment to a
+fresh Azure subscription claims an additional credit (the previously-active
+serial is not released unless explicitly deactivated). After enough
+re-deployments the pool runs dry and bootstrap reports:
 
 ```
 License Install   Failed   NOV-021 - Insufficient credits to create/update
@@ -112,15 +113,30 @@ serial as `connected=no`. **Key diagnostic differentiator** is the
 "Successful as with the PIN-expiration case). If you see this, the
 auth code itself is the problem, not the PIN.
 
-Fix:
-1. <https://support.paloaltonetworks.com> → **Assets** → **VM-Series
-   Auth-Codes** → check remaining credit count
-2. If zero: either purchase additional capacity or generate a fresh
-   auth-code with credits attached
-3. Update `terraform.tfvars`: `fw_auth_code = "<NEW_AUTH_CODE>"`
-4. Replace the FW VMs: `terraform apply -target=module.bootstrap -target=module.firewall`
-   (the bootstrap_hash change forces VM replace, which triggers a fresh
-   license install)
+Fix (in preferred order — try (a) first since it doesn't require a new
+auth-code and is reversible):
+
+(a) **Deactivate previously-active serials to free credits.** In CSP
+   Portal → **Assets** → **Devices** find serial numbers from prior
+   deployments to the same auth-code, **Deactivate** them. This releases
+   one credit per deactivation back into the pool. The auth-code value
+   stays the same — no tfvars change needed.
+
+(b) **Request additional capacity** on the existing auth-code (PANW
+   sales / SE contact). Auth-code value stays the same.
+
+(c) **Generate a fresh auth-code** with capacity. Update
+   `terraform.tfvars`: `fw_auth_code = "<NEW_AUTH_CODE>"`.
+
+After (a), (b), or (c): replace the FW VMs so the fresh license install
+runs at first boot:
+
+```bash
+terraform apply -target=module.bootstrap -target=module.firewall
+```
+
+The `bootstrap_hash` change (or `fw_auth_code` change if you took
+option (c)) forces VM replace, which re-triggers license install.
 
 ### Refresh VM-Series Registration PIN (per redeployment to fresh subscription)
 
