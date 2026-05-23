@@ -823,13 +823,47 @@ except Exception:
       fi
       echo "  [OK] Collector Group created with member ref"
 
-      # 4b-4: Commit on Panorama side. Returns job ID — poll until FIN.
-      echo "  Committing Panorama config..."
-      COMMIT_JID=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
-        --data-urlencode "type=commit" \
-        --data-urlencode "cmd=<commit></commit>" \
-        --data-urlencode "key=$API_KEY" \
-        | python3 -c "
+      # 4b-4: Commit on Panorama side. Wraps in a function so we can RETRY
+      # on FIN/FAIL — first commit after fresh Panorama install often races
+      # with pending background ops (content install, license refresh) and
+      # comes back FIN/FAIL even though config is valid. Second attempt 30 s
+      # later succeeds. Also dumps the job's <details>/<line> + <warnings>/<line>
+      # on FAIL so the user gets a real error message rather than "see GUI"
+      # (the GUI itself only opens through a Bastion+RDP path that this
+      # script's caller may not have set up yet).
+
+      # Helper: wait for any other in-flight jobs to finish before our commit,
+      # so we're not racing with content install / license activation.
+      wait_for_idle_jobs() {
+        for IDLE_ATT in $(seq 1 24); do  # 24 x 5s = 120s cap
+          ACT_COUNT=$(curl -sk --max-time 15 \
+            "$PANORAMA_URL/api/?type=op&cmd=<show><jobs><all></all></jobs></show>&key=$API_KEY" 2>/dev/null \
+            | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    print(sum(1 for j in root.findall('.//job') if (j.findtext('status','') or '').upper() in ('ACT','PEND')))
+except Exception:
+    print(0)
+" 2>/dev/null)
+          if [ "$ACT_COUNT" = "0" ]; then
+            return 0
+          fi
+          echo "  [$IDLE_ATT/24] $ACT_COUNT Panorama job(s) still ACT/PEND — waiting 5s..."
+          sleep 5
+        done
+        echo "  [WARN] Background jobs still active after 120s — proceeding anyway"
+      }
+
+      # Submits commit + polls; on FAIL pulls job details and echoes them.
+      # Returns 0 OK, 1 FAIL.
+      do_commit() {
+        local LABEL="$1"
+        local CJ=$(curl -sk --max-time 60 "$PANORAMA_URL/api/" \
+          --data-urlencode "type=commit" \
+          --data-urlencode "cmd=<commit></commit>" \
+          --data-urlencode "key=$API_KEY" \
+          | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     print(ET.fromstring(sys.stdin.read()).findtext('.//job',''))
@@ -837,14 +871,15 @@ except Exception:
     print('')
 " 2>/dev/null)
 
-      if [ -z "$COMMIT_JID" ]; then
-        echo "  [WARN] Commit returned no job ID — may already be committed (no changes). Continuing."
-      else
-        echo "  Commit job ID: $COMMIT_JID — polling for completion..."
-        for I in $(seq 1 30); do  # 30 x 5s = 150s cap
-          JOB_STATE=$(curl -sk --max-time 15 \
-            "$PANORAMA_URL/api/?type=op&cmd=<show><jobs><id>$COMMIT_JID</id></jobs></show>&key=$API_KEY" \
-            | python3 -c "
+        if [ -z "$CJ" ]; then
+          echo "  [$LABEL] no job ID returned — likely no pending changes. OK"
+          return 0
+        fi
+        echo "  [$LABEL] commit job $CJ — polling..."
+        for I in $(seq 1 36); do  # 36 x 5s = 180s cap
+          local RAW=$(curl -sk --max-time 15 \
+            "$PANORAMA_URL/api/?type=op&cmd=<show><jobs><id>$CJ</id></jobs></show>&key=$API_KEY")
+          local JS=$(echo "$RAW" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 try:
     j = ET.fromstring(sys.stdin.read()).find('.//job')
@@ -852,19 +887,48 @@ try:
 except Exception:
     print('|')
 " 2>/dev/null)
-          STATUS=$(echo "$JOB_STATE" | cut -d'|' -f1)
-          RESULT=$(echo "$JOB_STATE" | cut -d'|' -f2)
-          if [ "$STATUS" = "FIN" ]; then
-            if [ "$RESULT" = "OK" ]; then
-              echo "  [OK] Panorama commit FIN/OK (after $((I*5))s)"
-              break
-            else
-              echo "  [ERROR] Panorama commit FIN/$RESULT — see GUI Tasks for details"
-              exit 1
+          local ST=$(echo "$JS" | cut -d'|' -f1)
+          local RS=$(echo "$JS" | cut -d'|' -f2)
+          if [ "$ST" = "FIN" ]; then
+            if [ "$RS" = "OK" ]; then
+              echo "  [$LABEL] FIN/OK (after $((I*5))s)"
+              return 0
             fi
+            # FAIL — extract details + warnings so user sees WHY without GUI access
+            echo "  [$LABEL] FIN/$RS — dumping job details + warnings:"
+            echo "$RAW" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+for tag in ('details','warnings'):
+    for line in root.findall(f'.//{tag}/line'):
+        if line.text and line.text.strip():
+            print(f'    [{tag[:4].upper()}] ' + line.text.strip()[:400])
+" 2>/dev/null
+            return 1
           fi
           sleep 5
         done
+        echo "  [$LABEL] timed out after 180s"
+        return 1
+      }
+
+      echo "  Waiting for background jobs to settle before commit..."
+      wait_for_idle_jobs
+
+      echo "  Committing Panorama config (attempt 1/2)..."
+      if ! do_commit "attempt-1"; then
+        echo "  Commit attempt 1 failed — sleeping 30s for Panorama background ops, retrying once..."
+        sleep 30
+        wait_for_idle_jobs
+        echo "  Committing Panorama config (attempt 2/2)..."
+        if ! do_commit "attempt-2"; then
+          echo "  [ERROR] Both Panorama commit attempts failed. See [DETA]/[WARN] lines above."
+          echo "          Common root causes on fresh Panorama:"
+          echo "            - content/AV download still installing (wait 2-3 min, re-run terraform apply)"
+          echo "            - master-key validation (Device > Master Key)"
+          echo "            - pre-existing pending changes from another admin"
+          exit 1
+        fi
       fi
 
       # 4b-5: commit-all log-collector-config — pushes CG config to LC daemon.
