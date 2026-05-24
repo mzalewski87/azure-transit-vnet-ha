@@ -338,112 +338,47 @@ This script automatically:
 > and the Template Stack / Device Group / DLF entries won't be configured,
 > so the FWs sit there licensed but unconfigured and no logs flow.
 
-### Phase 3: Domain Controller (optional)
+### Optional add-on modules
 
-This phase has two parts. **Part A is part of Phase 1b** (the bare Windows
-Server VM is deployed alongside the FWs). **Part B is fully optional** —
-only run it if you want the Windows Server promoted to an Active Directory
-Domain Controller for User-ID integration with PAN-OS.
+The transit baseline (Phases 1a–2b) is self-contained — you get a working
+HA firewall sandwich with one demo workload (Apache via FrontDoor). On top
+of that there are **two opt-in modules** with their own dedicated runbooks;
+each is fully independent (can run, skip, or destroy without touching the
+others), and each ships with its own architecture diagram + troubleshooting
+notes. Read the runbook before applying.
 
-**Part A — deploy the bare DC VM** (already covered in Phase 1b above):
+| Module | Adds | Deploy time | Runbook |
+|---|---|---|---|
+| **Domain Controller (Spoke2)** | Windows Server 2022 + AD DS forest `panw.labs` on `10.113.0.4`, ready for PAN-OS User-ID integration | ~5-10 min (Part A) + ~30-45 min (Part B) | [`docs/dc-runbook.md`](docs/dc-runbook.md) |
+| **AKS + WordPress (Spoke3)** | New spoke3 VNet, AKS cluster with WordPress+MariaDB pods, custom EDL server in mgmt VNet, new AFD endpoint, FW egress controlled via EDL allowlist | ~25-35 min (single `terraform apply`) | [`docs/aks-runbook.md`](docs/aks-runbook.md) + [`docs/aks-rules-structure.md`](docs/aks-rules-structure.md) |
+
+#### Domain Controller — quick start
 
 ```bash
+# Part A — already part of Phase 1b; deploy stand-alone if you skipped it then:
 terraform apply -target=module.app2_dc
+
+# Part B — promote to AD DC (separate workspace, ~30-45 min):
+cd optional/dc-promote/
+cp terraform.tfvars.example terraform.tfvars   # fill in REPLACE_ME values
+terraform init && terraform apply
+# Verify via Bastion RDP: nltest /sc_verify:panw.labs
 ```
 
-This creates `vm-dc-app2` (Windows Server 2022, joined to the Spoke2
-VNet) but leaves it as a plain Windows VM — no AD DS role installed yet.
-
-**Part B — promote to AD Domain Controller (optional, ~30-45 min):**
-
-The promotion is in a SEPARATE workspace (`optional/dc-promote/`) so it
-does not block the main deploy and can be skipped without consequence.
-
-1. Set up tfvars:
-   ```bash
-   cd optional/dc-promote/
-   cp terraform.tfvars.example terraform.tfvars
-   ```
-   Edit `terraform.tfvars` and fill in:
-   ```hcl
-   spoke2_subscription_id = "<YOUR_SPOKE2_SUBSCRIPTION_ID>"   # same as in root terraform.tfvars
-   admin_password         = "<SAME_AS_dc_admin_password_FROM_ROOT>"
-   # Optional overrides (defaults shown):
-   # spoke2_resource_group_name = "rg-app2-dc"
-   # dc_vm_name                 = "vm-dc-app2"
-   # domain_name                = "panw.labs"
-   ```
-
-2. Apply:
-   ```bash
-   terraform init
-   terraform apply
-   ```
-   The Custom Script Extension installs `AD-Domain-Services` + `DNS` +
-   RSAT tools, then runs `Install-ADDSForest` with the supplied password
-   as the Safe Mode Admin password. The VM reboots automatically when
-   promotion completes. Allocate **30-45 minutes** total — Terraform's
-   `create` timeout is set to 60 min and `lifecycle.ignore_changes = all`
-   so re-applies do not re-trigger the extension.
-
-3. Verify (via Bastion → RDP → vm-dc-app2):
-   ```powershell
-   nltest /sc_verify:panw.labs
-   Get-ADDomain | Select Name,DomainMode
-   ```
-   Expected: `Verifying secure channel ... Trusted DC Connection Status =
-   Success` and the domain `panw.labs` in `Windows2016Domain` mode or
-   higher.
-
-4. Tear down (if you only wanted to test):
-   ```bash
-   cd optional/dc-promote/
-   terraform destroy
-   ```
-   Note: `destroy` here only removes the Custom Script Extension Terraform
-   resource record — the AD DS role inside Windows is NOT uninstalled.
-   To fully clean, also `terraform destroy -target=module.app2_dc` from
-   the root.
-
-**After promotion — User-ID integration:** configure PAN-OS User-ID Agent
-to point at the DC's private IP (`10.113.0.4` by default) for user/group-
-based security policies. This is a manual step in Panorama → Device →
-User Identification → User Mapping.
-
-### Phase 4: AKS + WordPress (optional)
-
-A second standalone workspace (`optional/aks-deploy/`) that deploys an AKS
-cluster in a new spoke (`spoke3`, 10.114.0.0/16) running WordPress, fronted
-by a new Azure Front Door endpoint, with FW egress controlled by a custom
-EDL server in the management VNet.
-
-Total deploy time: **~25-35 min** (one `terraform apply` runs all six
-deployment phases + smoke tests). Destroy reverses cleanly with
-`terraform destroy`.
-
-See `docs/aks-runbook.md` for the full runbook and `docs/aks-rules-structure.md`
-for EDL anatomy + Panorama rule design rationale. Quick start:
+#### AKS + WordPress — quick start
 
 ```bash
 # Prerequisite: Bastion tunnel to Panorama on port 44300 (same as Phase 2a)
 PANORAMA_ID=$(terraform output -raw panorama_vm_id)
 az network bastion tunnel \
   --name bastion-management --resource-group rg-transit-hub \
-  --target-resource-id "$PANORAMA_ID" --resource-port 443 --port 44300
+  --target-resource-id "$PANORAMA_ID" --resource-port 443 --port 44300 &
 
 cd optional/aks-deploy/
-cp terraform.tfvars.example terraform.tfvars
-# Fill in REPLACE_ME values (hub subscription, External LB PIP, passwords)
+cp terraform.tfvars.example terraform.tfvars   # fill in REPLACE_ME values
 terraform init && terraform apply
 # Output: wordpress_url = "https://wordpress-XXXX.z01.azurefd.net"
 ```
-
-The module is fully self-contained: it adds a new spoke VNet (with peering
-and UDR), a small Ubuntu EDL server in the management VNet, two External
-Dynamic Lists + security rules + a NAT rule to the existing Panorama Device
-Group, the AKS cluster, the WordPress Helm chart, and one new Front Door
-endpoint under the existing `afd-panos-transit` profile. No changes to the
-root module's state.
 
 ### Verification
 
