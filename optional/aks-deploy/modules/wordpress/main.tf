@@ -132,23 +132,27 @@ resource "helm_release" "wordpress" {
     name  = "wordpressBlogName"
     value = var.wp_blog_name
   }
-  # Ingress configuration — controller is ingress-nginx, no TLS at this layer
-  # because AFD terminates TLS at the edge.
+  # Bitnami deprecated free versioned tags on `docker.io/bitnami/*` in
+  # 2025-08; legacy tags moved to `docker.io/bitnamilegacy/*`. The pinned
+  # chart 23.0.0 still references `bitnami/wordpress:6.5.5-debian-12-r7`
+  # and `bitnami/mariadb:11.4.2-debian-12-r0` which now 404 on pull. Repo
+  # overrides keep the same tags but point at the still-public legacy org.
+  set {
+    name  = "image.repository"
+    value = "bitnamilegacy/wordpress"
+  }
+  set {
+    name  = "mariadb.image.repository"
+    value = "bitnamilegacy/mariadb"
+  }
+  # Disable the chart's built-in Ingress. The Bitnami chart requires a single
+  # valid DNS hostname in `ingress.hostname`; bare `*` is invalid in K8s
+  # Ingress spec (`spec.rules[].host` must be exact or `*.<dns-suffix>`).
+  # We create a host-less Ingress ourselves below (default_backend = catch-all)
+  # so AFD can forward any Host header (currently the External LB public IP)
+  # without coupling chart values to a specific hostname.
   set {
     name  = "ingress.enabled"
-    value = "true"
-  }
-  set {
-    name  = "ingress.ingressClassName"
-    value = "nginx"
-  }
-  set {
-    name  = "ingress.hostname"
-    value = "*"
-    type  = "string"
-  }
-  set {
-    name  = "ingress.tls"
     value = "false"
   }
   # Service is ClusterIP — exposed only through Ingress.
@@ -207,4 +211,33 @@ resource "helm_release" "wordpress" {
   timeout = 900
 
   depends_on = [helm_release.ingress_nginx]
+}
+
+###############################################################################
+# Catch-all Ingress for WordPress.
+#
+# Replaces the chart's built-in Ingress (disabled above). Uses default_backend
+# with no rules so any Host header (including bare-IP from AFD) routes to the
+# `wordpress` ClusterIP service that the Bitnami chart creates on port 80.
+###############################################################################
+resource "kubernetes_ingress_v1" "wordpress" {
+  metadata {
+    name      = "wordpress"
+    namespace = kubernetes_namespace.wordpress.metadata[0].name
+  }
+
+  spec {
+    ingress_class_name = "nginx"
+
+    default_backend {
+      service {
+        name = "wordpress"
+        port {
+          number = 80
+        }
+      }
+    }
+  }
+
+  depends_on = [helm_release.wordpress]
 }
