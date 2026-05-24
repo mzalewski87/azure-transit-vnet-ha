@@ -72,6 +72,12 @@ resource "azurerm_kubernetes_cluster" "aks" {
   # All achievable later; default disables for simplicity.
   private_cluster_enabled = false
 
+  # Azure auto-enables OIDC issuer on new AKS clusters and refuses to disable
+  # it (`OIDCIssuerFeatureCannotBeDisabled`). Pin to true so terraform's plan
+  # matches the Azure-side state on subsequent applies; otherwise the second
+  # apply fails on an in-place update that tries to switch it off.
+  oidc_issuer_enabled = true
+
   default_node_pool {
     name                 = "system"
     node_count           = var.node_count
