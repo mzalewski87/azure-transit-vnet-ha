@@ -1256,15 +1256,29 @@ resource "null_resource" "panorama_restart_for_es_reinit" {
       echo "  to skip this step (e.g. if Panorama is already in steady state)."
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
-      API_KEY=$(curl -sk --max-time 30 \
-        "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
-        | python3 -c "
+
+      # Retry keygen 6×20s. Step 4b2's `commit-all log-collector-config` can leave
+      # the mgmt-plane briefly unresponsive while ES inits against the new disk-pair.
+      # try/except + `|| true` are mandatory: without them, an empty/invalid response
+      # makes python exit 1, and `set -e` kills the script before the
+      # [ -z "$API_KEY" ] guard below can run (turning a recoverable timeout into
+      # a Terraform "exit status 1" with no usable message in the output).
+      API_KEY=""
+      for I in $(seq 1 6); do
+        API_KEY=$(curl -sk --max-time 30 \
+          "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
+          | python3 -c "
 import sys, xml.etree.ElementTree as ET
-print(ET.fromstring(sys.stdin.read()).findtext('.//key',''))
-" 2>/dev/null)
+try: print(ET.fromstring(sys.stdin.read()).findtext('.//key',''))
+except Exception: print('')
+" 2>/dev/null || true)
+        [ -n "$API_KEY" ] && break
+        echo "  [$I/6] keygen empty (Panorama likely busy with ES init) — waiting 20s..."
+        sleep 20
+      done
 
       if [ -z "$API_KEY" ]; then
-        echo "[ERROR] Cannot get API key — Panorama may already be down. Skipping restart."
+        echo "[ERROR] Cannot get API key after 2 min — Panorama may be down. Skipping restart."
         exit 0
       fi
 
@@ -1351,13 +1365,16 @@ resource "null_resource" "panorama_wait_jobs_idle" {
       PAN_USER="${var.panorama_username}"
 
       ENC_PASS=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${var.panorama_password}', safe=''))")
+
+      # try/except + `|| true` keep `set -e` from killing the script before the
+      # [ -z "$API_KEY" ] guard fires. See Step 4b3 for the long-form rationale.
       API_KEY=$(curl -sk --max-time 30 \
         "$PANORAMA_URL/api/?type=keygen&user=$PAN_USER&password=$ENC_PASS" 2>/dev/null \
         | python3 -c "
 import sys, xml.etree.ElementTree as ET
-root = ET.fromstring(sys.stdin.read())
-print(root.findtext('.//key',''))
-" 2>/dev/null)
+try: print(ET.fromstring(sys.stdin.read()).findtext('.//key',''))
+except Exception: print('')
+" 2>/dev/null || true)
 
       if [ -z "$API_KEY" ]; then
         echo "[ERROR] Could not get API key for jobs-idle wait"; exit 1
