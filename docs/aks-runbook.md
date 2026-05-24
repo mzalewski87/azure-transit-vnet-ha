@@ -1,7 +1,109 @@
 # AKS Module Runbook (`optional/aks-deploy/`)
 
 Step-by-step deployment, verification, and teardown for the optional AKS +
-WordPress module. Mirrors the structure of `docs/dc-promote-runbook.md`.
+WordPress module. Mirrors the structure of [`docs/dc-runbook.md`](dc-runbook.md).
+
+## Architecture
+
+Baseline transit topology + everything this module adds (spoke3 VNet, EDL
+server in management VNet, WordPress AFD endpoint, port-8080 LB rule). All
+existing transit resources are present unchanged — the optional module is
+strictly additive, no edits to root state.
+
+```
+                            ┌───────────────┐
+                            │   INTERNET    │
+                            └───────┬───────┘
+                                    │
+        ┌───────────────────────────┴────────────────────────────┐
+        │                                                        │
+┌───────▼───────────────────┐                  ┌────────────────▼─────────────────┐
+│  AFD: original endpoint   │                  │  AFD: NEW endpoint               │
+│  (Apache via FW DNAT)     │                  │  endpoint-panos-wordpress-XXXX   │
+│  Front Door Premium       │                  │  origin = External LB :8080      │
+└───────────┬───────────────┘                  └────────────────┬─────────────────┘
+            │ HTTPS :443                                        │ HTTP :8080
+            │                                                   │
+            └────────────────┬──────────────────────────────────┘
+                             │
+              ┌──────────────▼──────────────────────────────────┐
+              │  External LB (Standard) — pip-external-lb       │
+              │  Rules: TCP 80 (Apache), TCP 443 (Apache),      │
+              │         TCP 8080 (WordPress)  ← NEW from AKS    │
+              │  Health: TCP 22 (5s/2 probes)                   │
+              │  SNAT outbound rule                             │
+              └──────────────┬──────────────────────────────────┘
+                             │
+  ┌──────────────────────────▼──────────────────────────────────────────────────┐
+  │  Transit Hub VNet (10.110.0.0/16)                                           │
+  │                                                                             │
+  │    snet-public (10.110.129.0/24) ─── FW eth1/1 (untrust, DHCP)              │
+  │         ┌──────────┐  ┌──────────┐                                          │
+  │         │   FW1    │  │   FW2    │  VM-Series farm behind Azure LB          │
+  │         └────┬─────┘  └────┬─────┘  Panorama-managed (Transit-VNet-DG +     │
+  │    snet-private (10.110.0.0/24)     Template Stack); EDL rules pushed here  │
+  │         │                  │        via commit-all shared-policy            │
+  │    snet-mgmt (10.110.255.0/24) ─── FW eth0 (management)                     │
+  │         │  NAT GW (license/updates)                                         │
+  └─────────┼──────────────────────────────────────────────┬────────────────────┘
+            │                  │ peering                  │ peering
+            │       ┌──────────▼──────────┐    ┌──────────▼────────────────────┐
+            │       │  Internal LB (Std)  │    │  Management VNet              │
+            │       │  10.110.0.100       │    │  (10.255.0.0/16)              │
+            │       │  HA Ports (All/0)   │    │                               │
+            │       └──────────┬──────────┘    │  Panorama  10.255.0.4         │
+            │                  │               │  Bastion (tunnel + IpConnect) │
+            │       next-hop=VirtualAppliance  │                               │
+            │                  │               │  snet-edl   10.255.2.0/27 NEW │
+            │                  │               │   └─ vm-edl-server 10.255.2.4 │
+            │                  │               │      - nginx :80              │
+            │                  │               │      - python EDL generator   │
+            │                  │               │      - systemd timer daily    │
+            │                  │               └───────────────┬───────────────┘
+            │                  │                               │ HTTP pull
+            │                  │                               │ EDL refresh
+            │                  │                               │ FW MGMT → EDL
+            │                  │                               │ (URL hourly,
+            │                  │                               │  IP daily 03:00)
+  ┌─────────▼──────────────────▼─────┐                         │
+  │   ┌─────────────────────────┐   ◄───────────────── peering ┘ + (transit peering)
+  │   │  Spoke1: App1 VNet      │   │
+  │   │  (10.112.0.0/16)        │   │
+  │   │  Ubuntu+Apache 10.112.0.4│  │
+  │   └─────────────────────────┘   │
+  │                                 │
+  │   ┌─────────────────────────┐   │
+  │   │  Spoke2: App2 VNet      │   │   ┌─────────────────────────────────────┐
+  │   │  (10.113.0.0/16)        │   │   │  Spoke3: AKS VNet      NEW          │
+  │   │  Windows DC 10.113.0.4  │   │   │  (10.114.0.0/16)                    │
+  │   └─────────────────────────┘   │   │                                     │
+  │                                 │   │   snet-aks-nodes (10.114.0.0/24)    │
+  │   ┌─────────────────────────┐   │   │     └─ 2× AKS nodes (D2s_v3)        │
+  │   │  Spoke3: AKS VNet  NEW  │───┼──►│        - Azure CNI Overlay          │
+  │   │  (10.114.0.0/16)        │   │   │        - pod CIDR 10.244.0.0/16     │
+  │   │  see right-side detail  │   │   │        - WordPress + MariaDB pods   │
+  │   └─────────────────────────┘   │   │                                     │
+  └─────────────────────────────────┘   │   snet-aks-ilb (10.114.1.0/27)      │
+                                        │     └─ ingress-nginx ILB            │
+                                        │        10.114.1.4 :80               │
+  Egress from AKS pods:                 │                                     │
+  ──────────────────────                │   UDR (rt-app3-aks):                │
+  pod → kube-proxy → node →             │     0.0.0.0/0 → 10.110.0.100 (ILB)  │
+  UDR(0/0 → 10.110.0.100) →             │     BGP propagation: OFF            │
+  FW(EDL match: docker.io, MCR,         │                                     │
+   *.hcp.<region>.azmk8s.io/,           │   peerings:                         │
+   AzureCloud.<region>) →               │     Transit Hub ↔ Spoke3 (data)     │
+  SNAT untrust → ELB → Internet         │     Mgmt VNet  ↔ Spoke3 (Bastion)   │
+                                        └─────────────────────────────────────┘
+  Inbound to WordPress:
+  ────────────────────
+  Client → AFD :443 → AFD origin (External LB :8080) →
+  LB rule rule-http-8080-wordpress (floating IP) → FW DNAT-Inbound-WordPress →
+  10.114.1.4 :80 (ingress-nginx ILB) → wordpress ClusterIP :80 → pod
+```
+
+See [`aks-rules-structure.md`](aks-rules-structure.md) for the Panorama
+rule/EDL anatomy detail.
 
 ## What this deploys
 
