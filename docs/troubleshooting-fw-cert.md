@@ -169,3 +169,77 @@ Add the PIN-refresh step to your redeployment checklist between
 - `~/.claude/projects/.../memory/device_certificate_flow.md` — Panorama OTP
   vs FW Registration PIN flow
 - PANW reference: <https://docs.paloaltonetworks.com/vm-series/11-1/vm-series-deployment/about-the-vm-series-firewall/install-a-device-certificate-on-the-vm-series-firewall>
+
+---
+
+## Related issue: Panorama "Failed to update DB" when generating vm-auth-key
+
+Discovered 2026-05-24 on a Panorama instance (PAN-OS 12.1.5) that had been
+through several rounds of state modification (re-deploys, manual config
+changes via XML API, terraform apply -replace cycles): `request authkey add`
+— both via XML API and via SSH CLI — consistently returned:
+
+```
+Server error : Failed to add authkey. Failed to update DB.
+```
+
+Phase 2a (`null_resource.panorama_generate_vm_auth_key` in
+`phase2-panorama-config/main.tf`) calls exactly this command. If you hit
+this on Phase 2a, the script fails and FW bootstrap init-cfg won't carry a
+valid vm-auth-key — even though the network registration succeeds, the
+mutual cms-management TLS handshake to Panorama silently fails (LCS log
+receiver subagent connects, cms-management does not), and `show devices
+connected` on Panorama stays empty indefinitely.
+
+**Diagnostic signature** (all four together):
+
+- `show devices all` on Panorama lists FW serials but `connected=no`
+- `show panorama-status` on each FW: `Connected: no`
+- `show device-certificate status` on each FW: `status=success` (cert IS
+  fetched — this is NOT a PIN problem)
+- Panorama system log: `lcs agent on <SERIAL>-log-collection connected`
+  (proves FW reaches Panorama on TCP/3978 — networking is fine, the
+  failure is specifically in cms-management auth)
+- Any `request authkey add ...` on Panorama: `Failed to update DB`
+
+**Root cause:** internal authkey storage in Panorama 12.1.5 enters a
+state where new entries cannot be written. No PANW-published fix.
+Symptom NOT reproduced on a fresh Panorama VM — only on instances that
+have undergone significant config churn.
+
+**Workaround:** replace the Panorama VM and re-run Phase 2a.
+
+```bash
+# 1. terraform-replace Panorama (preserves state for rest of root module)
+cd /path/to/azure-transit-vnet-ha
+terraform apply -replace=module.panorama.azurerm_linux_virtual_machine.panorama \
+  -target=module.panorama
+
+# 2. Wait ~10 min for Panorama boot + license activation
+
+# 3. Re-run Phase 2a (generates a fresh vm-auth-key, writes auto.tfvars)
+cd phase2-panorama-config
+terraform apply -auto-approve
+
+# 4. The new auto.tfvars gets auto-loaded by Phase 1b. Replace FWs:
+cd ..
+terraform apply -replace='module.firewall.azurerm_linux_virtual_machine.fw["fw1"]' \
+                -replace='module.firewall.azurerm_linux_virtual_machine.fw["fw2"]' \
+                -target=module.bootstrap -target=module.firewall
+
+# 5. Re-run Phase 2b
+bash scripts/register-fw-panorama.sh
+```
+
+**Prevention:** avoid manual XML API config-set operations on Panorama
+once Phase 2a has succeeded — let terraform manage the entire config
+lifecycle. The Phase 2a flow already implements the correct
+authkey-generation pattern; ad-hoc CLI/API tinkering with the same
+namespace can poison the internal store.
+
+If the workaround fails (i.e., `request authkey add` continues failing
+on a fresh Panorama), pin a different PAN-OS version: change
+`pan_os_version` in `terraform.tfvars` from `"latest"` to e.g. `"11.2.5"`
+and replace Panorama again. 12.1.5 was the only confirmed version where
+this manifested — older 11.x and 12.0.x branches have not shown it
+in test deployments.
