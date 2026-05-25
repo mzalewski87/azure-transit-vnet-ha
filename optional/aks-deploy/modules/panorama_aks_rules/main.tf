@@ -143,10 +143,21 @@ resource "panos_panorama_address_object" "ext_lb_pip" {
 # Custom service objects. panos provider 1.11 has no panos_panorama_service_object;
 # we use panos_service_object inside the device-group via the device_group argument
 # (which the resource exposes). Naming follows existing tcp-port-N / udp-port-N style.
+#
+# NOTE on spelling: "Konnectivity" (with capital K, NOT a typo for "connectivity")
+# is the official Kubernetes component name — a portmanteau of "k8s" + "connectivity".
+# It runs the control-plane↔node tunnel on TCP 9000; UDP 1194 was the OpenVPN-based
+# tunnel-front predecessor that AKS retains for legacy node compatibility.
+# Sources:
+#   https://kubernetes.io/docs/tasks/extend-kubernetes/setup-konnectivity/
+#   https://learn.microsoft.com/azure/aks/outbound-rules-control-egress
+# When a reader opens the Service dialog in Panorama GUI and sees
+# `tcp-9000-konnectivity`, that name is correct — do not "fix" it to
+# `tcp-9000-connectivity`.
 resource "panos_panorama_service_object" "tcp_9000" {
   name             = "tcp-9000-konnectivity"
   device_group     = var.device_group_name
-  description      = "TCP 9000 — AKS Konnectivity tunnel (node ↔ API server)"
+  description      = "TCP 9000 — AKS Konnectivity tunnel (node ↔ API server). NOT a typo: 'Konnectivity' is the official K8s component name."
   protocol         = "tcp"
   destination_port = "9000"
 }
@@ -154,7 +165,7 @@ resource "panos_panorama_service_object" "tcp_9000" {
 resource "panos_panorama_service_object" "udp_1194" {
   name             = "udp-1194-konnectivity-legacy"
   device_group     = var.device_group_name
-  description      = "UDP 1194 — AKS Konnectivity legacy OpenVPN fallback (per MS outbound-rules docs)"
+  description      = "UDP 1194 — AKS Konnectivity legacy OpenVPN fallback (per MS outbound-rules docs). NOT a typo: 'Konnectivity' is the official K8s component name."
   protocol         = "udp"
   destination_port = "1194"
 }

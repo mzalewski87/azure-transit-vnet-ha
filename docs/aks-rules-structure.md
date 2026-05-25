@@ -3,6 +3,17 @@
 Reference for the `optional/aks-deploy/` module's PAN-OS configuration. Read
 this before changing the EDL generator or the Panorama rules.
 
+> **Naming note — "Konnectivity" is not a typo.** "Konnectivity" (with
+> capital K, looks like a misspelling of "connectivity") is the **official
+> Kubernetes component name** — a portmanteau of "k8s" + "connectivity". It
+> runs the control-plane↔node tunnel on TCP 9000; UDP 1194 was the
+> OpenVPN-based `tunnel-front` predecessor that AKS still keeps around for
+> legacy nodepool compatibility. Service objects in this module
+> (`tcp-9000-konnectivity`, `udp-1194-konnectivity-legacy`) are deliberately
+> spelled this way to match upstream — Kubernetes docs and Microsoft AKS
+> outbound-rules docs both use the same spelling. Do not "fix" them.
+> Source: <https://kubernetes.io/docs/tasks/extend-kubernetes/setup-konnectivity/>.
+
 ## Architecture in one picture
 
 ```
