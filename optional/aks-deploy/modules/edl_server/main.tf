@@ -42,6 +42,14 @@ resource "azurerm_subnet" "edl" {
   address_prefixes     = [var.edl_subnet_cidr]
 }
 
+# Read the management VNet to learn its address space — used by nginx-edl.conf
+# as the second `allow` (for Bastion-tunnel inspection — Bastion's source IP
+# falls inside this range; see Allow-Bastion-HTTP-Inspect NSG rule below).
+data "azurerm_virtual_network" "mgmt" {
+  name                = var.management_vnet_name
+  resource_group_name = var.resource_group_name
+}
+
 ###############################################################################
 # NSG — port 80 inbound only from FW MGMT subnet
 # This is the primary access control; nginx allow/deny is defence in depth.
@@ -77,6 +85,27 @@ resource "azurerm_network_security_group" "edl" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "22"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "*"
+  }
+
+  # HTTP from VNet (incl. Bastion subnet) for ad-hoc inspection via
+  # `az network bastion tunnel` — see docs/aks-runbook.md "Inspect EDL
+  # contents". EDL payload is non-secret (publicly-published MS Service
+  # Tags + curated AKS FQDN allowlist sourced from MS docs), so opening
+  # the read path to the mgmt VNet does not weaken the data the FW
+  # actually enforces. The strict per-source `Allow-FW-MGMT-HTTP` above
+  # still defines who can pull during normal operation; this rule just
+  # widens read access for ops inspection.
+  security_rule {
+    name                       = "Allow-Bastion-HTTP-Inspect"
+    description                = "Allow EDL inspection over HTTP from VNet (Bastion tunnel)"
+    priority                   = 120
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "80"
     source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = "*"
   }
@@ -183,7 +212,7 @@ write_files:
   - path: /etc/nginx/sites-available/edl.conf
     permissions: '0644'
     content: |
-      ${join("\n      ", split("\n", replace(file("${path.module}/files/nginx-edl.conf"), "$${MGMT_CIDR}", var.fw_mgmt_subnet_cidr)))}
+      ${join("\n      ", split("\n", replace(replace(file("${path.module}/files/nginx-edl.conf"), "$${MGMT_CIDR}", var.fw_mgmt_subnet_cidr), "$${VNET_INSPECT_CIDR}", data.azurerm_virtual_network.mgmt.address_space[0])))}
 
   - path: /etc/systemd/system/aks-edl-update.service
     permissions: '0644'
@@ -223,6 +252,22 @@ write_files:
       ln -sf /etc/nginx/sites-available/edl.conf /etc/nginx/sites-enabled/edl.conf
       mkdir -p /var/www/html/edl
       chown -R www-data:www-data /var/www/html/edl
+
+      # Microsoft TLS RSA Root G2 — required by python urllib to verify
+      # download.microsoft.com (host of the Service Tags JSON the generator
+      # reads). Ubuntu 22.04 ca-certificates 20240203 ships without this
+      # root, so python's TLS validation fails and the IP list stays empty.
+      # Cross-signed cert is fetched via HTTP (no chicken-and-egg) and
+      # installed to the system trust store. Idempotent.
+      if ! grep -q "Microsoft TLS RSA Root G2" /etc/ssl/certs/ca-certificates.crt 2>/dev/null; then
+        if curl -sSL --max-time 30 "http://www.microsoft.com/pkiops/certs/Microsoft%20TLS%20RSA%20Root%20G2%20-%20xsign.crt" -o /tmp/mstls-g2.der >> "$LOG" 2>&1 \
+           && openssl x509 -inform DER -in /tmp/mstls-g2.der -out /usr/local/share/ca-certificates/microsoft-tls-rsa-root-g2.crt >> "$LOG" 2>&1 \
+           && update-ca-certificates >> "$LOG" 2>&1; then
+          echo "[$(date -Is)] installed Microsoft TLS RSA Root G2" >> "$LOG"
+        else
+          echo "[$(date -Is)] MS TLS RSA Root G2 install FAILED — IP list will be empty until manual fix" >> "$LOG"
+        fi
+      fi
 
       # Generate EDL files now (so the first PAN-OS pull returns 200 with content)
       /usr/bin/python3 /opt/aks-edl/generate_aks_edl.py >> "$LOG" 2>&1 || {

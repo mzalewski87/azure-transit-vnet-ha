@@ -109,15 +109,60 @@ def fetch_service_tags_json():
         return json.loads(resp.read())
 
 
+# MS Service Tags JSON uses non-standard suffixes for some AzureCloud
+# regional tags — they don't match the Azure region name 1:1. Two patterns
+# observed: word-order swap (francecentral → centralfrance) and abbreviation
+# (germanywestcentral → germanywc). When MS rolls out new abbreviations
+# extend this map (or remove an entry if MS restores the canonical name).
+AZURE_CLOUD_TAG_OVERRIDES = {
+    "francecentral":      "centralfrance",
+    "francesouth":        "southfrance",
+    "germanywestcentral": "germanywc",
+    "germanynorth":       "germanyn",
+    "chilecentral":       "chilec",
+    "norwayeast":         "norwaye",
+    "norwaywest":         "norwayw",
+    "switzerlandnorth":   "switzerlandn",
+    "switzerlandwest":    "switzerlandw",
+}
+
+
 def extract_azurecloud_cidrs(svc_tags_doc, region):
-    """Return CIDRs for AzureCloud.<region> (case-insensitive region match)."""
-    target = f"azurecloud.{region.lower()}"
-    for v in svc_tags_doc.get("values", []):
-        if v.get("name", "").lower() == target:
-            prefixes = v.get("properties", {}).get("addressPrefixes", []) or []
-            # IPv4 only — PAN-OS IP EDL handles both but our security rules are v4
-            return [p for p in prefixes if ":" not in p]
-    raise RuntimeError(f"AzureCloud.{region} not present in Service Tags JSON")
+    """Return IPv4 CIDRs for AzureCloud.<region>.
+
+    Tries the override map first (MS-shortened suffix), falls back to the
+    region name as-is. Logs which form matched so log readers can see when
+    the override fired. Raises with available AzureCloud.* tags listed
+    if nothing matches — that's the case worth alerting on.
+    """
+    candidates = []
+    if region.lower() in AZURE_CLOUD_TAG_OVERRIDES:
+        candidates.append(AZURE_CLOUD_TAG_OVERRIDES[region.lower()])
+    candidates.append(region.lower())
+
+    for cand in candidates:
+        target = f"azurecloud.{cand}"
+        for v in svc_tags_doc.get("values", []):
+            if v.get("name", "").lower() == target:
+                prefixes = v.get("properties", {}).get("addressPrefixes", []) or []
+                if cand != region.lower():
+                    log.info(
+                        "AzureCloud tag for region=%s matched via override AzureCloud.%s "
+                        "(MS Service Tags JSON naming convention)",
+                        region, cand,
+                    )
+                # IPv4 only — PAN-OS IP EDL handles both but our security rules are v4
+                return [p for p in prefixes if ":" not in p]
+
+    available = sorted(
+        v["name"] for v in svc_tags_doc.get("values", [])
+        if v.get("name", "").startswith("AzureCloud.")
+    )
+    raise RuntimeError(
+        f"AzureCloud.{region} not found in Service Tags JSON. Tried: {candidates}. "
+        f"{len(available)} AzureCloud.* tags exist; samples: {available[:5]}. "
+        f"If MS introduced a new abbreviation, add it to AZURE_CLOUD_TAG_OVERRIDES."
+    )
 
 
 def render_ip_list(region, cidrs):
