@@ -212,6 +212,55 @@ kubectl get svc -n ingress-nginx             # LoadBalancer with EXTERNAL-IP=10.
 kubectl get ingress -n wordpress             # Address=10.114.0.10
 ```
 
+### Inspect the EDL contents in a browser (via Bastion tunnel)
+
+`vm-edl-server` (10.255.2.4 in management VNet) serves the two lists on
+port 80. The NSG and nginx config both allow inbound HTTP from inside the
+management VNet, so an Azure Bastion tunnel to port 80 lets you open the
+files directly in a local browser or `curl` them.
+
+```bash
+# 1. Resolve the EDL VM ID
+EDL_VM_ID=$(az vm show -g rg-transit-hub -n vm-edl-server --query id -o tsv)
+
+# 2. Open the Bastion tunnel — maps EDL :80 to a local port (48180 here;
+#    pick any free port). Runs in foreground; Ctrl-C to close.
+az network bastion tunnel \
+  --name bastion-management \
+  --resource-group rg-transit-hub \
+  --target-resource-id "$EDL_VM_ID" \
+  --resource-port 80 \
+  --port 48180
+
+# 3. In another terminal (or browser), point at localhost:48180/edl/...
+curl -sI    http://localhost:48180/edl/aks-egress-fqdn.txt   # expect HTTP/1.1 200 OK
+curl -s     http://localhost:48180/edl/aks-egress-fqdn.txt | head -20
+curl -s     http://localhost:48180/edl/aks-egress-ips.txt   | head -10
+#   Or open in a browser: http://localhost:48180/edl/aks-egress-fqdn.txt
+#                         http://localhost:48180/edl/aks-egress-ips.txt
+```
+
+What to expect:
+
+- `aks-egress-fqdn.txt` — ~30+ FQDN lines (trailing slash on each wildcard
+  per PAN-OS URL EDL requirements) plus a few comment lines at the top
+- `aks-egress-ips.txt` — `# Count: N` header followed by N IPv4 CIDRs
+  filtered from Azure Service Tags JSON for the configured `aks_region`
+  (typically 100-250 prefixes depending on region)
+
+If the IP list is empty (only the `# FETCH FAILED — empty stub written`
+comment), check the generator log via `az vm run-command`:
+```bash
+az vm run-command invoke -g rg-transit-hub -n vm-edl-server \
+  --command-id RunShellScript \
+  --scripts 'tail -30 /var/log/aks-edl-update.log'
+```
+Common failure modes: TLS cert chain not trusted (Microsoft TLS RSA Root G2
+missing from the system bundle — cloud-init installs it; reinstall via
+`update-ca-certificates` if missing), or the configured region not matching
+any `AzureCloud.<suffix>` tag (Microsoft renames these occasionally — see
+`AZURE_CLOUD_TAG_OVERRIDES` in `generate_aks_edl.py`).
+
 ## Troubleshooting
 
 ### Symptom: AKS cluster stuck in "Creating" for > 15 min
