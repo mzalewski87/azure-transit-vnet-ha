@@ -136,6 +136,68 @@ PAN-OS pulls the IP list every 24 h (the MS JSON updates weekly anyway).
 The systemd timer on the EDL server regenerates the file daily at 03:17 UTC,
 so the IPs are at most ~30 h stale in PAN-OS.
 
+## Why a custom EDL instead of PANW SaaS EDL?
+
+Palo Alto publishes ready-made dynamic lists for many cloud providers at
+<https://saasedl.paloaltonetworks.com/feeds.html>. The natural question is:
+why run our own EDL server when PANW already offers Azure feeds?
+
+### What PANW SaaS EDL provides for Azure
+
+Inventoried from the live site: **4 cloud variants** (`china`, `germany`,
+`public`, `usgov` — these are Azure *sovereign clouds*, NOT Azure
+*regions*), **101 distinct services** per cloud. Useful entries for an AKS
+egress allowlist would be:
+
+| Feed | What it covers | URL pattern |
+|---|---|---|
+| `azurecloud` | Every public-cloud IP CIDR Microsoft has assigned to Azure (any region, any service) | `…/feeds/azure/public/azurecloud/ipv4` |
+| `azurecontainerregistry` | ACR endpoints (the customer-tenant `*.azurecr.io` data plane) | `…/feeds/azure/public/azurecontainerregistry/ipv4` |
+| `microsoftcontainerregistry` | MCR (`mcr.microsoft.com` — kubelet/AKS base images) | `…/feeds/azure/public/microsoftcontainerregistry/ipv4` |
+| `azurekubernetesservice` | *Does not exist* — there is no AKS-specific feed | n/a |
+
+There are also no URL feeds — only IPv4 / IPv6 CIDRs.
+
+### Why our custom EDL is more restrictive for AKS
+
+1. **Region narrow vs cloud-wide IP allowlist.** PANW's `azurecloud/public`
+   contains *every* Microsoft-assigned CIDR across every public Azure
+   region (currently ~12,000 prefixes). An AKS node in `germanywestcentral`
+   only needs to talk to `AzureCloud.germanywestcentral` (typically
+   ~70-150 prefixes). The MS Service Tags JSON exposes this per-region
+   breakdown — our generator filters to it; PANW's pre-built feed does
+   not. Result: our IP allowlist is **2 orders of magnitude tighter** than
+   `azurecloud/public` and still covers everything AKS in that region
+   actually reaches (Konnectivity, ACR data plane, AAD, monitoring, etc.).
+
+2. **Workload-shaped FQDN bundle.** PANW SaaS EDL has no URL feeds for
+   Azure infrastructure at all, and no "AKS" feed bundling the
+   non-`AzureCloud` endpoints AKS needs (Docker Hub for community images,
+   `*.hcp.<region>.azmk8s.io/` for the managed control plane, `packages.
+   microsoft.com` for kubelet host updates, GitHub for kustomize/helm
+   pulls if used). With PANW feeds alone, the URL allowlist for an AKS
+   workload would have to be hand-maintained anyway — which is what the
+   custom EDL already does, with the entire bill of materials in one file
+   (`fqdn_base_list.txt`) sourced from the MS AKS outbound-rules docs.
+
+3. **Self-control / auditability.** The list contents are deterministic
+   and reproducible — same generator, same inputs, same output. We can
+   diff today's list against last week's and see exactly what changed,
+   pin which Service Tags JSON snapshot we used, and add or remove
+   entries in code review. PANW SaaS EDL is opaque curation by PANW — if
+   a new CIDR appears we have no audit trail or rollback handle.
+
+### When PANW SaaS EDL would still be the right tool
+
+For SaaS workloads (M365 outbound from a user spoke, Salesforce, Zoom,
+etc.) where the egress target is itself a SaaS provider's published
+endpoint list, the PANW feeds are the right answer: pre-curated, per
+service-area, frequently updated, zero ops cost. The custom-EDL approach
+in this project is justified because **AKS is not a SaaS** — it's a
+customer-managed infrastructure workload whose egress depends on what
+images and add-ons that *specific* cluster runs. PANW can't ship a feed
+for that.
+
 ## Panorama rule design
 
 Three security rules + one NAT rule, all in the `Transit-VNet-DG` device
@@ -174,19 +236,15 @@ to `deny` and only EDL-allowed traffic gets out).
 | Action | allow |
 | Log | yes (default-logging profile) |
 
-**Important gotcha (verified empirically 2026-05-22):** PAN-OS does NOT accept
-URL EDLs in the `destination_addresses` field of a security rule — that
-field only accepts IP addresses, ranges, FQDN address objects, or IP EDLs.
-URL EDLs are treated as **custom URL categories** and must be referenced via
-the `categories` field. The rule then matches when the destination URL
-(resolved at Layer 7 from HTTP/HTTPS traffic) belongs to the EDL.
+URL EDLs in PAN-OS are referenced as URL categories (the `categories` field),
+not as address objects, so this rule's `Dest addr` is `any` and the match
+happens at Layer 7 against the URL category. Practical consequences:
 
-This means:
 - HTTP/HTTPS traffic to AKS FQDNs → matches this rule
 - DNS / NTP / ICMP from AKS → does NOT match (no URL to categorize) →
   falls through to `Allow-Outbound-Internet` which has explicit App-IDs
   for these protocols
-- Konnectivity (TCP 9000 / UDP 1194) — NOT HTTP/HTTPS — matches the
+- Konnectivity (TCP 9000 / UDP 1194) — not HTTP/HTTPS — matches the
   IP-based `Allow-AKS-Egress-AzureCloud` rule instead
 
 ### Rule 2: `Allow-AKS-Egress-AzureCloud`
@@ -226,20 +284,8 @@ This means:
 | Source addr | any |
 | Dest addr | `External-LB-PIP` |
 | Service | `tcp-8080-wordpress` |
-| **Translated source** | dynamic-ip-and-port on **ethernet1/2** (TRUST interface — symmetric-routing fix, see below) |
+| **Translated source** | dynamic-ip-and-port on **ethernet1/2** (TRUST interface) |
 | **Translated dest** | static `10.114.0.10:80` (AKS ingress-nginx internal LB) |
-
-#### Why SNAT-to-trust?
-
-Same rationale as the Apache DNAT rule in `modules/panorama_config/main.tf`:
-without SNAT-to-trust, the AKS ingress response goes to the FW untrust IP
-(say `10.110.129.4`), arrives at the FW via VNet peering on the untrust
-interface, but the session is on the trust interface → asymmetric routing →
-FW drops the response.
-
-With SNAT-to-trust (e.g., `10.110.0.4`), the response goes to the trust IP
-→ arrives on the trust interface → matches the session → forwarded back to
-the client. Symmetric, works.
 
 ## Extending the rules
 
@@ -265,13 +311,3 @@ Once you're confident the EDL covers all needed AKS endpoints:
 2. Re-run Phase 2a + 2b, OR run `panos_panorama_security_rule_group` here directly via XML API
 
 Either way, test in monitoring mode first: change rule action to `alert` (PAN-OS only) for a week and watch which AKS endpoints are denied.
-
-## Common gotchas
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| EDL "List capacity: 0" on PAN-OS | URL EDL pulled but list empty/malformed | Test directly: `curl http://10.255.2.4/edl/aks-egress-fqdn.txt` from FW MGMT. If 200 with content, check PAN-OS service route is via MGMT (Device → Setup → Services). |
-| FQDN match works for `mcr.microsoft.com` but not `*.data.mcr.microsoft.com` | Missing trailing slash on wildcard | Verify the file content has `*.data.mcr.microsoft.com/` (with `/`). |
-| IP list 0 CIDRs | `AzureCloud.<region>` not found in JSON | Generator logs to `/var/log/aks-edl-update.log` — most likely cause: wrong `aks_region` value (e.g., `germanywest` vs `germanywestcentral`). |
-| Konnectivity blocked despite IP EDL | TCP 9000 IS a real port but the destination isn't in `AzureCloud.<region>` — it's actually in `AzureFrontDoor.Backend` or `AzureKubernetesService` | Add the appropriate service-tag to the generator (extract a second CIDR list and add to the IP EDL). |
-| AFD endpoint shows 502 | LB rule 8080 not added OR DNAT rule not pushed | See troubleshooting in `docs/aks-runbook.md`. |
