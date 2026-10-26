@@ -190,6 +190,13 @@ class Panorama:
                 with urllib.request.urlopen(req, context=self.ctx, timeout=timeout) as r:
                     body = r.read()
                 break
+            except urllib.error.HTTPError as e:
+                # Panorama answered (e.g. 403 on bad credentials) — an API
+                # response, not a network failure: parse it, never retry
+                # (retrying a bad password risks an admin lockout).
+                with e:
+                    body = e.read()
+                break
             except (urllib.error.URLError, OSError) as e:  # incl. TimeoutError, ssl errors
                 reason = getattr(e, "reason", e)
                 if attempt == retries:
@@ -205,8 +212,16 @@ class Panorama:
         return root
 
     def login(self, retries=6):
-        root = self._post({"type": "keygen", "user": self.user, "password": self.password},
-                          30, retries)
+        try:
+            root = self._post({"type": "keygen", "user": self.user, "password": self.password},
+                              30, retries)
+        except ApiError as e:
+            if "Invalid Credential" in str(e):
+                raise ApiError("Panorama rejected the credentials for user '%s' (Invalid Credential)."
+                               " Set the live password: export PAN_PASS='...' (and PAN_USER if not"
+                               " panadmin) — terraform.tfvars may be stale or the password changed"
+                               " after deployment." % self.user)
+            raise
         self.key = root.findtext(".//key")
         if not self.key:
             raise ApiError("keygen returned no key")

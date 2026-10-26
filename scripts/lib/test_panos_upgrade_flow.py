@@ -50,6 +50,9 @@ class FakePanorama:
     def handle(self, p):
         t = p.get("type")
         if t == "keygen":
+            self.keygen_calls = getattr(self, "keygen_calls", 0) + 1
+            if p.get("password") != "x":
+                raise PermissionError("Invalid Credential")
             return "<result><key>K</key></result>"
         if t == "commit":
             self.events.append(("PAN001", "push", p["cmd"][:40]))
@@ -109,11 +112,15 @@ def serve(fake):
         def do_POST(self):
             body = self.rfile.read(int(self.headers["Content-Length"])).decode()
             p = {k: v[0] for k, v in urllib.parse.parse_qs(body).items()}
+            code = 200
             try:
                 out = '<response status="success">%s</response>' % fake.handle(p)
+            except PermissionError as e:  # real Panorama: HTTP 403 + XML body
+                code = 403
+                out = '<response status="error"><result><msg>%s</msg></result></response>' % e
             except Exception as e:
                 out = '<response status="error"><msg>%s</msg></response>' % e
-            self.send_response(200)
+            self.send_response(code)
             self.end_headers()
             self.wfile.write(out.encode())
 
@@ -198,6 +205,14 @@ class FlowTest(unittest.TestCase):
         finally:
             pu.Panorama._post = orig
             hang.close()
+
+    def test_bad_password_single_attempt_clear_error(self):
+        # Regression: HTTP 403 was treated as a network error and retried 6x.
+        os.environ["PAN_PASS"] = "wrong"
+        with self.assertRaises(SystemExit) as cm:
+            self.run_main("--plan-only")
+        self.assertIn("rejected the credentials", str(cm.exception.code))
+        self.assertEqual(self.fake.keygen_calls, 1)
 
     def test_already_on_target_is_noop(self):
         self.fake.pan.version = "12.2.4"
