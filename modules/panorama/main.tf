@@ -41,6 +41,10 @@ resource "azurerm_network_interface" "panorama" {
   # stays empty, and waagent reboots the VM in a loop. Explicit `false` here
   # also re-asserts the setting on every apply, so a manual Portal toggle
   # gets reverted.
+  # Not a guarantee: on 2026-10-26 Azure attached a MANA VF to this NIC with
+  # the flag false and the VF joined late after an upgrade reboot (README →
+  # "Panorama boots without MGMT network after upgrade"). After every
+  # upgrade/reboot run scripts/check-mgmt-vf-race.sh.
   accelerated_networking_enabled = false
 
   ip_configuration {
@@ -88,6 +92,11 @@ resource "azurerm_linux_virtual_machine" "panorama" {
     publisher = "paloaltonetworks"
     product   = "panorama"
   }
+
+  # Boot diagnostics with managed storage (no storage account needed).
+  # Required for console screenshot + Serial Console — the only way in when
+  # PAN-OS boots without a working MGMT interface (e.g. after a failed upgrade).
+  boot_diagnostics {}
 
   # Panorama starts without custom_data (no bootstrap).
   # Configuration: hostname, license, Template Stack, Device Group → Phase 2 (XML API).

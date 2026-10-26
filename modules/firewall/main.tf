@@ -91,11 +91,17 @@ resource "azurerm_availability_set" "fw_avset" {
 resource "azurerm_network_interface" "fw" {
   for_each = local.fw_nics
 
-  name                           = "nic-${each.value.fw}-${each.value.nic_type}"
-  location                       = var.location
-  resource_group_name            = var.resource_group_name
-  ip_forwarding_enabled          = each.value.dataplane
-  accelerated_networking_enabled = each.value.dataplane
+  name                  = "nic-${each.value.fw}-${each.value.nic_type}"
+  location              = var.location
+  resource_group_name   = var.resource_group_name
+  ip_forwarding_enabled = each.value.dataplane
+  # MGMT (eth0) MUST stay false — same rule as modules/panorama and
+  # swfw-modules (NIC index 0 → false). PAN-OS PANNET does not follow a
+  # VF rename on eth0; a VF joining after PANNET leaves MGMT without network.
+  # Note: Azure has attached a MANA VF to a MGMT NIC even with this flag
+  # false, so it lowers the risk but is not a guarantee — after every PAN-OS
+  # upgrade/reboot run scripts/check-mgmt-vf-race.sh.
+  accelerated_networking_enabled = each.value.nic_type == "mgmt" ? false : each.value.dataplane
   tags                           = var.tags
 
   ip_configuration {
@@ -179,6 +185,11 @@ resource "azurerm_linux_virtual_machine" "fw" {
   # block, the user_data argument is silently dropped by the AzureRM provider.
   # See null_resource.fw_set_userdata below for the workaround.
   custom_data = local.fw_custom_data[each.key]
+
+  # Boot diagnostics with managed storage (no storage account needed).
+  # Console screenshot + Serial Console are the only way in when PAN-OS
+  # boots without a working MGMT interface (e.g. after a failed upgrade).
+  boot_diagnostics {}
 
   identity {
     type         = "UserAssigned"

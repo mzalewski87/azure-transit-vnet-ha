@@ -611,6 +611,9 @@ terraform output bastion_ssh_commands
 ./scripts/check-panorama.sh           # status + commands
 ./scripts/check-panorama.sh --tunnel  # HTTPS tunnel
 ./scripts/check-panorama.sh --rdp     # RDP to DC
+
+# After any PAN-OS upgrade/reboot: MGMT VF boot-race check (see Troubleshooting)
+./scripts/check-mgmt-vf-race.sh
 ```
 
 > **Note:** Apache and DC are accessed via `--target-ip-address` because they
@@ -885,6 +888,91 @@ az vm restart -g <rg> -n vm-panorama
 
 After the first stable boot (~15–20 min), Panorama finishes log-disk
 partitioning by itself; no manual disk intervention is needed.
+
+### Panorama boots without MGMT network after upgrade (MANA VF, late attach)
+
+Seen 2026-10-26 after upgrading Panorama 12.1.9 → 12.2.4 on
+`Standard_D16s_v5`, with Accelerated Networking **disabled** on the NIC
+(`enableAcceleratedNetworking=false`). Same mechanism as the section above,
+different trigger: the host still attached a **MANA** VF
+(`mana 7870:00:00.0`), not a Mellanox one.
+
+Symptom: no reboot loop. The VM is "running", the agent is "Not Ready",
+WebUI and SSH time out, and CPU sits at ~0.1%. The console screenshot shows
+a login prompt followed by:
+
+```
+[ 294.55] mana 7870:00:00.0 panos_eth0: renamed from eth1 (while UP)
+```
+
+The serial log then loops forever:
+
+```
+GET http://168.63.129.16/ -- IOError [Errno 113] No route to host
+```
+
+Root cause: a race on VF arrival.
+
+| Boot | VF rename | PANNET `Starting Networking` | Result |
+|---|---|---|---|
+| failed | ~294 s ("while UP") | earlier, ~50 s | MGMT dead |
+| good | ~9 s | ~50 s | OK, `Data path switched to VF: panos_eth0` |
+
+When the VF joins **after** PANNET has configured the management interface,
+PAN-OS does not follow the rename and loses connectivity. Older releases
+booting fine is not proof of a fix; it may just be timing.
+
+Diagnose with `scripts/check-mgmt-vf-race.sh`. It parses the serial log of
+the last boot and compares the MGMT VF join/rename time with PANNET
+`Starting Networking`:
+
+```bash
+./scripts/check-mgmt-vf-race.sh                  # Panorama + FW1 + FW2
+# vm-panorama: OK  mgmt_vf=7870:00:00.0 vf_t=9.4s pannet_t=49.6s noroute=0 agent=Ready
+```
+
+Verdicts: `OK`, `RACE` (VF joined after PANNET), `NO-MGMT` (waagent cannot
+reach WireServer) and `UNKNOWN` (boot diagnostics was off during that boot).
+The serial log only covers boots after boot diagnostics was enabled.
+`modules/panorama` and `modules/firewall` now enable it by default.
+
+Fix: **deallocate + start**, not restart. A fresh host allocation attached
+the VF early in boot, and 12.2.4 came up cleanly with WebUI on HTTPS after
+~8 min. The script does this and waits for the VM agent to report `Ready`:
+
+```bash
+./scripts/check-mgmt-vf-race.sh --recover vm-panorama
+```
+
+Because this is a race, it can recur on any later reboot. If it does, revert
+to the previous software partition from Serial Console:
+
+```
+debug swm revert
+request restart system
+```
+
+### VM-Series upgrade checklist (MGMT VF race)
+
+VM-Series runs the same PAN-OS management plane (PANNET on `eth0`) on the
+same VM family (`Dv5`), so treat the FWs as exposed to the race above. The
+MGMT NIC (NIC0) is pinned to `accelerated_networking_enabled = false`. The
+dataplane NICs keep Accelerated Networking, which is supported there.
+
+1. **Before upgrading**, turn on boot diagnostics so the upgrade reboot gets
+   captured:
+   ```bash
+   ./scripts/check-mgmt-vf-race.sh --prepare
+   ```
+2. **Upgrade one FW at a time.** Both FWs are active behind the Azure LB, and
+   the LB health probe drains the one that is rebooting.
+3. After each upgrade reboot (~10 min), run
+   `./scripts/check-mgmt-vf-race.sh vm-panos-fw1` and require `OK` with
+   `agent=Ready`. Then check the dataplane in the WebUI or CLI: interfaces
+   up, `show system info`, Panorama connected.
+4. On `RACE` or `NO-MGMT`, run
+   `./scripts/check-mgmt-vf-race.sh --recover vm-panos-fw1`. Upgrade the
+   second FW only once the first one is healthy.
 
 ### Panorama license fetch fails
 ```bash
