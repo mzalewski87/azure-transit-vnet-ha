@@ -114,3 +114,18 @@ output "bastion_ssh_commands" {
     az network bastion ssh --name ${module.networking.bastion_name} --resource-group ${module.networking.bastion_resource_group} --target-ip-address ${module.app1_app.apache_private_ip} --resource-group ${module.networking.bastion_resource_group} --auth-type password --username panadmin
   EOT
 }
+
+#--- PAN-OS upgrade (Phase 2c) — read by scripts/upgrade-panos.sh ---
+output "panos_upgrade" {
+  description = "PAN-OS upgrade settings consumed by scripts/upgrade-panos.sh"
+  value = {
+    enabled          = var.panos_auto_upgrade
+    target_version   = var.panos_upgrade_target_version
+    upgrade_panorama = var.panos_upgrade_panorama
+  }
+
+  precondition {
+    condition     = !var.panos_auto_upgrade || var.panos_upgrade_target_version != ""
+    error_message = "panos_auto_upgrade = true requires panos_upgrade_target_version (e.g. \"12.2.4\")."
+  }
+}

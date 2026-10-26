@@ -798,3 +798,10 @@ echo "  Failover is realised by Azure LB health probes — no PAN-OS HA pair"
 echo "  is configured (per PANW Azure deployment guide). Configuration"
 echo "  consistency between FW1 and FW2 is enforced by Panorama Device Group"
 echo "  + Template Stack pushes."
+
+# Phase 2c (optional): PAN-OS upgrade orchestrated from Panorama. No-op unless
+# panos_auto_upgrade = true in terraform.tfvars. Runs in its own Bastion tunnel
+# (port 44310); the Template/DG push jobs above finish while the FWs download
+# the image chain, well before the first install.
+echo ""
+bash "$SCRIPT_DIR/upgrade-panos.sh" --auto

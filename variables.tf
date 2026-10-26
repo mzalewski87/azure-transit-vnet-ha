@@ -301,6 +301,48 @@ variable "pan_os_version" {
 }
 
 #------------------------------------------------------------------------------
+# PAN-OS upgrade (Phase 2c — optional, orchestrated from Panorama)
+# Consumed by scripts/upgrade-panos.sh via `terraform output -json
+# panos_upgrade`; run automatically at the end of Phase 2b when enabled.
+#------------------------------------------------------------------------------
+variable "panos_auto_upgrade" {
+  description = <<-EOT
+    Upgrade PAN-OS automatically at the end of the deployment (end of Phase 2b,
+    scripts/register-fw-panorama.sh → scripts/upgrade-panos.sh). Requires
+    panos_upgrade_target_version. Default false: FWs stay on pan_os_version.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "panos_upgrade_target_version" {
+  description = <<-EOT
+    PAN-OS version to upgrade the firewalls to (e.g. "12.2.4" or "12.2.4-h1").
+    The required base-image chain is computed and downloaded automatically
+    (skip up to 3 feature releases per install). Panorama is upgraded first
+    when it runs an older version (see panos_upgrade_panorama).
+    Also used as the default target for a manual `scripts/upgrade-panos.sh`.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = can(regex("^$|^\\d+\\.\\d+\\.\\d+(-h\\d+)?$", var.panos_upgrade_target_version))
+    error_message = "panos_upgrade_target_version must look like 12.2.4 or 12.2.4-h1 (or be empty)."
+  }
+}
+
+variable "panos_upgrade_panorama" {
+  description = <<-EOT
+    Allow the upgrade to upgrade Panorama first when it is older than
+    panos_upgrade_target_version (Panorama must run >= its firewalls).
+    false = abort instead, leaving Panorama untouched.
+  EOT
+  type        = bool
+  default     = true
+}
+
+#------------------------------------------------------------------------------
 # Load Balancer
 #------------------------------------------------------------------------------
 variable "internal_lb_private_ip" {

@@ -56,6 +56,15 @@ app1_vm_size = "Standard_D2s_v5"    # Spoke1 Apache demo VM
 # newest Panorama version — pin to it or lower.
 pan_os_version = "12.1.9"
 
+# Optional Phase 2c — PAN-OS upgrade at the end of the deployment, orchestrated
+# from Panorama (scripts/upgrade-panos.sh). Deploys on pan_os_version, then
+# upgrades Panorama (if older) and FW1 → FW2 one at a time to the target.
+# The base-image chain (skip up to 3 feature releases) is computed and
+# downloaded to each FW before installing. Preview: bash scripts/upgrade-panos.sh --plan-only
+panos_auto_upgrade           = false
+panos_upgrade_target_version = ""     # e.g. "12.2.4"
+panos_upgrade_panorama       = true   # upgrade Panorama first when older than target
+
 panorama_vm_size = "Standard_D16s_v5"  # 16 vCPU, 64 GB
 
 admin_username = "panadmin"

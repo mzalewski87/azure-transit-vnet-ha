@@ -403,6 +403,63 @@ This script automatically:
 > and the Template Stack / Device Group / DLF entries won't be configured,
 > so the FWs sit there licensed but unconfigured and no logs flow.
 
+### Phase 2c: PAN-OS upgrade (optional, orchestrated from Panorama)
+
+Deploy on the marketplace image (`pan_os_version`), then upgrade to a newer
+release at the end of the deployment. To enable it, set in root
+`terraform.tfvars`:
+
+```hcl
+panos_auto_upgrade           = true
+panos_upgrade_target_version = "12.2.4"
+panos_upgrade_panorama       = true   # upgrade Panorama first if it is older
+```
+
+With `panos_auto_upgrade = true`, Phase 2b runs this step automatically at
+its end. It can also be run by hand at any time (Day-2):
+
+```bash
+bash scripts/upgrade-panos.sh --plan-only          # print the plan, change nothing
+bash scripts/upgrade-panos.sh                      # upgrade to panos_upgrade_target_version
+bash scripts/upgrade-panos.sh --target 12.2.4-h1   # override the target
+```
+
+How it works (`scripts/lib/panos_upgrade.py`):
+
+- **One tunnel, to Panorama.** Firewall commands are proxied by Panorama
+  (XML API `target=<serial>`). The FWs download images from the PAN update
+  server over their MGMT internet egress.
+- **Panorama first.** Panorama must run the same or a newer version than its
+  FWs. It is upgraded one feature release per hop (base image + hop version,
+  then install, reboot and wait for the API). With
+  `panos_upgrade_panorama = false` the run aborts instead.
+- **Upgrade path per FW** (PAN-OS *Skip Software Version Upgrade*): one
+  install may skip up to **3 feature releases**. Feature releases come from
+  the update server list, so 11.2 is followed by 12.1 because there is no
+  12.0.
+- **Full image chain before installing.** The base image (X.Y.0) of every
+  skipped release and of the target release, plus the target image, is
+  downloaded to the FW. Every image must report `downloaded=yes` before the
+  first install. Larger jumps are split into hops.
+
+  | Current → target | Images downloaded | Installs |
+  |---|---|---|
+  | 12.1.9 → 12.2.4 | 12.2.0, 12.2.4 | 12.2.4 |
+  | 11.0.6 → 12.2.4 | 11.1.0, 11.2.0, 12.1.0, 12.2.0, 12.2.4 | 12.2.4 |
+  | 10.2.10 → 12.2.4 | 11.0.0, 11.1.0, 11.2.0, 12.1.0, 12.1.9, 12.2.0, 12.2.4 | 12.1.9 → 12.2.4 |
+
+- **One FW at a time.** Content update (latest), then image chain, then
+  install, reboot and wait until Panorama sees the FW connected on the new
+  version. Then the MGMT VF boot-race check runs (`check-mgmt-vf-race.sh`,
+  deallocate + start recovery on `RACE`/`NO-MGMT`). FW2 starts only after FW1
+  is healthy. The Azure LB drains the FW that is rebooting.
+- **Re-push** of the Template Stack and Device Group at the end.
+
+The planner and the orchestration flow have offline tests:
+`python3 scripts/lib/test_panos_upgrade.py` (upgrade-path rules) and
+`python3 scripts/lib/test_panos_upgrade_flow.py` (order and safety checks
+against a fake Panorama API).
+
 ### Optional add-on modules
 
 The transit baseline (Phases 1a–2b) is self-contained — you get a working
@@ -557,6 +614,9 @@ element=<serial-number>007300XXXXXXX</serial-number>
 | `panorama_vm_auth_key` | Auto-generated in Phase 2 Step 4 |
 | `fw_auth_code` | VM-Series BYOL auth code from CSP Portal |
 | `pan_os_version` | VM-Series image version. **Must be ≤ Panorama version** — never `latest` (default pinned, e.g. `12.1.9`; `preflight-check.sh` validates) |
+| `panos_auto_upgrade` | `true` = run Phase 2c (PAN-OS upgrade from Panorama) automatically at the end of Phase 2b. Default `false` |
+| `panos_upgrade_target_version` | Target PAN-OS version for the FWs (e.g. `12.2.4`, `12.2.4-h1`). Required when `panos_auto_upgrade = true`. Also the default target for a manual `scripts/upgrade-panos.sh` |
+| `panos_upgrade_panorama` | Upgrade Panorama first when it is older than the target (required: Panorama ≥ FWs). `false` = abort instead. Default `true` |
 | `location`, `panorama_vm_size`, `fw_vm_size`, `app1_vm_size`, `dc_vm_size` | Region + VM sizes (defaults: D16s_v5 / D8s_v5 / D2s_v5 / B2s_v2). Must be unrestricted for your subscription in that region — validated by `preflight-check.sh` |
 | `fw_registration_pin_id` / `fw_registration_pin_value` | VM-Series Auto-Registration PIN pair (CSP Portal → Assets → Device Certificates → Generate Registration PIN). One pair shared by both FWs. Used at FW first boot via init-cfg; FW auto-fetches device cert. Empty = skip (lab without device cert). See `terraform.tfvars.example` header for why FWs use PIN and Panorama uses OTP. |
 
@@ -959,6 +1019,10 @@ request restart system
 ```
 
 ### VM-Series upgrade checklist (MGMT VF race)
+
+> `scripts/upgrade-panos.sh` (Phase 2c) automates this checklist: one FW at a
+> time, a VF check after every reboot, and recovery on `RACE`/`NO-MGMT`. The
+> manual steps below are for upgrades done from the GUI.
 
 VM-Series runs the same PAN-OS management plane (PANNET on `eth0`) on the
 same VM family (`Dv5`), so it is exposed to the race above. The MGMT NIC
