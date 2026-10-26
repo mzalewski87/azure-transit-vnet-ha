@@ -108,34 +108,75 @@ if [[ -z "${PAN_PASS:-}" ]]; then
 fi
 export PAN_PASS
 
-PANORAMA_ID=$(terraform output -raw panorama_vm_id)
-FW1_IP=$(terraform output -raw fw1_mgmt_private_ip)
-FW2_IP=$(terraform output -raw fw2_mgmt_private_ip)
+# ─── Resolve Panorama VM + FW mgmt IPs ───────────────────────────────────────
+# Terraform outputs first, but verified against Azure: a stale local state
+# (e.g. pointing at an old subscription) would otherwise make the Bastion
+# tunnel fail silently. Fallback: look the resources up by name in $BASTION_RG
+# in the active az subscription.
+PANORAMA_ID=$(terraform output -raw panorama_vm_id 2>/dev/null || true)
+FW1_IP=$(terraform output -raw fw1_mgmt_private_ip 2>/dev/null || true)
+FW2_IP=$(terraform output -raw fw2_mgmt_private_ip 2>/dev/null || true)
+if [[ -z "$PANORAMA_ID" ]] || ! az vm show --ids "$PANORAMA_ID" --query id -o tsv &>/dev/null; then
+  echo "  [WARN] terraform output panorama_vm_id is missing or not found in Azure"
+  echo "         (${PANORAMA_ID:-<empty>}) — local state is stale or from another subscription."
+  echo "         Falling back to lookup by name in $BASTION_RG ($(az account show --query name -o tsv 2>/dev/null))."
+  PANORAMA_ID=$(az vm show -g "$BASTION_RG" -n vm-panorama --query id -o tsv 2>/dev/null || true)
+  FW1_IP=$(az network nic show -g "$BASTION_RG" -n nic-fw1-mgmt \
+    --query "ipConfigurations[0].privateIPAddress" -o tsv 2>/dev/null || true)
+  FW2_IP=$(az network nic show -g "$BASTION_RG" -n nic-fw2-mgmt \
+    --query "ipConfigurations[0].privateIPAddress" -o tsv 2>/dev/null || true)
+fi
+if [[ -z "$PANORAMA_ID" ]]; then
+  echo "[ERROR] Panorama VM not found (terraform output nor vm-panorama in $BASTION_RG)."
+  echo "        Check the active subscription: az account show / az account set -s <id>"
+  exit 1
+fi
+echo "  Panorama VM: $PANORAMA_ID"
+echo "  FW mgmt IPs: ${FW1_IP:-?} ${FW2_IP:-?}"
 
 # ─── Bastion tunnel to Panorama (respawned — Panorama reboots mid-run) ───────
 TUNNEL_PID=""
 cleanup() {
   [[ -n "$TUNNEL_PID" ]] && kill -- -"$TUNNEL_PID" 2>/dev/null || kill "$TUNNEL_PID" 2>/dev/null || true
   lsof -ti:"$PANORAMA_PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
+  [[ -n "${TUNNEL_LOG:-}" ]] && rm -f "$TUNNEL_LOG"
 }
 trap cleanup EXIT INT TERM
 
 echo "[1/3] Opening Bastion tunnel to Panorama (port $PANORAMA_PORT)..."
+if lsof -nP -iTCP:"$PANORAMA_PORT" -sTCP:LISTEN &>/dev/null; then
+  echo "[ERROR] Local port $PANORAMA_PORT is already in use — set PANORAMA_PORT=<free port>."
+  exit 1
+fi
+TUNNEL_LOG=$(mktemp -t panos-upgrade-tunnel.XXXXXX)
 set -m
 (
   while true; do
     az network bastion tunnel --name "$BASTION_NAME" --resource-group "$BASTION_RG" \
       --target-resource-id "$PANORAMA_ID" --resource-port 443 --port "$PANORAMA_PORT" \
-      &>/dev/null || true
+      >>"$TUNNEL_LOG" 2>&1 || true
     sleep 5
   done
 ) &
 TUNNEL_PID=$!
 set +m
+# Ready = Panorama answers HTTPS through the tunnel (not just a local listener).
+TUNNEL_OK=false
 for _ in $(seq 1 24); do
-  curl -sk --max-time 3 -o /dev/null "https://127.0.0.1:$PANORAMA_PORT" && break
+  code=$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
+    "https://127.0.0.1:$PANORAMA_PORT/php/login.php" 2>/dev/null || true)
+  if [[ -n "$code" && "$code" != "000" ]]; then TUNNEL_OK=true; break; fi
   sleep 5
 done
+if ! $TUNNEL_OK; then
+  echo "[ERROR] Panorama did not answer HTTPS through the Bastion tunnel within 2 min."
+  echo "        Tunnel log (last lines):"
+  tail -5 "$TUNNEL_LOG" | sed 's/^/          /'
+  echo "        Check: Panorama running and healthy (./scripts/check-mgmt-vf-race.sh vm-panorama),"
+  echo "        Bastion $BASTION_NAME reachable, active az subscription."
+  exit 1
+fi
+echo "  Tunnel ready."
 
 # ─── Boot diagnostics on, so every upgrade reboot is captured ────────────────
 echo "[2/3] Ensuring boot diagnostics (MGMT VF race detection)..."

@@ -45,6 +45,7 @@ import ssl
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -178,18 +179,34 @@ class Panorama:
         self.ctx.verify_mode = ssl.CERT_NONE  # self-signed mgmt cert via tunnel
         self.key = None
 
-    def _post(self, params, timeout=120):
+    def _post(self, params, timeout=120, retries=3):
+        """POST to the XML API. Network failures (tunnel hiccup, TLS handshake
+        timeout, device restarting) are retried, then raised as ApiError so
+        callers never see a raw urllib traceback."""
         data = urllib.parse.urlencode(params).encode()
-        req = urllib.request.Request(self.url, data=data)
-        with urllib.request.urlopen(req, context=self.ctx, timeout=timeout) as r:
-            root = ET.fromstring(r.read())
+        for attempt in range(1, retries + 1):
+            try:
+                req = urllib.request.Request(self.url, data=data)
+                with urllib.request.urlopen(req, context=self.ctx, timeout=timeout) as r:
+                    body = r.read()
+                break
+            except (urllib.error.URLError, OSError) as e:  # incl. TimeoutError, ssl errors
+                reason = getattr(e, "reason", e)
+                if attempt == retries:
+                    raise ApiError("cannot reach Panorama API at %s (%s)" % (self.url, reason))
+                _sleep(10)
+        try:
+            root = ET.fromstring(body)
+        except ET.ParseError:
+            raise ApiError("non-XML response from %s: %r" % (self.url, body[:200]))
         if root.get("status") != "success":
             msg = " ".join(t.strip() for t in root.itertext() if t.strip())
             raise ApiError(msg or "API call failed")
         return root
 
-    def login(self):
-        root = self._post({"type": "keygen", "user": self.user, "password": self.password}, 30)
+    def login(self, retries=6):
+        root = self._post({"type": "keygen", "user": self.user, "password": self.password},
+                          30, retries)
         self.key = root.findtext(".//key")
         if not self.key:
             raise ApiError("keygen returned no key")
@@ -205,7 +222,7 @@ class Panorama:
 
     def reachable(self):
         try:
-            self.login()
+            self.login(retries=1)
             return True
         except Exception:
             return False
@@ -473,17 +490,17 @@ def main():
     if not password:
         sys.exit("PAN_PASS is not set")
     pan = Panorama(args.url, args.user, password)
-    pan.login()
-
-    devs = [d for d in connected_devices(pan) if d["connected"]]
-    log("Panorama %s; connected firewalls: %s" % (
-        system_info(pan)["sw_version"],
-        ", ".join("%s %s %s" % (d["hostname"], d["serial"], d["sw_version"]) for d in devs) or "none"))
-    if len(devs) < args.expect_fws:
-        sys.exit("[ERROR] expected %d connected firewalls, found %d — fix Phase 2b first"
-                 % (args.expect_fws, len(devs)))
 
     try:
+        pan.login()
+        devs = [d for d in connected_devices(pan) if d["connected"]]
+        log("Panorama %s; connected firewalls: %s" % (
+            system_info(pan)["sw_version"],
+            ", ".join("%s %s %s" % (d["hostname"], d["serial"], d["sw_version"]) for d in devs) or "none"))
+        if len(devs) < args.expect_fws:
+            sys.exit("[ERROR] expected %d connected firewalls, found %d — fix Phase 2b first"
+                     % (args.expect_fws, len(devs)))
+
         upgrade_panorama(pan, args.target, args)
         for dev in sorted(devs, key=lambda d: d["hostname"]):
             upgrade_firewall(pan, dev, args.target, args)

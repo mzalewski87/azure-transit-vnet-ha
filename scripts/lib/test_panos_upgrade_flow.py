@@ -180,6 +180,25 @@ class FlowTest(unittest.TestCase):
             self.run_main("--no-upgrade-panorama")
         self.assertEqual([e for e in self.fake.events if e[0].startswith("FW")], [])
 
+    def test_unreachable_panorama_exits_cleanly(self):
+        # Regression: a dead tunnel used to surface as a raw urllib traceback.
+        import socket
+        hang = socket.socket()
+        hang.bind(("127.0.0.1", 0))
+        hang.listen(1)  # accepts TCP, never speaks TLS -> handshake timeout
+        port = hang.getsockname()[1]
+        orig = pu.Panorama._post
+        pu.Panorama._post = lambda self, params, timeout=120, retries=3: orig(self, params, 1, 2)
+        try:
+            sys.argv = ["panos_upgrade.py", "--url", "https://127.0.0.1:%d" % port,
+                        "--target", "12.2.4", "--plan-only"]
+            with self.assertRaises(SystemExit) as cm:
+                pu.main()
+            self.assertIn("cannot reach Panorama API", str(cm.exception.code))
+        finally:
+            pu.Panorama._post = orig
+            hang.close()
+
     def test_already_on_target_is_noop(self):
         self.fake.pan.version = "12.2.4"
         for f in self.fake.fws.values():
