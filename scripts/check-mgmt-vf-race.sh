@@ -32,7 +32,9 @@
 #   -g <rg>            resource group (default: rg-transit-hub)
 #
 # VERDICTS (exit code = worst verdict):
-#   OK        0  no VF on MGMT, or VF joined before PANNET networking
+#   OK        0  no VF on MGMT, or VF joined well before PANNET networking
+#   TIGHT     0  VF joined <5s before PANNET — healthy now, but the next
+#                reboot may lose the race (observed 0.3s / 2.5s on FWs)
 #   UNKNOWN   3  serial log does not contain a full boot (enable boot
 #                diagnostics BEFORE the reboot you want to inspect)
 #   RACE      2  VF joined/renamed after PANNET networking start
@@ -41,7 +43,7 @@
 # Serial-log signals used:
 #   "<mana|mlx5_core> <pci> ethX: joined to eth0"   → MGMT VF (PCI address)
 #   "<pci> ...: renamed from ethX"                  → VF rename time
-#   "pannet[..]: Starting Networking"               → PANNET networking start
+#   "pannet[..]: [..] Starting Networking"          → PANNET networking start
 #   "No route to host" (waagent → WireServer)       → MGMT network dead
 ###############################################################################
 
@@ -105,20 +107,23 @@ analyse_log() {
           t = ts(l); if (t > vf_t) vf_t = t
           if (l ~ /while UP/) while_up = 1
         }
-        if (net_t < 0 && l ~ /pannet\[[0-9]+\]: Starting Networking/) net_t = ts(l)
+        # Panorama: "pannet[N]: Starting Networking:"
+        # VM-Series: "pannet[N]: <date> PANNET start. Starting Networking."
+        if (net_t < 0 && l ~ /pannet\[[0-9]+\]:.*Starting Networking/) net_t = ts(l)
         if (l ~ /No route to host/) noroute++
       }
       d = sprintf("mgmt_vf=%s vf_t=%.1fs pannet_t=%.1fs noroute=%d", (pci == "" ? "none" : pci), vf_t, net_t, noroute)
       if (noroute >= 3)                                 { print "NO-MGMT|" d; exit }
       if (pci != "" && (while_up || (net_t >= 0 && vf_t > net_t))) { print "RACE|" d; exit }
       if (pci != "" && net_t < 0)                       { print "UNKNOWN|" d " (boot still in progress?)"; exit }
+      if (pci != "" && net_t - vf_t < 5)                { print "TIGHT|" d " (VF won the race by <5s)"; exit }
       print "OK|" d
     }'
 }
 
 verdict_rc() {
   case "$1" in
-    OK) echo 0 ;; UNKNOWN) echo 3 ;; *) echo 2 ;;
+    OK|TIGHT) echo 0 ;; UNKNOWN) echo 3 ;; *) echo 2 ;;
   esac
 }
 
@@ -192,6 +197,7 @@ for vm in "${VMS[@]}"; do
   verdict=${res%%|*}
   case "$verdict" in
     OK)      info  "$vm: OK       ${res#*|}" ;;
+    TIGHT)   warn  "$vm: TIGHT    ${res#*|}" ;;
     UNKNOWN) warn  "$vm: UNKNOWN  ${res#*|}" ;;
     *)       error "$vm: $verdict ${res#*|}"; affected+=("$vm") ;;
   esac

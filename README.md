@@ -931,8 +931,14 @@ the last boot and compares the MGMT VF join/rename time with PANNET
 # vm-panorama: OK  mgmt_vf=7870:00:00.0 vf_t=9.4s pannet_t=49.6s noroute=0 agent=Ready
 ```
 
-Verdicts: `OK`, `RACE` (VF joined after PANNET), `NO-MGMT` (waagent cannot
-reach WireServer) and `UNKNOWN` (boot diagnostics was off during that boot).
+Verdicts:
+
+- `OK`
+- `TIGHT`: the VF joined less than 5 s before PANNET. Healthy now, but the
+  next reboot may lose the race.
+- `RACE`: the VF joined after PANNET.
+- `NO-MGMT`: waagent cannot reach WireServer.
+- `UNKNOWN`: boot diagnostics was off during that boot.
 The serial log only covers boots after boot diagnostics was enabled.
 `modules/panorama` and `modules/firewall` now enable it by default.
 
@@ -955,9 +961,21 @@ request restart system
 ### VM-Series upgrade checklist (MGMT VF race)
 
 VM-Series runs the same PAN-OS management plane (PANNET on `eth0`) on the
-same VM family (`Dv5`), so treat the FWs as exposed to the race above. The
-MGMT NIC (NIC0) is pinned to `accelerated_networking_enabled = false`. The
-dataplane NICs keep Accelerated Networking, which is supported there.
+same VM family (`Dv5`), so it is exposed to the race above. The MGMT NIC
+(NIC0) is pinned to `accelerated_networking_enabled = false`. The dataplane
+NICs keep Accelerated Networking, which is supported there.
+
+Confirmed on 2026-10-26 during the FW upgrade 12.1.x → 12.2.2. Both FWs got
+a Mellanox VF on the MGMT NIC despite `false`
+(`mlx5_core ... eth3: joined to eth0`, then `panos_eth0: renamed from eth3`).
+Both came up healthy, but only just:
+
+| FW | VF joined eth0 | PANNET start | Margin |
+|---|---|---|---|
+| FW1 | 27.4 s | 29.9 s | 2.5 s |
+| FW2 | 29.3 s | 29.5 s | 0.3 s |
+
+Run the check after **every** reboot, not only upgrades.
 
 1. **Before upgrading**, turn on boot diagnostics so the upgrade reboot gets
    captured:
