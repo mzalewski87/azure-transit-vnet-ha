@@ -110,9 +110,9 @@ variable "edl_admin_password" {
 }
 
 variable "edl_vm_size" {
-  description = "VM size for the EDL server"
+  description = "VM size for the EDL server (B1ms is restricted on newer subscriptions; B2s_v2 is the safe default)"
   type        = string
-  default     = "Standard_B1ms"
+  default     = "Standard_B2s_v2"
 }
 
 #------------------------------------------------------------------------------
@@ -193,9 +193,9 @@ variable "aks_node_count" {
 }
 
 variable "aks_node_vm_size" {
-  description = "VM size for AKS nodes"
+  description = "VM size for AKS nodes (D2s_v3 is not offered on newer subscriptions; D2s_v5 is the safe default)"
   type        = string
-  default     = "Standard_D2s_v3"
+  default     = "Standard_D2s_v5"
 }
 
 variable "aks_kubernetes_version" {

@@ -314,6 +314,40 @@ for SERIAL_TRY in $(seq 1 "$MAX_SERIAL_TRIES"); do
   sleep 30
 done
 
+# PAN-OS version guard: Panorama refuses (silently: "device_registered no",
+# Connected=no forever) any managed device running a NEWER release than
+# itself. 'pan_os_version = "latest"' hits this because the VM-Series image
+# 'latest' can be a newer train than the Panorama image 'latest'.
+get_sw_version() {
+  curl -sk --max-time 15 "https://127.0.0.1:$1/api/" \
+    --data-urlencode "type=op" \
+    --data-urlencode "cmd=<show><system><info></info></system></show>" \
+    --data-urlencode "key=$2" 2>/dev/null \
+    | sed -n 's:.*<sw-version>\([^<]*\)</sw-version>.*:\1:p' || true
+}
+PAN_KEY_VER=$(get_api_key "https://127.0.0.1:$PANORAMA_PORT" "$PAN_USER" "$PAN_PASS" 2>/dev/null || echo "")
+PAN_SW=$(get_sw_version "$PANORAMA_PORT" "$PAN_KEY_VER")
+FW1_SW=$(get_sw_version "$FW1_PORT" "$FW1_KEY")
+FW2_SW=$(get_sw_version "$FW2_PORT" "$FW2_KEY")
+echo "  PAN-OS versions: Panorama=${PAN_SW:-?}  FW1=${FW1_SW:-?}  FW2=${FW2_SW:-?}"
+for fw_ver in "FW1:$FW1_SW" "FW2:$FW2_SW"; do
+  fw_label="${fw_ver%%:*}"; fw_v="${fw_ver#*:}"
+  if [ -n "$PAN_SW" ] && [ -n "$fw_v" ] && \
+     [ "$(printf '%s\n%s\n' "$PAN_SW" "$fw_v" | sort -V | tail -1)" != "$PAN_SW" ]; then
+    echo ""
+    echo "  [ERROR] $fw_label runs PAN-OS $fw_v which is NEWER than Panorama $PAN_SW."
+    echo "          Panorama will not accept it. Pin pan_os_version in terraform.tfvars"
+    echo "          to a release <= $PAN_SW (e.g. pan_os_version = \"$PAN_SW\") and replace the FWs:"
+    echo "            terraform apply -target=module.firewall \\"
+    echo "              -replace='module.firewall.azurerm_linux_virtual_machine.fw[\"fw1\"]' \\"
+    echo "              -replace='module.firewall.azurerm_linux_virtual_machine.fw[\"fw2\"]' \\"
+    echo "              -replace='module.firewall.null_resource.fw_set_userdata[\"fw1\"]' \\"
+    echo "              -replace='module.firewall.null_resource.fw_set_userdata[\"fw2\"]'"
+    echo "          (replacing FWs consumes new BYOL auth-code credits — see README)"
+    exit 1
+  fi
+done
+
 # Auto-generate or retrieve auth-key on Panorama if missing
 if [ -z "$VM_AUTH_KEY" ]; then
   echo ""
@@ -404,7 +438,11 @@ if [ -n "$VM_AUTH_KEY" ]; then
       --data-urlencode "type=op" \
       --data-urlencode "cmd=<request><authkey><set>$VM_AUTH_KEY</set></authkey></request>" \
       --data-urlencode "key=$fw_key" 2>/dev/null)
-    echo "  $fw_name: done"
+    if echo "$AUTH_RESP" | grep -q 'status="success"'; then
+      echo "  $fw_name: done"
+    else
+      echo "  [WARN] $fw_name: authkey set did not report success: $(echo "$AUTH_RESP" | head -c 200)"
+    fi
   done
 else
   echo ""
@@ -451,6 +489,58 @@ register_fw() {
 
   echo "    OK"
 }
+
+# Remove stale serials left over from earlier FW VMs (e.g. after a FW replace).
+# Stale entries make every commit-all/push report "not connected FAIL" even
+# when the current FWs are healthy. Only serials found in THIS project's
+# Device Group / Template Stack / Collector Group are touched (collected in
+# STALE_FOUND), so other devices managed by the same Panorama are left alone.
+STALE_FOUND=""
+remove_stale_serials() {
+  local xpath="$1" label="$2"
+  local current
+  current=$(curl -sk --max-time 30 "$PAN_URL" \
+    --data-urlencode "type=config" \
+    --data-urlencode "action=get" \
+    --data-urlencode "xpath=$xpath" \
+    --data-urlencode "key=$PAN_KEY" 2>/dev/null | python3 -c "
+import sys, xml.etree.ElementTree as ET
+try:
+    root = ET.fromstring(sys.stdin.read())
+    for e in root.findall('.//devices/entry'):
+        print(e.get('name'))
+except Exception:
+    pass
+" 2>/dev/null || true)
+  for s in $current; do
+    if [ "$s" != "$FW1_SERIAL" ] && [ "$s" != "$FW2_SERIAL" ]; then
+      echo "    -> removing stale serial $s from $label"
+      case " $STALE_FOUND " in *" $s "*) ;; *) STALE_FOUND="$STALE_FOUND $s" ;; esac
+      curl -sk --max-time 30 "$PAN_URL" \
+        --data-urlencode "type=config" \
+        --data-urlencode "action=delete" \
+        --data-urlencode "xpath=$xpath/devices/entry[@name='$s']" \
+        --data-urlencode "key=$PAN_KEY" > /dev/null || true
+    fi
+  done
+}
+
+echo "  Checking for stale serials..."
+remove_stale_serials "/config/devices/entry[@name='localhost.localdomain']/device-group/entry[@name='$DEVICE_GROUP']" "device-group"
+remove_stale_serials "/config/devices/entry[@name='localhost.localdomain']/template-stack/entry[@name='$TEMPLATE_STACK']" "template-stack"
+# Collector Group DLF entries also reference the serial; mgt-config deletion is
+# refused ("cannot be deleted because of references") until these are gone.
+remove_stale_serials "/config/devices/entry[@name='localhost.localdomain']/log-collector-group/entry[@name='default']/logfwd-setting" "collector-group DLF"
+# mgt-config last: Panorama refuses to delete a device that is still
+# referenced from a DG / Template Stack / Collector Group.
+for s in $STALE_FOUND; do
+  echo "    -> removing stale serial $s from mgt-config"
+  curl -sk --max-time 30 "$PAN_URL" \
+    --data-urlencode "type=config" --data-urlencode "action=delete" \
+    --data-urlencode "xpath=/config/mgt-config/devices/entry[@name='$s']" \
+    --data-urlencode "key=$PAN_KEY" > /dev/null || true
+done
+[ -n "$STALE_FOUND" ] || echo "    (none)"
 
 register_fw "$FW1_SERIAL" "FW1"
 register_fw "$FW2_SERIAL" "FW2"
@@ -625,8 +715,17 @@ except:
   fi
 
   if [ "$WAIT_CONN" -ge 30 ]; then
-    echo "  [WARN] Only $CONNECTED_COUNT FW(s) connected after 5 min."
-    echo "         Commit & Push will proceed anyway (FWs will sync when connected)."
+    echo ""
+    echo "  [ERROR] Only $CONNECTED_COUNT of 2 FW(s) connected to Panorama after 5 min."
+    echo "          Template/Device Group push would be sent to disconnected devices"
+    echo "          and have no effect. Most common causes:"
+    echo "            1. FW PAN-OS version NEWER than Panorama (Panorama must be >= FW)."
+    echo "               Check: 'show system info | match sw-version' on FW and Panorama,"
+    echo "               then pin pan_os_version in terraform.tfvars and replace the FWs."
+    echo "            2. Expired registration PIN / depleted auth-code credits"
+    echo "               (License Install Failed) — see README Prerequisites."
+    echo "            3. Panorama vm-auth-key problem — see docs/troubleshooting-fw-cert.md."
+    exit 1
   fi
 
   echo "  [$WAIT_CONN/30] $CONNECTED_COUNT FW(s) connected — waiting 10s..."

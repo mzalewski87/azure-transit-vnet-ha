@@ -153,9 +153,14 @@ variable "panorama_private_ip" {
 # Provide auth_code as panorama_auth_code in phase2-panorama-config/terraform.tfvars
 
 variable "panorama_vm_size" {
-  description = "VM size for Panorama (min Standard_D8s_v3, recommended Standard_D16s_v3)"
+  description = <<-EOT
+    VM size for Panorama (min 8 vCPU, recommended 16 vCPU / 64 GB).
+    Default Standard_D16s_v5. v3 sizes are not offered on newer subscriptions
+    (SkuNotAvailable / NotAvailableForSubscription) — run
+    scripts/preflight-check.sh to verify the size in your region BEFORE apply.
+  EOT
   type        = string
-  default     = "Standard_D16s_v3"
+  default     = "Standard_D16s_v5"
 }
 
 variable "panorama_log_disk_size_gb" {
@@ -201,9 +206,15 @@ variable "panorama_vm_auth_key" {
 # VM-Series Firewall Configuration
 #------------------------------------------------------------------------------
 variable "fw_vm_size" {
-  description = "VM size for VM-Series FW (8 vCPU = Standard_D8s_v3)"
+  description = "VM size for VM-Series FW (8 vCPU; default Standard_D8s_v5 — v3 is not offered on newer subscriptions)"
   type        = string
-  default     = "Standard_D8s_v3"
+  default     = "Standard_D8s_v5"
+}
+
+variable "app1_vm_size" {
+  description = "VM size for the Spoke1 Apache demo server (default Standard_D2s_v5; v3/B-series are not offered on every subscription/region)"
+  type        = string
+  default     = "Standard_D2s_v5"
 }
 
 variable "fw_auth_code" {
@@ -277,9 +288,16 @@ variable "fw_registration_pin_value" {
 }
 
 variable "pan_os_version" {
-  description = "PAN-OS version for VM-Series FW Marketplace image"
+  description = <<-EOT
+    PAN-OS version for the VM-Series FW Marketplace image.
+    MUST be <= the Panorama version (Panorama silently refuses newer devices:
+    Connected=no, "device_registered no"). 'latest' is NOT safe: the VM-Series
+    'latest' image can be a newer train (12.2.x) than the Panorama 'latest'
+    (12.1.x). scripts/preflight-check.sh shows the newest Panorama version;
+    pin to it (or lower).
+  EOT
   type        = string
-  default     = "latest"
+  default     = "12.1.9"
 }
 
 #------------------------------------------------------------------------------

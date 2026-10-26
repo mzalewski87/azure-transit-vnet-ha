@@ -29,7 +29,7 @@ hub_subscription_id = "REPLACE_ME_HUB_SUBSCRIPTION_ID"
 location   = "germanywestcentral"
 aks_region = "germanywestcentral"
 
-# --- External LB public IP (look up via: cd ../.. && terraform output -raw external_lb_public_ip_address) ---
+# --- External LB public IP (look up via: cd ../.. && terraform output -raw external_lb_public_ip) ---
 external_lb_public_ip = "REPLACE_ME_EXTERNAL_LB_PUBLIC_IP"
 
 # --- Panorama credentials (same as root tfvars admin_password) ---
@@ -51,8 +51,11 @@ wp_admin_password = "REPLACE_ME_WP_ADMIN_PASSWORD"
 # edl_subnet_cidr = "10.255.2.0/27"
 # edl_private_ip  = "10.255.2.4"
 
+# Sizes — defaults (B2s_v2 EDL, D2s_v5 nodes) are checked by
+# `bash ../../scripts/preflight-check.sh`; v3 / B1ms are restricted on new subs.
 # aks_node_count   = 2
-# aks_node_vm_size = "Standard_D2s_v3"
+# aks_node_vm_size = "Standard_D2s_v5"
+# edl_vm_size      = "Standard_B2s_v2"
 
 # wp_admin_username = "wpadmin"
 # wp_blog_name      = "PANW Demo – AKS WordPress"

@@ -118,31 +118,40 @@ else
   echo "              Make sure it's set in phase2 terraform.tfvars manually."
 fi
 
-# Start Bastion tunnel
-echo "[2/4] Starting Bastion tunnel (port $LOCAL_PORT -> Panorama:443)..."
-az network bastion tunnel \
-  --name bastion-management \
-  --resource-group rg-transit-hub \
-  --target-resource-id "$PANORAMA_ID" \
-  --resource-port 443 \
-  --port "$LOCAL_PORT" &>/dev/null &
-TUNNEL_PID=$!
-echo "       Tunnel PID: $TUNNEL_PID"
+# Start Bastion tunnel (function: restarted automatically if it drops, e.g.
+# after the Panorama restart in step 4b3 — an old tunnel does not survive it)
+start_tunnel() {
+  if [ -n "${TUNNEL_PID:-}" ]; then
+    kill -- -"$TUNNEL_PID" 2>/dev/null || kill "$TUNNEL_PID" 2>/dev/null || true
+    kill -9 "$TUNNEL_PID" 2>/dev/null || true
+    lsof -ti:"$LOCAL_PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
+    sleep 2
+  fi
+  az network bastion tunnel \
+    --name bastion-management \
+    --resource-group rg-transit-hub \
+    --target-resource-id "$PANORAMA_ID" \
+    --resource-port 443 \
+    --port "$LOCAL_PORT" &>/dev/null &
+  TUNNEL_PID=$!
+  echo "       Tunnel PID: $TUNNEL_PID"
 
-# Wait for tunnel to be ready
-echo "       Waiting for tunnel..."
-sleep 10
-for i in $(seq 1 12); do
-  if curl -sk --max-time 3 -o /dev/null "https://127.0.0.1:$LOCAL_PORT/php/login.php" 2>/dev/null; then
-    echo "       Tunnel ready!"
-    break
-  fi
-  if [ "$i" -eq 12 ]; then
-    echo "[ERROR] Tunnel not responding after 60s. Check Bastion and Panorama VM."
-    exit 1
-  fi
-  sleep 5
-done
+  # Wait for tunnel to be ready
+  echo "       Waiting for tunnel..."
+  sleep 10
+  for i in $(seq 1 12); do
+    if curl -sk --max-time 3 -o /dev/null "https://127.0.0.1:$LOCAL_PORT/php/login.php" 2>/dev/null; then
+      echo "       Tunnel ready!"
+      return 0
+    fi
+    sleep 5
+  done
+  echo "[ERROR] Tunnel not responding after 60s. Check Bastion and Panorama VM."
+  return 1
+}
+
+echo "[2/4] Starting Bastion tunnel (port $LOCAL_PORT -> Panorama:443)..."
+start_tunnel || exit 1
 
 # Run Phase 2 Terraform
 #
@@ -158,7 +167,26 @@ echo ""
 cd "$PHASE2_DIR"
 terraform init -input=false -no-color 2>&1 | tail -5
 echo ""
-terraform apply -auto-approve -input=false -parallelism=2
+# Up to 3 attempts: the apply is idempotent (finished steps are skipped), and
+# the usual failure is a dropped Bastion tunnel after the Panorama restart
+# ("Post https://127.0.0.1:44300/api: EOF") — so re-open the tunnel and retry.
+APPLY_OK=0
+for ATTEMPT in 1 2 3; do
+  if terraform apply -auto-approve -input=false -parallelism=2; then
+    APPLY_OK=1
+    break
+  fi
+  if [ "$ATTEMPT" -lt 3 ]; then
+    echo ""
+    echo "[WARN] terraform apply failed (attempt $ATTEMPT/3) — re-opening Bastion tunnel and retrying..."
+    start_tunnel || exit 1
+    sleep 20
+  fi
+done
+if [ "$APPLY_OK" -ne 1 ]; then
+  echo "[ERROR] Phase 2a terraform apply failed after 3 attempts."
+  exit 1
+fi
 
 # Verify output and auto-inject vm-auth-key into terraform.tfvars
 echo ""

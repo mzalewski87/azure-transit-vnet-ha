@@ -288,6 +288,7 @@ module "app1_app" {
   private_ip          = cidrhost(module.networking.app1_workload_subnet_cidr, 4)
   admin_username      = var.admin_username
   admin_password      = var.admin_password
+  vm_size             = var.app1_vm_size
 
   tags = var.tags
 

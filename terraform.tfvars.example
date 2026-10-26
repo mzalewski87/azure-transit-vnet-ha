@@ -18,6 +18,9 @@ spoke2_subscription_id = "REPLACE_ME_SPOKE2_SUBSCRIPTION_ID"
 #------------------------------------------------------------------------------
 # Location and Resource Groups
 #------------------------------------------------------------------------------
+# Region choice matters on fresh/lab subscriptions: VM sizes are often restricted
+# per region (e.g. germanywestcentral had no usable D16/D8 on a new Torque sub,
+# polandcentral did). Run `bash scripts/preflight-check.sh` to validate.
 location = "germanywestcentral"
 
 hub_resource_group_name  = "rg-transit-hub"
@@ -41,10 +44,19 @@ app2_vnet_address_space       = "10.113.0.0/16"
 #------------------------------------------------------------------------------
 # VM-Series Firewall + Panorama — passwords and sizes
 #------------------------------------------------------------------------------
-fw_vm_size     = "Standard_D8s_v3"   # 8 vCPU (required), 32 GB
-pan_os_version = "latest"
+# Sizes: v3 SKUs are NOT offered on newer subscriptions — v5 is the safe default.
+# ALWAYS run `bash scripts/preflight-check.sh` first: it verifies these sizes
+# exist (unrestricted) in `location` for YOUR subscription.
+fw_vm_size   = "Standard_D8s_v5"    # 8 vCPU (required), 32 GB
+app1_vm_size = "Standard_D2s_v5"    # Spoke1 Apache demo VM
 
-panorama_vm_size = "Standard_D16s_v3"  # 16 vCPU, 64 GB
+# MUST be <= Panorama version. Do NOT use "latest": the VM-Series image 'latest'
+# can be a newer train (12.2.x) than Panorama's (12.1.x), and Panorama silently
+# refuses newer devices (Connected=no forever). preflight-check.sh prints the
+# newest Panorama version — pin to it or lower.
+pan_os_version = "12.1.9"
+
+panorama_vm_size = "Standard_D16s_v5"  # 16 vCPU, 64 GB
 
 admin_username = "panadmin"
 # Min 12 chars, uppercase+lowercase+digit+special

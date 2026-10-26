@@ -29,7 +29,9 @@ set -o pipefail
 
 LOG="/tmp/aks-deploy-verify.log"
 exec > >(tee -a "$LOG") 2>&1
-echo "=== verify_deployment.sh starting $(date -Is) ==="
+# NOTE: `date -Is` is GNU-only (fails on macOS) — use a portable format.
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+echo "=== verify_deployment.sh starting $(ts) ==="
 
 FAIL=0
 WARN=0
@@ -72,8 +74,16 @@ echo ""
 echo "----- Waiting up to 6 min for WordPress / MariaDB / ingress pods to be Running -----"
 WP_OK=0
 for i in $(seq 1 36); do
-  NOT_RUN=$(kubectl get pods -A -o jsonpath='{.items[?(@.metadata.namespace=="wordpress" || @.metadata.namespace=="ingress-nginx")].status.phase}' \
-    | tr ' ' '\n' | grep -vc '^Running$' || true)
+  # One query per namespace: kubectl jsonpath has no `||` operator (an earlier
+  # version of this check errored out and still reported OK). Count pods that
+  # are not Running, plus 1 for each namespace that has no pods yet.
+  NOT_RUN=$( { for ns in wordpress ingress-nginx; do
+      kubectl get pods -n "$ns" -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' 2>/dev/null
+      echo "__ns_done__"
+    done; } | awk '
+      $0=="__ns_done__" { if (!seen) bad++; seen=0; next }
+      NF                { seen=1; if ($0!="Running") bad++ }
+      END               { print bad+0 }')
   if [ "$NOT_RUN" = "0" ]; then
     WP_OK=1
     break
@@ -95,32 +105,41 @@ check "no ImagePullBackOff in wordpress/ingress-nginx namespaces" \
   bash -c '! kubectl get pods -A -o jsonpath="{range .items[*]}{.metadata.namespace}/{.metadata.name} {range .status.containerStatuses[*]}{.state.waiting.reason}{end}{\"\n\"}{end}" 2>/dev/null | grep -E "(wordpress|ingress-nginx).*ImagePullBackOff"'
 
 # ---- 3. EDL server still serving the FQDN + IP lists ----
-check "EDL FQDN list reachable (curl http://$EDL_IP/edl/aks-egress-fqdn.txt)" \
+# The EDL server has a PRIVATE IP in the management VNet. This script runs on
+# the operator's workstation, which normally has no route there — a timeout
+# here does NOT mean the EDL is broken. So these are warnings, not failures.
+# Verify properly from inside the VNet: Panorama EDL status (Objects → External
+# Dynamic Lists → Test Source URL) or via a Bastion tunnel (see docs/aks-runbook.md).
+warn_check "EDL FQDN list reachable from this host (private IP; needs VNet route)" \
   bash -c "curl -fsS --max-time 10 'http://$EDL_IP/edl/aks-egress-fqdn.txt' | grep -q 'mcr.microsoft.com'"
 
-check "EDL IP list reachable (curl http://$EDL_IP/edl/aks-egress-ips.txt)" \
+warn_check "EDL IP list reachable from this host (private IP; needs VNet route)" \
   bash -c "curl -fsS --max-time 10 'http://$EDL_IP/edl/aks-egress-ips.txt' | wc -l | awk '{exit (\$1 < 20)}'"
 
 # ---- 4. WordPress reachable through AFD ----
-# AFD origin health probe takes ~3 min to mark the origin healthy after first
-# create. Allow up to 5 min with 30s polls.
+# A NEW AFD endpoint needs up to ~20 min to propagate to all edge POPs (until
+# then AFD itself answers 404 "Page not found" without contacting the origin),
+# and the origin health probe needs a few minutes on top. Allow up to 18 min
+# with 30s polls.
 echo ""
-echo "----- Waiting up to 5 min for WordPress reachable via AFD ($WORDPRESS_URL) -----"
+echo "----- Waiting up to 18 min for WordPress reachable via AFD ($WORDPRESS_URL) -----"
 WP_REACH=0
-for i in $(seq 1 10); do
+for i in $(seq 1 36); do
   # WordPress installer page contains 'WordPress' near the title; the regular
   # blog page also contains it. Either match means the chain is working.
   if curl -fsSL --max-time 15 "$WORDPRESS_URL" 2>/dev/null | grep -qi 'wordpress'; then
     WP_REACH=1
     break
   fi
-  echo "  [$i/10] WordPress not yet reachable via AFD — wait 30s..."
+  echo "  [$i/36] WordPress not yet reachable via AFD — wait 30s..."
   sleep 30
 done
 if [ "$WP_REACH" = "1" ]; then
   echo "  [OK] WordPress responding through AFD"
 else
-  echo "  [FAIL] WordPress NOT reachable via AFD after 5 min"
+  echo "  [FAIL] WordPress NOT reachable via AFD after 18 min"
+  echo "    NOTE: testing from a corporate network? A corporate proxy may block"
+  echo "    direct :8080 requests ('Web Page Blocked') — test via the AFD URL, not the LB IP."
   echo "    Common causes:"
   echo "      - AFD origin health probe still failing (Azure Portal: AFD → Origin Groups → og-aks-wordpress → Origin status)"
   echo "      - LB rule 8080 not yet active on External LB (Azure Portal: lb-external-panos → Load balancing rules)"
@@ -134,7 +153,7 @@ warn_check "WordPress wp-login.php reachable (post-install check)" \
   bash -c "curl -fsSL --max-time 15 '$WORDPRESS_URL/wp-login.php' | grep -qi 'log in\\|wordpress'"
 
 echo ""
-echo "=== verify_deployment.sh finished $(date -Is) ==="
+echo "=== verify_deployment.sh finished $(ts) ==="
 echo "  Critical failures: $FAIL"
 echo "  Warnings:          $WARN"
 

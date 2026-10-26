@@ -26,7 +26,7 @@ variable "private_ip" {
 variable "vm_size" {
   description = "Azure VM size for Apache server"
   type        = string
-  default     = "Standard_D2s_v3" # Standard_B2s not available in all regions
+  default     = "Standard_D2s_v5" # v3/B2s not available in all regions (e.g. polandcentral on fresh subs)
 }
 
 variable "admin_username" {

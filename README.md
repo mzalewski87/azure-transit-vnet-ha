@@ -167,6 +167,62 @@ Generate a fresh PIN before each redeploy:
    `docs/troubleshooting-fw-cert.md` (or just paste your NEW values
    into a chat with the assistant and it'll push them).
 
+### Pre-flight check (run this FIRST on any new subscription)
+
+One script catches the four problems that cost the most time on a fresh
+subscription — all of them were hit in a real from-scratch test:
+
+```bash
+cp terraform.tfvars.example terraform.tfvars   # fill in REPLACE_ME values
+bash scripts/preflight-check.sh
+```
+
+| Check | Why it matters |
+|---|---|
+| Resource providers registered (it registers + waits) | Fresh subs: Terraform blocks silently up to ~30 min, then `context deadline exceeded` |
+| VM sizes unrestricted in `location` | `SkuNotAvailable` / `NotAvailableForSubscription` — v3 sizes are gone on new subs; some regions have no usable D-series on lab subs |
+| Marketplace terms accepted | `ResourcePurchaseValidationFailed` |
+| `pan_os_version` ≤ Panorama version | FW newer than Panorama → Panorama silently refuses it (`Connected: no` forever, FW log `device_registered no`) |
+
+Do not start Phase 1a until it prints **Pre-flight OK**. Details of each
+item are in the sections below. If something still goes wrong, see
+[`docs/troubleshooting-deploy.md`](docs/troubleshooting-deploy.md) (symptom →
+cause → fix for every problem hit during fresh-subscription testing).
+
+### Register Azure resource providers (fresh subscription — do this FIRST)
+
+On a **brand-new subscription** most resource providers are not yet
+registered. The `azurerm` provider (3.x) tries to register them itself on
+the first `terraform apply` and **blocks until every one finishes**. Azure
+can take **up to ~30 minutes** to complete a registration, and Terraform
+prints **nothing** while it waits (empty log, no resources created). If the
+wait exceeds the provider timeout, `apply` fails with:
+
+```
+waiting for Subscription Provider (... Provider Name: "Microsoft.KeyVault")
+to be registered: context deadline exceeded
+```
+
+This was observed on a fresh Torque subscription: `Microsoft.KeyVault`
+(not even used by this project) stayed in `Registering` for ~30 min and
+blocked Phase 1a. Avoid it by registering the providers up front and
+waiting until all report `Registered` **before** the first `terraform apply`:
+
+```bash
+for p in Microsoft.Network Microsoft.Compute Microsoft.Storage \
+         Microsoft.ManagedIdentity Microsoft.Authorization Microsoft.Cdn \
+         Microsoft.ContainerService Microsoft.KeyVault \
+         Microsoft.OperationalInsights Microsoft.Insights; do
+  az provider register -n "$p" --only-show-errors
+done
+
+# Re-run until nothing is listed (can take up to ~30 min on a fresh subscription)
+az provider list --query "[?registrationState=='Registering'].namespace" -o tsv
+```
+
+If `apply` already hung or timed out, check the same command, wait for
+`Registered`, and simply re-run `terraform apply` — nothing was created.
+
 ### Accept Azure Marketplace terms (one-off, per subscription)
 
 PAN-OS Panorama and VM-Series BYOL images on Azure Marketplace require the
@@ -209,7 +265,9 @@ Reference: [Azure docs — Accept marketplace image terms](https://learn.microso
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
-# Edit: subscription IDs, admin_password, fw_auth_code
+# Edit: subscription IDs, admin_password, fw_auth_code, PIN id/value,
+#       location + VM sizes (validated by preflight), pan_os_version
+bash scripts/preflight-check.sh      # must end with "Pre-flight OK"
 
 terraform init
 terraform apply \
@@ -322,14 +380,21 @@ This script automatically:
 1. Opens Bastion tunnels to FW1, FW2, and Panorama
 2. Reads FW serial numbers (dynamically generated during license activation;
    retries 10×30s waiting for license activation to complete)
-3. Registers FW serials on Panorama (mgt-config + Device Group + Template Stack)
+2b. **PAN-OS version guard** — aborts with a fix hint if a FW runs a newer
+   PAN-OS than Panorama (Panorama silently refuses such devices)
+3. Removes **stale serials** of replaced FW VMs (Device Group, Template Stack,
+   Collector Group DLF, mgt-config), then registers the current FW serials on
+   Panorama (mgt-config + Device Group + Template Stack)
 4. Commits on Panorama
 5. **Adds Device Log Forwarding (DLF) entries** binding each FW serial to the
    local Panorama LC in the default Collector Group, then runs `commit-all
    log-collector-config` to push the CG config to logd. **This is required
    for log persistence** — without DLF entries, SearchEngine stays Inactive
    and log query returns 0.
-6. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min)
+6. **Waits for both FWs to connect** (polls `show devices connected`, max 5 min).
+   If they do not connect, the script now **exits with an error** (and a list
+   of likely causes) instead of pushing config to disconnected devices and
+   reporting success.
 7. **Push Template Stack to devices** — interfaces, zones, virtual routers, routes
 8. **Push Device Group to devices** — security policies, NAT rules,
    Log Forwarding Profile
@@ -355,7 +420,8 @@ notes. Read the runbook before applying.
 #### Domain Controller — quick start
 
 ```bash
-# Part A — already part of Phase 1b; deploy stand-alone if you skipped it then:
+# Part A — NOT included in the Phase 1b `-target` list above; deploy it explicitly
+# (Windows Server VM in Spoke2, 10.113.0.4):
 terraform apply -target=module.app2_dc
 
 # Part B — promote to AD DC (separate workspace, ~30-45 min):
@@ -376,9 +442,22 @@ az network bastion tunnel \
 
 cd optional/aks-deploy/
 cp terraform.tfvars.example terraform.tfvars   # fill in REPLACE_ME values
+helm repo update   # see note below — stale local Helm repos break the apply
 terraform init && terraform apply
 # Output: wordpress_url = "https://wordpress-XXXX.z01.azurefd.net"
 ```
+
+> **Helm:** the `helm` provider reads your local Helm repository config. If
+> any repo in `helm repo list` has no cached index, the apply fails with
+> `could not download chart: no cached repo found … <repo>-index.yaml`.
+> Run `helm repo update` (remove unreachable repos), or run the apply with an
+> isolated Helm config:
+> `HELM_REPOSITORY_CONFIG=/tmp/helm-tf/repositories.yaml HELM_REPOSITORY_CACHE=/tmp/helm-tf/cache terraform apply`.
+>
+> **Front Door:** a newly created AFD endpoint can take **~20-25 min** to
+> propagate; until then AFD itself returns `404 Page not found` (the request
+> never reaches the origin). The smoke tests wait up to 18 min — if they still
+> fail on AFD only, wait a few minutes and re-check the URL.
 
 ### Verification
 
@@ -477,6 +556,8 @@ element=<serial-number>007300XXXXXXX</serial-number>
 | `admin_password` | Password for Panorama and FW (min 12 chars) |
 | `panorama_vm_auth_key` | Auto-generated in Phase 2 Step 4 |
 | `fw_auth_code` | VM-Series BYOL auth code from CSP Portal |
+| `pan_os_version` | VM-Series image version. **Must be ≤ Panorama version** — never `latest` (default pinned, e.g. `12.1.9`; `preflight-check.sh` validates) |
+| `location`, `panorama_vm_size`, `fw_vm_size`, `app1_vm_size`, `dc_vm_size` | Region + VM sizes (defaults: D16s_v5 / D8s_v5 / D2s_v5 / B2s_v2). Must be unrestricted for your subscription in that region — validated by `preflight-check.sh` |
 | `fw_registration_pin_id` / `fw_registration_pin_value` | VM-Series Auto-Registration PIN pair (CSP Portal → Assets → Device Certificates → Generate Registration PIN). One pair shared by both FWs. Used at FW first boot via init-cfg; FW auto-fetches device cert. Empty = skip (lab without device cert). See `terraform.tfvars.example` header for why FWs use PIN and Panorama uses OTP. |
 
 ### Phase 2 – phase2-panorama-config/terraform.tfvars
