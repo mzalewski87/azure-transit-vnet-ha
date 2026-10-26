@@ -67,3 +67,6 @@ CLAUDE.md
 # Reference PDF library — vendor-copyrighted documents (PANW, etc.)
 # Track only the catalogue / index, not the binaries.
 docs/reference/pdfs/*.pdf
+
+# Python bytecode (scripts/lib tests)
+__pycache__/
